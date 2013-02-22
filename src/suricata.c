@@ -103,6 +103,7 @@
 
 #include "log-droplog.h"
 #include "log-httplog.h"
+#include "log-dnslog.h"
 #include "log-tlslog.h"
 #include "log-pcap.h"
 #include "log-file.h"
@@ -1595,6 +1596,8 @@ int main(int argc, char **argv)
     /* file log */
     TmModuleLogFileLogRegister();
     TmModuleLogFilestoreRegister();
+    /* dns log */
+    TmModuleLogDnsLogRegister();
     /* cuda */
 #ifdef __SC_CUDA_SUPPORT__
     TmModuleCudaMpmB2gRegister();
