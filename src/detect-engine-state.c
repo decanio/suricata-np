@@ -82,6 +82,7 @@
 #include "app-layer-smb.h"
 #include "app-layer-dcerpc-common.h"
 #include "app-layer-dcerpc.h"
+#include "app-layer-dns-common.h"
 
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
@@ -479,15 +480,50 @@ int DeStateDetectStartDetection(ThreadVars *tv, DetectEngineCtx *de_ctx,
                 }
             }
         }
-    }
+    } else if (alproto == ALPROTO_DNS_UDP || alproto == ALPROTO_DNS_TCP) {
+        FLOWLOCK_WRLOCK(f);
 
+        DNSState *dns_state = (DNSState *)alstate;
+        int tx_id = AppLayerTransactionGetInspectId(f);
+        if (tx_id == -1) {
+            FLOWLOCK_UNLOCK(f);
+            SCReturnInt(0);
+        }
+
+        int total_txs = (int)dns_state->transaction_max; /* +1 as this in incremented in by response */
+        for ( ; tx_id < total_txs; tx_id++) {
+            DetectEngineAppInspectionEngine *engine =
+                app_inspection_engine[ALPROTO_DNS][(flags & STREAM_TOSERVER) ? 0 : 1];
+            while (engine != NULL) {
+                if (s->sm_lists[engine->sm_list] != NULL) {
+                    inspect_flags |= engine->inspect_flags;
+                    int r = engine->Callback(tv, de_ctx, det_ctx, s, f,
+                                             flags, alstate, tx_id);
+                    if (r == 1) {
+                        match_flags |= engine->match_flags;
+                    } else if (r == 2) {
+                        match_flags |= DE_STATE_FLAG_SIG_CANT_MATCH;
+                    } else if (r == 3) {
+                        match_flags |= DE_STATE_FLAG_SIG_CANT_MATCH;
+                        file_no_match++;
+                    }
+                }
+                engine = engine->next;
+            }
+            if (inspect_flags == match_flags)
+                break;
+        }
+
+        FLOWLOCK_UNLOCK(f);
+    }
     if (s->sm_lists[DETECT_SM_LIST_AMATCH] != NULL) {
         for ( ; sm != NULL; sm = sm->next) {
             SCLogDebug("sm %p, sm->next %p", sm, sm->next);
 
             if (sigmatch_table[sm->type].AppLayerMatch != NULL &&
                 (alproto == s->alproto ||
-                 alproto == ALPROTO_SMB || alproto == ALPROTO_SMB2))
+                (alproto == ALPROTO_SMB || alproto == ALPROTO_SMB2) ||
+                (s->alproto == ALPROTO_DNS && (alproto == ALPROTO_DNS_UDP||alproto == ALPROTO_DNS_TCP))))
             {
                 if (alproto == ALPROTO_SMB || alproto == ALPROTO_SMB2) {
                     SMBState *smb_state = (SMBState *)alstate;
@@ -734,7 +770,42 @@ int DeStateDetectContinueDetection(ThreadVars *tv, DetectEngineCtx *de_ctx, Dete
                         SCLogDebug("dce payload already inspected");
                     }
                 }
+            } else if (alproto == ALPROTO_DNS_UDP || alproto == ALPROTO_DNS_TCP) {
+                FLOWLOCK_WRLOCK(f);
 
+                DNSState *dns_state = (DNSState *)alstate;
+
+                int tx_id = AppLayerTransactionGetInspectId(f);
+                if (tx_id == -1) {
+                    FLOWLOCK_UNLOCK(f);
+                    goto end;
+                }
+
+                int total_txs = (int)dns_state->transaction_max;
+                for ( ; tx_id < total_txs; tx_id++) {
+                    DetectEngineAppInspectionEngine *engine =
+                        app_inspection_engine[ALPROTO_DNS][(flags & STREAM_TOSERVER) ? 0 : 1];
+                    while (engine != NULL) {
+                        if (s->sm_lists[engine->sm_list] != NULL && !(item->flags & engine->match_flags)) {
+                            inspect_flags |= engine->inspect_flags;
+                            int r = engine->Callback(tv, de_ctx, det_ctx, s, f,
+                                                     flags, alstate, tx_id);
+                            if (r == 1) {
+                                match_flags |= engine->match_flags;
+                            } else if (r == 2) {
+                                match_flags |= DE_STATE_FLAG_SIG_CANT_MATCH;
+                            } else if (r == 3) {
+                                match_flags |= DE_STATE_FLAG_SIG_CANT_MATCH;
+                                file_no_match++;
+                            }
+                        }
+                        engine = engine->next;
+                    }
+                    if (inspect_flags == match_flags)
+                        break;
+                }
+
+                FLOWLOCK_UNLOCK(f);
             }
 
             /* next, check the other sig matches */

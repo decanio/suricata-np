@@ -149,6 +149,7 @@
 #include "detect-luajit.h"
 #include "detect-iprep.h"
 #include "detect-geoip.h"
+#include "detect-dns-query.h"
 
 #include "util-rule-vars.h"
 
@@ -514,6 +515,11 @@ static inline int SigMatchSignaturesBuildMatchArrayAddSignature(DetectEngineThre
             if (s->alproto == ALPROTO_DCERPC) {
                 if (alproto != ALPROTO_SMB && alproto != ALPROTO_SMB2) {
                     SCLogDebug("DCERPC sig, alproto not SMB or SMB2");
+                    return 0;
+                }
+            } else if (s->alproto == ALPROTO_DNS) {
+                if (alproto != ALPROTO_DNS_UDP && alproto != ALPROTO_DNS_TCP) {
+                    SCLogDebug("DNS sig, alproto not DNS/TCP or DNS/UDP");
                     return 0;
                 }
             } else {
@@ -1274,7 +1280,7 @@ int SigMatchSignatures(ThreadVars *th_v, DetectEngineCtx *de_ctx, DetectEngineTh
             DetectEngineStateReset(p->flow->de_state);
             SCMutexUnlock(&p->flow->de_state_m);
         /* see if we need to increment the inspect_id and reset the de_state */
-        } else if (alstate != NULL && alproto == ALPROTO_HTTP) {
+        } else if (alstate != NULL && (alproto == ALPROTO_HTTP || alproto == ALPROTO_DNS_UDP || alproto == ALPROTO_DNS_TCP)) {
             PACKET_PROFILING_DETECT_START(p, PROF_DETECT_STATEFUL);
             SCLogDebug("getting de_state_status");
             int de_state_status = DeStateUpdateInspectTransactionId(p->flow,
@@ -1623,7 +1629,8 @@ next:
 
 end:
     /* see if we need to increment the inspect_id and reset the de_state */
-    if (alstate != NULL && alproto != ALPROTO_HTTP) {
+    if (alstate != NULL && alproto != ALPROTO_HTTP &&
+            alproto != ALPROTO_DNS_UDP && alproto != ALPROTO_DNS_TCP) {
         PACKET_PROFILING_DETECT_START(p, PROF_DETECT_STATEFUL);
         SCLogDebug("getting de_state_status");
         int de_state_status = DeStateUpdateInspectTransactionId(p->flow,
@@ -4851,6 +4858,7 @@ void SigTableSetup(void) {
     DetectHttpHRHRegister();
     DetectLuajitRegister();
     DetectIPRepRegister();
+    DetectDnsQueryRegister();
 
     uint8_t i = 0;
     for (i = 0; i < DETECT_TBLSIZE; i++) {
