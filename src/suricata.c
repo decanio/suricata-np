@@ -77,6 +77,7 @@
 #include "alert-prelude.h"
 #include "alert-syslog.h"
 #include "alert-pcapinfo.h"
+#include "alert-ipfix.h"
 
 #include "log-droplog.h"
 #include "log-httplog.h"
@@ -750,6 +751,8 @@ void RegisterAllModules()
     TmModuleUnified2AlertRegister();
     /* pcap info log */
     TmModuleAlertPcapInfoRegister();
+    /* ipfix log */
+    TmModuleAlertIPFIXRegister();
     /* drop log */
     TmModuleLogDropLogRegister();
     /* http log */
