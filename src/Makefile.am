@@ -11,6 +11,7 @@ alert-broccoli.c alert-broccoli.h \
 alert-debuglog.c alert-debuglog.h \
 alert-fastlog.c alert-fastlog.h \
 alert-json.c alert-json.h \
+alert-ipfix.c alert-ipfix.h \
 alert-pcapinfo.c alert-pcapinfo.h \
 alert-prelude.c alert-prelude.h \
 alert-syslog.c alert-syslog.h \

@@ -1423,6 +1423,78 @@ AC_INIT(configure.ac)
         fi
     fi
 
+  # glib (required by libfixbuf)
+    AC_ARG_WITH(libglib_includes,
+            [  --with-libglib-includes=DIR  libglib include directory],
+            [with_libglib_includes="$withval"],[with_libglib_includes="/usr/include/glib-2.0/"])
+    AC_ARG_WITH(libglib_libraries,
+            [  --with-libglib-libraries=DIR    libglib library directory],
+            [with_libglib_libraries="$withval"],[with_libglib_libraries="no"])
+
+    if test "$with_libglib_includes" != "no"; then
+	# Fix this.  Need to eliminate the hard coded include path
+        CPPFLAGS="${CPPFLAGS} -I${with_libglib_includes} -I/usr/lib/x86_64-linux-gnu/glib-2.0/include/"
+    fi
+    echo $host
+    #AC_CHECK_HEADER(glib.h,,[AC_ERROR(glib.h not found ...)])
+
+    #if test "$with_libglib_libraries" != "no"; then
+    #    LDFLAGS="${LDFLAGS}  -L${with_libglib_libraries}"
+    #fi
+    #GLIB=""
+    #AC_CHECK_LIB(glib, glib_check_version,, GLIB="no")
+    #if test "$GLIB" = "no"; then
+    #    echo
+    #    echo "   ERROR!  glib library not found"
+    #    echo
+    #    exit 1
+    #fi
+
+  # IPFIX
+    AC_ARG_ENABLE(ipfix,
+                AS_HELP_STRING([--enable-ipfix],[Enable IPFIX support]),
+                [ enable_ipfix=yes ],
+                [ enable_ipfix=no])
+    AC_ARG_WITH(ipfix_includes,
+                [  --with-ipfix-includes=DIR   ipfix include directory],
+                [with_ipfix_includes="$withval"],[with_ipfix_includes="/usr/local/include/"])
+    AC_ARG_WITH(ipfix_libraries,
+                [  --with-ipfix-libraries=DIR  ipfix library directory],
+                [with_ipfix_libraries="$withval"],[with_ipfix_libraries="/usr/local/lib"])
+
+    if test "$enable_ipfix" = "yes"; then
+        CPPFLAGS="${CPPFLAGS} -I${with_ipfix_includes}"
+        LDFLAGS="${LDFLAGS} -L${with_ipfix_libraries} -lfixbuf"
+
+        # temporary until the mess below is resolved
+        IPFIX="yes"
+
+        #AC_CHECK_HEADER(glib-2.0/glib.h,IPFIX="yes",IPFIX="no")
+        #if test "$IPFIX" = "no"; then
+        #    echo
+        #    echo "  ERROR! glib.h required by libfixbuf not found"
+        #    echo
+        #    exit 1
+	#fi
+
+        #AC_CHECK_HEADER(fixbuf/public.h,IPFIX="yes",IPFIX="no")
+        #if test "$IPFIX" != "no"; then
+        #    IPFIX=""
+        #    AC_CHECK_LIB(fixbuf, fbInfoModelAlloc,IPFIX="yes",IPFIX="no")
+        #fi
+
+        if test "$IPFIX" != "no"; then
+            CFLAGS="${CFLAGS} -DHAVE_IPFIX"
+        fi
+
+        if test "$IPFIX" = "no"; then
+            echo
+            echo "  ERROR! libfixbuf library not found"
+            echo
+            exit 1
+        fi
+    fi
+
   # libluajit
     AC_ARG_ENABLE(luajit,
 	        AS_HELP_STRING([--enable-luajit],[Enable Luajit support]),
