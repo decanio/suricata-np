@@ -7,6 +7,7 @@ noinst_HEADERS = action-globals.h \
 bin_PROGRAMS = suricata
 
 suricata_SOURCES = \
+alert-broccoli.c alert-broccoli.h \
 alert-debuglog.c alert-debuglog.h \
 alert-fastlog.c alert-fastlog.h \
 alert-json.c alert-json.h \

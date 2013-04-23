@@ -101,6 +101,7 @@
 #include "alert-syslog.h"
 #include "alert-pcapinfo.h"
 #include "alert-json.h"
+#include "alert-broccoli.h"
 
 #include "log-droplog.h"
 #include "log-httplog.h"
@@ -1586,6 +1587,8 @@ int main(int argc, char **argv)
     TmModuleAlertPcapInfoRegister();
     /* json log */
     TmModuleAlertJsonRegister();
+    /* broccoli log */
+    TmModuleAlertBroccoliRegister();
     /* drop log */
     TmModuleLogDropLogRegister();
     /* http log */
