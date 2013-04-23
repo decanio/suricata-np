@@ -46,6 +46,7 @@
 #include "detect-engine-payload.h"
 #include "detect-engine-dcepayload.h"
 #include "detect-engine-uri.h"
+#include "detect-dns-query.h"
 #include "detect-engine-state.h"
 #include "detect-engine-analyzer.h"
 
@@ -538,7 +539,7 @@ static inline int SigMatchSignaturesBuildMatchArrayAddSignature(DetectEngineThre
     }
 
     /* check for a pattern match of the one pattern in this sig. */
-    if (likely(s->flags & (SIG_FLAG_MPM_PACKET|SIG_FLAG_MPM_STREAM|SIG_FLAG_MPM_HTTP)))
+    if (likely(s->flags & (SIG_FLAG_MPM_PACKET|SIG_FLAG_MPM_STREAM|SIG_FLAG_MPM_HTTP|SIG_FLAG_MPM_DNS)))
     {
         /* filter out sigs that want pattern matches, but
          * have no matches */
@@ -555,6 +556,10 @@ static inline int SigMatchSignaturesBuildMatchArrayAddSignature(DetectEngineThre
                 }
             } else if (s->flags & SIG_FLAG_MPM_HTTP) {
                 if (!(s->flags & SIG_FLAG_MPM_HTTP_NEG)) {
+                    return 0;
+                }
+            } else if (s->flags & SIG_FLAG_MPM_DNS) {
+                if (!(s->flags & SIG_FLAG_MPM_DNS_NEG)) {
                     return 0;
                 }
             }
@@ -1066,8 +1071,30 @@ static inline void DetectMpmPrefilter(DetectEngineCtx *de_ctx,
                 PACKET_PROFILING_DETECT_END(p, PROF_DETECT_MPM_HCD);
             }
         }
+        /* all dns based mpms */
+        else if (alproto == ALPROTO_DNS_TCP && alstate != NULL) {
+            if (p->flowflags & FLOW_PKT_TOSERVER) {
+                if (det_ctx->sgh->flags & SIG_GROUP_HEAD_MPM_DNSQUERY) {
+                    PACKET_PROFILING_DETECT_START(p, PROF_DETECT_MPM_DNSQUERY);
+                    DetectDnsQueryInspectMpm(det_ctx, p->flow, alstate, flags);
+                    PACKET_PROFILING_DETECT_END(p, PROF_DETECT_MPM_DNSQUERY);
+                }
+            }
+        }
     } else {
         SCLogDebug("NOT p->flowflags & FLOW_PKT_ESTABLISHED");
+    }
+
+    /* UDP DNS inspection is independent of est or not */
+    if (alproto == ALPROTO_DNS_UDP && alstate != NULL) {
+        if (p->flowflags & FLOW_PKT_TOSERVER) {
+            SCLogDebug("mpm inspection");
+            if (det_ctx->sgh->flags & SIG_GROUP_HEAD_MPM_DNSQUERY) {
+                PACKET_PROFILING_DETECT_START(p, PROF_DETECT_MPM_DNSQUERY);
+                DetectDnsQueryInspectMpm(det_ctx, p->flow, alstate, flags);
+                PACKET_PROFILING_DETECT_END(p, PROF_DETECT_MPM_DNSQUERY);
+            }
+        }
     }
 }
 

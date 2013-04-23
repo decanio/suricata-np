@@ -95,6 +95,56 @@ static int DetectDnsQuerySetup(DetectEngineCtx *de_ctx, Signature *s, char *str)
                                                   ALPROTO_DNS, NULL);
 }
 
+/**
+ *  \brief Run the pattern matcher against the queries
+ *
+ *  \param f locked flow
+ *  \param dns_state initialized dns state
+ *
+ *  \warning Make sure the flow/state is locked
+ *  \todo what should we return? Just the fact that we matched?
+ */
+uint32_t DetectDnsQueryInspectMpm(DetectEngineThreadCtx *det_ctx, Flow *f,
+                                  DNSState *dns_state, uint8_t flags)
+{
+    SCEnter();
+
+    DNSTransaction *tx;
+    DNSQueryEntry *query = NULL;
+    uint8_t *buffer;
+    uint16_t buffer_len;
+    uint32_t cnt = 0;
+    int tx_id = 0;
+
+    /* locking the flow, we will inspect the dns state */
+    FLOWLOCK_RDLOCK(f);
+
+    tx_id = AppLayerTransactionGetInspectId(f);
+    if (tx_id == -1) {
+        goto end;
+    }
+
+    TAILQ_FOREACH(tx, &dns_state->tx_list, next) {
+        SCLogDebug("tx->tx_num %u, tx_id %d", tx->tx_num, tx_id);
+        if ((tx_id+1) != tx->tx_num)
+            continue;
+
+        TAILQ_FOREACH(query, &tx->query_list, next) {
+            SCLogDebug("tx %p query %p", tx, query);
+
+            buffer = (uint8_t *)((uint8_t *)query + sizeof(DNSQueryEntry));
+            buffer_len = query->len;
+
+            cnt += DnsQueryPatternSearch(det_ctx,
+                                         buffer, buffer_len,
+                                         flags);
+        }
+    }
+end:
+    FLOWLOCK_UNLOCK(f);
+    SCReturnUInt(cnt);
+}
+
 #ifdef UNITTESTS
 /** \test simple google.com query matching */
 static int DetectDnsQueryTest01(void) {
