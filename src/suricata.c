@@ -102,6 +102,7 @@
 #include "alert-pcapinfo.h"
 #include "alert-json.h"
 #include "alert-broccoli.h"
+#include "alert-ipfix.h"
 
 #include "log-droplog.h"
 #include "log-httplog.h"
@@ -1589,6 +1590,8 @@ int main(int argc, char **argv)
     TmModuleAlertJsonRegister();
     /* broccoli log */
     TmModuleAlertBroccoliRegister();
+    /* ipfix log */
+    TmModuleAlertIPFIXRegister();
     /* drop log */
     TmModuleLogDropLogRegister();
     /* http log */
