@@ -174,6 +174,12 @@ outputs:
       #level: Info ## possible levels: Emergency, Alert, Critical,
                    ## Error, Warning, Notice, Info, Debug
 
+  # alerts sent to Bro using Broccoli
+  - broccoli:
+      enabled: no
+      host: 127.0.0.1
+      port: 47758
+
   # a line based information for dropped packets in IPS mode
   - drop:
       enabled: no
