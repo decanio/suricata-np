@@ -1389,6 +1389,40 @@ AC_INIT(configure.ac)
         fi
     fi
 
+  # broccoli
+    AC_ARG_ENABLE(broccoli,
+                AS_HELP_STRING([--enable-broccoli],[Enable Broccoli support]),
+                [ enable_broccoli=yes ],
+                [ enable_broccoli=no])
+    AC_ARG_WITH(broccoli_includes,
+                [  --with-broccoli-includes=DIR   broccoli include directory],
+                [with_broccoli_includes="$withval"],[with_broccoli_includes="/usr/local/bro/include"])
+    AC_ARG_WITH(broccoli_libraries,
+                [  --with-broccoli-libraries=DIR  broccoli library directory],
+                [with_broccoli_libraries="$withval"],[with_broccoli_libraries="/usr/local/bro/lib"])
+
+    if test "$enable_broccoli" = "yes"; then
+        CPPFLAGS="${CPPFLAGS} -I${with_broccoli_includes}"
+        LDFLAGS="${LDFLAGS} -L${with_broccoli_libraries} -lbroccoli"
+        AC_CHECK_HEADER(broccoli.h,BROCCOLI="yes",BROCCOLI="no")
+
+        if test "$BROCCOLI" != "no"; then
+            BROCCOLI=""
+            AC_CHECK_LIB(broccoli, bro_init,BROCCOLI="yes",BROCCOLI="no")
+        fi
+
+        if test "$BROCCOLI" != "no"; then
+            CFLAGS="${CFLAGS} -DBROCCOLI"
+        fi
+
+        if test "$BROCCOLI" = "no"; then
+            echo
+            echo "  ERROR! libbroccoli library not found"
+            echo
+            exit 1
+        fi
+    fi
+
   # libluajit
     AC_ARG_ENABLE(luajit,
 	        AS_HELP_STRING([--enable-luajit],[Enable Luajit support]),
