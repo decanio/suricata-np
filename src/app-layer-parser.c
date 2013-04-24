@@ -1258,6 +1258,9 @@ int AppLayerTransactionUpdateInspectId(Flow *f, char direction)
                 SCLogDebug("inspect_id %"PRIu16", avail_id %"PRIu16,
                         parser_state_store->inspect_id,
                         parser_state_store->avail_id);
+
+                /* new tx, so discard decoder events for the old */
+                AppLayerDecoderEventsResetEvents(parser_state_store->decoder_events);
             } else {
                 /* done but no more transactions available */
                 r = 1;
