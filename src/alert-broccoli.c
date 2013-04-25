@@ -153,6 +153,15 @@ bro_util_fill_v4_addr(BroAddr *a, uint32 addr)
   a->addr[3] = addr;
 }
 
+static void
+bro_util_fill_v6_addr(BroAddr *a, uint32_t *addr)
+{
+  if ( ! a )
+    return;
+
+  memcpy(a->addr, addr, sizeof(BroAddr));
+}
+
 TmEcode AlertBroccoliIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
     AlertBroccoliThread *aft = (AlertBroccoliThread *)data;
@@ -269,9 +278,8 @@ TmEcode AlertBroccoliIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
         bro_event_send(aft->ctx->bc, ev);
         bro_event_free(ev);
 
-        //SCMutexLock(&aft->ctx->mutex);
-
         aft->ctx->alerts++;
+
         SCMutexUnlock(&aft->ctx->mutex);
     }
 
@@ -281,7 +289,13 @@ TmEcode AlertBroccoliIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
 TmEcode AlertBroccoliIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
     AlertBroccoliThread *aft = (AlertBroccoliThread *)data;
+    BroEvent *ev;
+    BroAddr src_ip;
+    BroAddr dst_ip;
+    BroPort src_p, dst_p;
+    uint64 class, prio, gid, sid, rev;
     int i;
+    double ts;
 
     if (p->alerts.cnt == 0)
         return TM_ECODE_OK;
@@ -294,8 +308,102 @@ TmEcode AlertBroccoliIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
         }
 
         SCMutexLock(&aft->ctx->mutex);
+    	if (! (ev = bro_event_new("suricata_alert"))) {
+      	    return TM_ECODE_FAILED;
+    	}
+
+        /* First value */
+        BroRecord *packet_id = bro_record_new();
+        src_p.port_num = dst_p.port_num = 0;
+        /* Broccoli's protocol handling is sort of broken at the moment
+         * it segfaults when doing bro_record_add_val if not tcp, udp, or icmp
+         * waiting on ticket: http://tracker.icir.org/bro/ticket/278
+         */
+        src_p.port_proto = dst_p.port_proto = IPPROTO_TCP;
+        if(IPV6_GET_L4PROTO(p) != 255) {
+            src_p.port_proto = dst_p.port_proto = IPV6_GET_L4PROTO(p);
+            if(PKT_IS_ICMPV6(p)) {
+                src_p.port_num = htons(ICMPV6_GET_TYPE(p));
+                dst_p.port_num = htons(ICMPV6_GET_CODE(p));
+            } else {
+                src_p.port_num = p->sp;
+                dst_p.port_num = p->dp;
+            }
+        }
+        
+        bro_util_fill_v6_addr(&src_ip, GET_IPV6_SRC_ADDR(p));
+        bro_util_fill_v6_addr(&dst_ip, GET_IPV6_DST_ADDR(p));
+        bro_record_add_val(packet_id, "src_ip", BRO_TYPE_IPADDR, NULL, &src_ip);
+        bro_record_add_val(packet_id, "src_p",  BRO_TYPE_PORT,   NULL, &src_p);
+        bro_record_add_val(packet_id, "dst_ip", BRO_TYPE_IPADDR, NULL, &dst_ip);
+        bro_record_add_val(packet_id, "dst_p",  BRO_TYPE_PORT,   NULL, &dst_p);
+        //bro_event_add_val(ev, BRO_TYPE_RECORD, "PacketID", packet_id);
+        bro_event_add_val(ev, BRO_TYPE_RECORD, NULL, packet_id);
+        bro_record_free(packet_id);
+       
+        /* Second value */
+        BroRecord *sad = bro_record_new();
+        //uint32_t sensor_id_hl = ntohl(uevent->sensor_id);
+        uint64 sensor_id = 0;
+        prio = pa->s->prio;
+        gid = pa->s->gid;
+        sid = pa->s->id;
+        class = pa->s->class;
+        rev = pa->s->rev;
+        bro_record_add_val(sad, "sensor_id",          BRO_TYPE_COUNT, NULL, &sensor_id);
+        ts = bro_util_timeval_to_double(&p->ts);
+        bro_record_add_val(sad, "ts",                 BRO_TYPE_TIME,  NULL, &ts);
+        bro_record_add_val(sad, "signature_id",       BRO_TYPE_COUNT, NULL, &sid);
+        bro_record_add_val(sad, "generator_id",       BRO_TYPE_COUNT, NULL, &gid);
+        bro_record_add_val(sad, "signature_revision", BRO_TYPE_COUNT, NULL, &rev);
+        bro_record_add_val(sad, "classification_id",  BRO_TYPE_COUNT, NULL, &class);
+        BroString class_bs;
+        bro_string_init(&class_bs);
+        bro_string_set(&class_bs, pa->s->class_msg);
+        bro_record_add_val(sad, "classification",     BRO_TYPE_STRING, NULL, &class_bs);
+        bro_string_cleanup(&class_bs);
+        bro_record_add_val(sad, "priority_id",        BRO_TYPE_COUNT, NULL, &prio);
+        uint64 event_id_hl = 0;
+        bro_record_add_val(sad, "event_id",           BRO_TYPE_COUNT, NULL, &event_id_hl);
+
+        //BroSet *ref_set = bro_set_new();
+        //BroString ref_name_bs;
+        //rn = sn->refs;
+        //while(rn)
+        //{
+        //    bro_string_init(&ref_name_bs);
+        //    bro_string_set(&ref_name_bs, rn->system->name);
+        //    bro_set_insert(ref_set, BRO_TYPE_STRING, &ref_name_bs);
+        //    bro_string_cleanup(&ref_name_bs);
+        //    rn = rn->next;
+        //}
+        //bro_record_add_val(sad, "references", BRO_TYPE_SET, NULL, ref_set);
+        //bro_set_free(ref_set);
+        
+        //bro_event_add_val(ev, BRO_TYPE_RECORD, "alert_data", sad);
+        bro_event_add_val(ev, BRO_TYPE_RECORD, NULL, sad);
+        bro_record_free(sad);
+
+        /* Third value */
+        BroString msg_bs;
+        bro_string_init(&msg_bs);
+        bro_string_set(&msg_bs, pa->s->msg);
+        bro_event_add_val(ev, BRO_TYPE_STRING, NULL, &msg_bs);
+        bro_string_cleanup(&msg_bs);
+        
+        /* Fourth value */
+        BroString contents_bs;
+        bro_string_init(&contents_bs);
+        bro_string_set_data(&contents_bs, (uchar *) p->payload, p->payload_len);
+        bro_event_add_val(ev, BRO_TYPE_STRING, NULL, &contents_bs);
+        bro_string_cleanup(&contents_bs);
+        
+        /* send and free the event */
+        bro_event_send(aft->ctx->bc, ev);
+        bro_event_free(ev);
 
         aft->ctx->alerts++;
+
         SCMutexUnlock(&aft->ctx->mutex);
     }
 
@@ -311,12 +419,6 @@ TmEcode AlertBroccoliDecoderEvent(ThreadVars *tv, Packet *p, void *data, PacketQ
         return TM_ECODE_OK;
 
     for (i = 0; i < p->alerts.cnt; i++) {
-        PacketAlert *pa = &p->alerts.alerts[i];
-        if (unlikely(pa->s == NULL)) {
-            continue;
-        }
-
-
         SCMutexLock(&aft->ctx->mutex);
         aft->ctx->alerts++;
         SCMutexUnlock(&aft->ctx->mutex);
