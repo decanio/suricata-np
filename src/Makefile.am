@@ -221,6 +221,7 @@ source-erf-dag.c source-erf-dag.h \
 source-erf-file.c source-erf-file.h \
 source-ipfw.c source-ipfw.h \
 source-napatech.c source-napatech.h \
+source-netmap.c source-netmap.h \
 source-nfq.c source-nfq.h \
 source-pcap.c source-pcap.h \
 source-pcap-file.c source-pcap-file.h \
