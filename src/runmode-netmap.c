@@ -90,7 +90,7 @@ void RunModeIdsNetmapRegister(void)
 
 void NetmapDerefConfig(void *conf)
 {
-    AFPIfaceConfig *pfp = (AFPIfaceConfig *)conf;
+    NetmapIfaceConfig *pfp = (NetmapIfaceConfig *)conf;
     /* Pcap config is used only once but cost of this low. */
     if (SC_ATOMIC_SUB(pfp->ref, 1) == 0) {
         SCFree(pfp);
@@ -113,7 +113,7 @@ void *ParseNetmapConfig(const char *iface)
     ConfNode *if_root;
     ConfNode *if_default = NULL;
     ConfNode *netmap_node;
-    AFPIfaceConfig *aconf = SCMalloc(sizeof(*aconf));
+    NetmapIfaceConfig *aconf = SCMalloc(sizeof(*aconf));
 #if 0
     char *tmpclusterid;
 #endif
@@ -139,9 +139,11 @@ void *ParseNetmapConfig(const char *iface)
     aconf->threads = 1;
     SC_ATOMIC_INIT(aconf->ref);
     (void) SC_ATOMIC_ADD(aconf->ref, 1);
+#ifdef NOTYET
     aconf->buffer_size = 0;
     aconf->cluster_id = 1;
     aconf->cluster_type = PACKET_FANOUT_HASH;
+#endif
     aconf->promisc = 1;
     aconf->checksum_mode = CHECKSUM_VALIDATION_KERNEL;
     aconf->DerefFunc = NetmapDerefConfig;

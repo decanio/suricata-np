@@ -39,6 +39,19 @@
 #if 1
 typedef struct NetmapIfaceConfig_
 {
+    char iface[NETMAP_IFACE_NAME_LENGTH];
+    /* number of threads */
+    int threads;
+    /* promisc mode */
+    int promisc;
+    /* misc use flags including ring mode */
+    int flags;
+    int copy_mode;
+    ChecksumValidationMode checksum_mode;
+    char *bpf_filter;
+    char *out_iface;
+    SC_ATOMIC_DECLARE(unsigned int, ref);
+    void (*DerefFunc)(void *);
 } NetmapIfaceConfig;
 #else
 typedef struct AFPIfaceConfig_
