@@ -125,6 +125,7 @@
 #include "source-napatech.h"
 
 #include "source-af-packet.h"
+#include "source-netmap.h"
 
 #include "respond-reject.h"
 
@@ -538,6 +539,9 @@ void usage(const char *progname)
 #ifdef HAVE_AF_PACKET
     printf("\t--af-packet[=<dev>]                  : run in af-packet mode, no value select interfaces from suricata.yaml\n");
 #endif
+#ifdef HAVE_NETMAP
+    printf("\t--netmap[=<dev>]                     : run in netmap mode, no value select interfaces from suricata.yaml\n");
+#endif
 #ifdef HAVE_PFRING
     printf("\t--pfring[=<dev>]                     : run in pfring mode, use interfaces from suricata.yaml\n");
     printf("\t--pfring-int <dev>                   : run in pfring mode, use interface <dev>\n");
@@ -606,6 +610,9 @@ void SCPrintBuildInfo(void) {
 #endif
 #ifdef HAVE_PFRING
     strlcat(features, "PF_RING ", sizeof(features));
+#endif
+#ifdef HAVE_NETMAP
+    strlcat(features, "NETMAP ", sizeof(features));
 #endif
 #ifdef HAVE_AF_PACKET
     strlcat(features, "AF_PACKET ", sizeof(features));
@@ -795,6 +802,7 @@ int main(int argc, char **argv)
         {"pfring-cluster-id", required_argument, 0, 0},
         {"pfring-cluster-type", required_argument, 0, 0},
         {"af-packet", optional_argument, 0, 0},
+        {"netmap", optional_argument, 0, 0},
         {"pcap", optional_argument, 0, 0},
 #ifdef BUILD_UNIX_SOCKET
         {"unix-socket", optional_argument, 0, 0},
@@ -903,6 +911,38 @@ int main(int argc, char **argv)
 #else
                 SCLogError(SC_ERR_NO_AF_PACKET,"AF_PACKET not enabled. On Linux "
                         "host, make sure to pass --enable-af-packet to "
+                        "configure when building.");
+                exit(EXIT_FAILURE);
+#endif
+            } else if (strcmp((long_opts[option_index]).name , "netmap") == 0){
+#ifdef HAVE_NETMAP
+                if (run_mode == RUNMODE_UNKNOWN) {
+                    run_mode = RUNMODE_NETMAP;
+                    if (optarg) {
+                        LiveRegisterDevice(optarg);
+                        memset(pcap_dev, 0, sizeof(pcap_dev));
+                        strlcpy(pcap_dev, optarg,
+                                ((strlen(optarg) < sizeof(pcap_dev)) ?
+                                 (strlen(optarg) + 1) : sizeof(pcap_dev)));
+                    }
+                } else if (run_mode == RUNMODE_NETMAP) {
+                    SCLogWarning(SC_WARN_PCAP_MULTI_DEV_EXPERIMENTAL, "using "
+                            "multiple devices to get packets is experimental.");
+                    if (optarg) {
+                        LiveRegisterDevice(optarg);
+                    } else {
+                        SCLogInfo("Multiple netmap option without interface on each is useless");
+                        break;
+                    }
+                } else {
+                    SCLogError(SC_ERR_MULTIPLE_RUN_MODE, "more than one run mode "
+                            "has been specified");
+                    usage(argv[0]);
+                    exit(EXIT_FAILURE);
+                }
+#else
+                SCLogError(SC_ERR_NO_AF_PACKET,"NETMAP not enabled."
+                        "Make sure to pass --enable-netmap to "
                         "configure when building.");
                 exit(EXIT_FAILURE);
 #endif
@@ -1557,6 +1597,9 @@ int main(int argc, char **argv)
     /* napatech */
     TmModuleNapatechStreamRegister();
     TmModuleNapatechDecodeRegister();
+    /* netmap */
+    TmModuleReceiveNetmapRegister();
+    TmModuleDecodeNetmapRegister();
 
     /* stream engine */
     TmModuleStreamTcpRegister();

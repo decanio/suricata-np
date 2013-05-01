@@ -50,7 +50,7 @@
 #include "util-checksum.h"
 #include "util-ioctl.h"
 #include "tmqh-packetpool.h"
-#include "source-af-packet.h"
+#include "source-netmap.h"
 #include "runmodes.h"
 
 #ifdef HAVE_NETMAP
@@ -100,7 +100,7 @@ void TmModuleReceiveNetmapRegister (void) {
 }
 
 /**
- * \brief Registration Function for DecodeAFP.
+ * \brief Registration Function for DecodeNetmap.
  * \todo Unit tests are needed for this module.
  */
 void TmModuleDecodeNetmapRegister (void) {
@@ -160,7 +160,7 @@ union thdr {
 /**
  * \brief Structure to hold thread specific variables.
  */
-typedef struct AFPThreadVars_
+typedef struct NetmapThreadVars_
 {
     /* thread specific socket */
     int socket;
@@ -196,7 +196,7 @@ typedef struct AFPThreadVars_
 
     /* IPS stuff */
     char out_iface[AFP_IFACE_NAME_LENGTH];
-    AFPPeer *mpeer;
+    NetmapPeer *mpeer;
 
     int flags;
     uint16_t capture_kernel_packets;
@@ -216,33 +216,35 @@ typedef struct AFPThreadVars_
     unsigned int frame_offset;
     int ring_size;
 
-} AFPThreadVars;
+} NetmapThreadVars;
 
-TmEcode ReceiveAFP(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode ReceiveAFPThreadInit(ThreadVars *, void *, void **);
-void ReceiveAFPThreadExitStats(ThreadVars *, void *);
-TmEcode ReceiveAFPThreadDeinit(ThreadVars *, void *);
-TmEcode ReceiveAFPLoop(ThreadVars *tv, void *data, void *slot);
+TmEcode ReceiveNetmap(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+TmEcode ReceiveNetmapThreadInit(ThreadVars *, void *, void **);
+void ReceiveNetmapThreadExitStats(ThreadVars *, void *);
+TmEcode ReceiveNetmapThreadDeinit(ThreadVars *, void *);
+TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot);
 
-TmEcode DecodeAFPThreadInit(ThreadVars *, void *, void **);
-TmEcode DecodeAFP(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+TmEcode DecodeNetmapThreadInit(ThreadVars *, void *, void **);
+TmEcode DecodeNetmap(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
 
-TmEcode AFPSetBPFFilter(AFPThreadVars *ptv);
-static int AFPGetIfnumByDev(int fd, const char *ifname, int verbose);
-static int AFPGetDevFlags(int fd, const char *ifname);
-static int AFPDerefSocket(AFPPeer* peer);
-static int AFPRefSocket(AFPPeer* peer);
+TmEcode NetmapSetBPFFilter(NetmapThreadVars *ptv);
+static int NetmapGetIfnumByDev(int fd, const char *ifname, int verbose);
+static int NetmapGetDevFlags(int fd, const char *ifname);
+#if 0
+static int NetmapDerefSocket(NetmapPeer* peer);
+static int NetmapRefSocket(NetmapPeer* peer);
+#endif
 
 /**
- * \brief Registration Function for RecieveAFP.
+ * \brief Registration Function for RecieveNetmap.
  * \todo Unit tests are needed for this module.
  */
-void TmModuleReceiveAFPRegister (void) {
-    tmm_modules[TMM_RECEIVENETMAP].name = "ReceiveAFP";
-    tmm_modules[TMM_RECEIVENETMAP].ThreadInit = ReceiveAFPThreadInit;
+void TmModuleReceiveNetmapRegister (void) {
+    tmm_modules[TMM_RECEIVENETMAP].name = "ReceiveNetmap";
+    tmm_modules[TMM_RECEIVENETMAP].ThreadInit = ReceiveNetmapThreadInit;
     tmm_modules[TMM_RECEIVENETMAP].Func = NULL;
-    tmm_modules[TMM_RECEIVENETMAP].PktAcqLoop = ReceiveAFPLoop;
-    tmm_modules[TMM_RECEIVENETMAP].ThreadExitPrintStats = ReceiveAFPThreadExitStats;
+    tmm_modules[TMM_RECEIVENETMAP].PktAcqLoop = ReceiveNetmapLoop;
+    tmm_modules[TMM_RECEIVENETMAP].ThreadExitPrintStats = ReceiveNetmapThreadExitStats;
     tmm_modules[TMM_RECEIVENETMAP].ThreadDeinit = NULL;
     tmm_modules[TMM_RECEIVENETMAP].RegisterTests = NULL;
     tmm_modules[TMM_RECEIVENETMAP].cap_flags = SC_CAP_NET_RAW;
@@ -251,11 +253,11 @@ void TmModuleReceiveAFPRegister (void) {
 
 
 /**
- *  \defgroup afppeers AFP peers list
+ *  \defgroup afppeers Netmap peers list
  *
  * AF_PACKET has an IPS mode were interface are peered: packet from
- * on interface are sent the peered interface and the other way. The ::AFPPeer
- * list is maitaining the list of peers. Each ::AFPPeer is storing the needed
+ * on interface are sent the peered interface and the other way. The ::NetmapPeer
+ * list is maitaining the list of peers. Each ::NetmapPeer is storing the needed
  * information to be able to send packet on the interface.
  * A element of the list must not be destroyed during the run of Suricata as it
  * is used by ::Packet and other threads.
@@ -263,51 +265,53 @@ void TmModuleReceiveAFPRegister (void) {
  *  @{
  */
 
-typedef struct AFPPeersList_ {
-    TAILQ_HEAD(, AFPPeer_) peers; /**< Head of list of fragments. */
+typedef struct NetmapPeersList_ {
+    TAILQ_HEAD(, NetmapPeer_) peers; /**< Head of list of fragments. */
     int cnt;
     int peered;
     int turn; /**< Next value for initialisation order */
     SC_ATOMIC_DECLARE(int, reached); /**< Counter used to synchronize start */
-} AFPPeersList;
+} NetmapPeersList;
 
 /**
  * \brief Update the peer.
  *
- * Update the AFPPeer of a thread ie set new state, socket number
+ * Update the NetmapPeer of a thread ie set new state, socket number
  * or iface index.
  *
  */
-void AFPPeerUpdate(AFPThreadVars *ptv)
+void NetmapPeerUpdate(NetmapThreadVars *ptv)
 {
     if (ptv->mpeer == NULL) {
         return;
     }
-    (void)SC_ATOMIC_SET(ptv->mpeer->if_idx, AFPGetIfnumByDev(ptv->socket, ptv->iface, 0));
-    (void)SC_ATOMIC_SET(ptv->mpeer->socket, ptv->socket);
+    (void)SC_ATOMIC_SET(ptv->mpeer->if_idx, NetmapGetIfnumByDev(ptv->socket, ptv->iface, 0));
+    //(void)SC_ATOMIC_SET(ptv->mpeer->socket, ptv->socket);
     (void)SC_ATOMIC_SET(ptv->mpeer->state, ptv->afp_state);
 }
 
 /**
- * \brief Clean and free ressource used by an ::AFPPeer
+ * \brief Clean and free ressource used by an ::NetmapPeer
  */
-void AFPPeerClean(AFPPeer *peer)
+void NetmapPeerClean(NetmapPeer *peer)
 {
+#if 0
     if (peer->flags & AFP_SOCK_PROTECT)
         SCMutexDestroy(&peer->sock_protect);
     SC_ATOMIC_DESTROY(peer->socket);
+#endif
     SC_ATOMIC_DESTROY(peer->if_idx);
     SC_ATOMIC_DESTROY(peer->state);
     SCFree(peer);
 }
 
-AFPPeersList peerslist;
+NetmapPeersList peerslist;
 
 
 /**
- * \brief Init the global list of ::AFPPeer
+ * \brief Init the global list of ::NetmapPeer
  */
-TmEcode AFPPeersListInit()
+TmEcode NetmapPeersListInit()
 {
     SCEnter();
     TAILQ_INIT(&peerslist.peers);
@@ -320,11 +324,11 @@ TmEcode AFPPeersListInit()
 }
 
 /**
- * \brief Check that all ::AFPPeer got a peer
+ * \brief Check that all ::NetmapPeer got a peer
  *
  * \retval TM_ECODE_FAILED if some threads are not peered or TM_ECODE_OK else.
  */
-TmEcode AFPPeersListCheck()
+TmEcode NetmapPeersListCheck()
 {
 #define AFP_PEERS_MAX_TRY 4
 #define AFP_PEERS_WAIT 20000
@@ -343,31 +347,35 @@ TmEcode AFPPeersListCheck()
 }
 
 /**
- * \brief Declare a new AFP thread to AFP peers list.
+ * \brief Declare a new AFP thread to Netmap peers list.
  */
-TmEcode AFPPeersListAdd(AFPThreadVars *ptv)
+TmEcode NetmapPeersListAdd(NetmapThreadVars *ptv)
 {
     SCEnter();
-    AFPPeer *peer = SCMalloc(sizeof(AFPPeer));
-    AFPPeer *pitem;
+    NetmapPeer *peer = SCMalloc(sizeof(NetmapPeer));
+    NetmapPeer *pitem;
     int mtu, out_mtu;
 
     if (unlikely(peer == NULL)) {
         SCReturnInt(TM_ECODE_FAILED);
     }
-    memset(peer, 0, sizeof(AFPPeer));
+    memset(peer, 0, sizeof(NetmapPeer));
+#if 0
     SC_ATOMIC_INIT(peer->socket);
     SC_ATOMIC_INIT(peer->sock_usage);
+#endif
     SC_ATOMIC_INIT(peer->if_idx);
     SC_ATOMIC_INIT(peer->state);
     peer->flags = ptv->flags;
     peer->turn = peerslist.turn++;
 
+#if 0
     if (peer->flags & AFP_SOCK_PROTECT) {
         SCMutexInit(&peer->sock_protect, NULL);
     }
 
     (void)SC_ATOMIC_SET(peer->sock_usage, 0);
+#endif
     (void)SC_ATOMIC_SET(peer->state, AFP_STATE_DOWN);
     strlcpy(peer->iface, ptv->iface, AFP_IFACE_NAME_LENGTH);
     ptv->mpeer = peer;
@@ -400,12 +408,12 @@ TmEcode AFPPeersListAdd(AFPThreadVars *ptv)
         }
     }
 
-    AFPPeerUpdate(ptv);
+    NetmapPeerUpdate(ptv);
 
     SCReturnInt(TM_ECODE_OK);
 }
 
-int AFPPeersListWaitTurn(AFPPeer *peer)
+int NetmapPeersListWaitTurn(NetmapPeer *peer)
 {
     /* If turn is zero, we already have started threads once */
     if (peerslist.turn == 0)
@@ -416,15 +424,15 @@ int AFPPeersListWaitTurn(AFPPeer *peer)
     return 1;
 }
 
-void AFPPeersListReachedInc()
+void NetmapPeersListReachedInc()
 {
     if (peerslist.turn == 0)
         return;
 
     if (SC_ATOMIC_ADD(peerslist.reached, 1) == peerslist.turn) {
-        SCLogInfo("All AFP capture threads are running.");
+        SCLogInfo("All Netmap capture threads are running.");
         (void)SC_ATOMIC_SET(peerslist.reached, 0);
-        /* Set turn to 0 to skip syncrhonization when ReceiveAFPLoop is
+        /* Set turn to 0 to skip syncrhonization when ReceiveNetmapLoop is
          * restarted.
          */
         peerslist.turn = 0;
@@ -434,13 +442,13 @@ void AFPPeersListReachedInc()
 /**
  * \brief Clean the global peers list.
  */
-void AFPPeersListClean()
+void NetmapPeersListClean()
 {
-    AFPPeer *pitem;
+    NetmapPeer *pitem;
 
     while ((pitem = TAILQ_FIRST(&peerslist.peers))) {
         TAILQ_REMOVE(&peerslist.peers, pitem, next);
-        AFPPeerClean(pitem);
+        NetmapPeerClean(pitem);
     }
 }
 
@@ -449,13 +457,13 @@ void AFPPeersListClean()
  */
 
 /**
- * \brief Registration Function for DecodeAFP.
+ * \brief Registration Function for DecodeNetmap.
  * \todo Unit tests are needed for this module.
  */
-void TmModuleDecodeAFPRegister (void) {
-    tmm_modules[TMM_DECODENETMAP].name = "DecodeAFP";
-    tmm_modules[TMM_DECODENETMAP].ThreadInit = DecodeAFPThreadInit;
-    tmm_modules[TMM_DECODENETMAP].Func = DecodeAFP;
+void TmModuleDecodeNetmapRegister (void) {
+    tmm_modules[TMM_DECODENETMAP].name = "DecodeNetmap";
+    tmm_modules[TMM_DECODENETMAP].ThreadInit = DecodeNetmapThreadInit;
+    tmm_modules[TMM_DECODENETMAP].Func = DecodeNetmap;
     tmm_modules[TMM_DECODENETMAP].ThreadExitPrintStats = NULL;
     tmm_modules[TMM_DECODENETMAP].ThreadDeinit = NULL;
     tmm_modules[TMM_DECODENETMAP].RegisterTests = NULL;
@@ -464,9 +472,9 @@ void TmModuleDecodeAFPRegister (void) {
 }
 
 
-static int AFPCreateSocket(AFPThreadVars *ptv, char *devname, int verbose);
+static int NetmapCreateSocket(NetmapThreadVars *ptv, char *devname, int verbose);
 
-static inline void AFPDumpCounters(AFPThreadVars *ptv)
+static inline void NetmapDumpCounters(NetmapThreadVars *ptv)
 {
 #ifdef PACKET_STATISTICS
     struct tpacket_stats kstats;
@@ -487,12 +495,12 @@ static inline void AFPDumpCounters(AFPThreadVars *ptv)
  * \brief AF packet read function.
  *
  * This function fills
- * From here the packets are picked up by the DecodeAFP thread.
+ * From here the packets are picked up by the DecodeNetmap thread.
  *
- * \param user pointer to AFPThreadVars
+ * \param user pointer to NetmapThreadVars
  * \retval TM_ECODE_FAILED on failure and TM_ECODE_OK on success
  */
-int AFPRead(AFPThreadVars *ptv)
+int NetmapRead(NetmapThreadVars *ptv)
 {
     Packet *p = NULL;
     /* XXX should try to use read that get directly to packet */
@@ -606,7 +614,7 @@ int AFPRead(AFPThreadVars *ptv)
     SCReturnInt(AFP_READ_OK);
 }
 
-TmEcode AFPWritePacket(Packet *p)
+TmEcode NetmapWritePacket(Packet *p)
 {
     struct sockaddr_ll socket_address;
     int socket;
@@ -651,17 +659,19 @@ TmEcode AFPWritePacket(Packet *p)
     return TM_ECODE_OK;
 }
 
-TmEcode AFPReleaseDataFromRing(ThreadVars *t, Packet *p)
+TmEcode NetmapReleaseDataFromRing(ThreadVars *t, Packet *p)
 {
     int ret = TM_ECODE_OK;
     /* Need to be in copy mode and need to detect early release
        where Ethernet header could not be set (and pseudo packet) */
     if ((p->afp_v.copy_mode != AFP_COPY_MODE_NONE) && !PKT_IS_PSEUDOPKT(p)) {
-        ret = AFPWritePacket(p);
+        ret = NetmapWritePacket(p);
     }
 
-    if (AFPDerefSocket(p->afp_v.mpeer) == 0)
+#if 0
+    if (NetmapDerefSocket(p->afp_v.mpeer) == 0)
         goto cleanup;
+#endif
 
     if (p->afp_v.relptr) {
         union thdr h;
@@ -669,7 +679,9 @@ TmEcode AFPReleaseDataFromRing(ThreadVars *t, Packet *p)
         h.h2->tp_status = TP_STATUS_KERNEL;
     }
 
+#if 0
 cleanup:
+#endif
     AFPV_CLEANUP(&p->afp_v);
     return ret;
 }
@@ -678,12 +690,12 @@ cleanup:
  * \brief AF packet read function for ring
  *
  * This function fills
- * From here the packets are picked up by the DecodeAFP thread.
+ * From here the packets are picked up by the DecodeNetmap thread.
  *
- * \param user pointer to AFPThreadVars
+ * \param user pointer to NetmapThreadVars
  * \retval TM_ECODE_FAILED on failure and TM_ECODE_OK on success
  */
-int AFPReadFromRing(AFPThreadVars *ptv)
+int NetmapReadFromRing(NetmapThreadVars *ptv)
 {
     Packet *p = NULL;
     union thdr h;
@@ -774,13 +786,17 @@ int AFPReadFromRing(AFPThreadVars *ptv)
                 SCReturnInt(AFP_FAILURE);
             } else {
                 p->afp_v.relptr = h.raw;
-                p->ReleaseData = AFPReleaseDataFromRing;
+                p->ReleaseData = NetmapReleaseDataFromRing;
+#if 0
                 p->afp_v.mpeer = ptv->mpeer;
-                AFPRefSocket(ptv->mpeer);
+                NetmapRefSocket(ptv->mpeer);
+#endif
 
                 p->afp_v.copy_mode = ptv->copy_mode;
                 if (p->afp_v.copy_mode != AFP_COPY_MODE_NONE) {
+#if 0
                     p->afp_v.peer = ptv->mpeer->peer;
+#endif
                 } else {
                     p->afp_v.peer = NULL;
                 }
@@ -816,7 +832,7 @@ int AFPReadFromRing(AFPThreadVars *ptv)
         }
         if (h.h2->tp_status & TP_STATUS_LOSING) {
             emergency_flush = 1;
-            AFPDumpCounters(ptv);
+            NetmapDumpCounters(ptv);
         }
 
         /* release frame if not in zero copy mode */
@@ -844,12 +860,13 @@ next_frame:
     SCReturnInt(AFP_READ_OK);
 }
 
+#if 0
 /**
  * \brief Reference socket
  *
  * \retval O in case of failure, 1 in case of success
  */
-static int AFPRefSocket(AFPPeer* peer)
+static int NetmapRefSocket(NetmapPeer* peer)
 {
     if (unlikely(peer == NULL))
         return 0;
@@ -857,14 +874,16 @@ static int AFPRefSocket(AFPPeer* peer)
     (void)SC_ATOMIC_ADD(peer->sock_usage, 1);
     return 1;
 }
+#endif
 
 
+#if 0
 /**
  * \brief Dereference socket
  *
  * \retval 1 if socket is still alive, 0 if not
  */
-static int AFPDerefSocket(AFPPeer* peer)
+static int NetmapDerefSocket(NetmapPeer* peer)
 {
     if (SC_ATOMIC_SUB(peer->sock_usage, 1) == 0) {
         if (SC_ATOMIC_GET(peer->state) == AFP_STATE_DOWN) {
@@ -875,13 +894,14 @@ static int AFPDerefSocket(AFPPeer* peer)
     }
     return 1;
 }
+#endif
 
-void AFPSwitchState(AFPThreadVars *ptv, int state)
+void NetmapSwitchState(NetmapThreadVars *ptv, int state)
 {
     ptv->afp_state = state;
     ptv->down_count = 0;
 
-    AFPPeerUpdate(ptv);
+    NetmapPeerUpdate(ptv);
 
     /* Do cleaning if switching to down state */
     if (state == AFP_STATE_DOWN) {
@@ -890,6 +910,7 @@ void AFPSwitchState(AFPThreadVars *ptv, int state)
             SCFree(ptv->frame_buf);
             ptv->frame_buf = NULL;
         }
+#if 0
         if (ptv->socket != -1) {
             /* we need to wait for all packets to return data */
             if (SC_ATOMIC_SUB(ptv->mpeer->sock_usage, 1) == 0) {
@@ -898,10 +919,13 @@ void AFPSwitchState(AFPThreadVars *ptv, int state)
                 ptv->socket = -1;
             }
         }
+#endif
     }
+#if 0
     if (state == AFP_STATE_UP) {
          (void)SC_ATOMIC_SET(ptv->mpeer->sock_usage, 1);
     }
+#endif
 }
 
 /**
@@ -910,19 +934,21 @@ void AFPSwitchState(AFPThreadVars *ptv, int state)
  * \retval 0 in case of success, negative if error occurs or a condition
  * is not met.
  */
-static int AFPTryReopen(AFPThreadVars *ptv)
+static int NetmapTryReopen(NetmapThreadVars *ptv)
 {
     int afp_activate_r;
 
     ptv->down_count++;
 
 
+#if 0
     /* Don't reconnect till we have packet that did not release data */
     if (SC_ATOMIC_GET(ptv->mpeer->sock_usage) != 0) {
         return -1;
     }
+#endif
 
-    afp_activate_r = AFPCreateSocket(ptv, ptv->iface, 0);
+    afp_activate_r = NetmapCreateSocket(ptv, ptv->iface, 0);
     if (afp_activate_r != 0) {
         if (ptv->down_count % AFP_DOWN_COUNTER_INTERVAL == 0) {
             SCLogWarning(SC_ERR_AFP_CREATE, "Can not open iface '%s'",
@@ -938,12 +964,12 @@ static int AFPTryReopen(AFPThreadVars *ptv)
 /**
  *  \brief Main AF_PACKET reading Loop function
  */
-TmEcode ReceiveAFPLoop(ThreadVars *tv, void *data, void *slot)
+TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
 {
     SCEnter();
 
     uint16_t packet_q_len = 0;
-    AFPThreadVars *ptv = (AFPThreadVars *)data;
+    NetmapThreadVars *ptv = (NetmapThreadVars *)data;
     struct pollfd fds;
     int r;
     TmSlot *s = (TmSlot *)slot;
@@ -954,14 +980,14 @@ TmEcode ReceiveAFPLoop(ThreadVars *tv, void *data, void *slot)
 
     if (ptv->afp_state == AFP_STATE_DOWN) {
         /* Wait for our turn, threads before us must have opened the socket */
-        while (AFPPeersListWaitTurn(ptv->mpeer)) {
+        while (NetmapPeersListWaitTurn(ptv->mpeer)) {
             usleep(1000);
         }
-        r = AFPCreateSocket(ptv, ptv->iface, 1);
+        r = NetmapCreateSocket(ptv, ptv->iface, 1);
         if (r < 0) {
             SCLogError(SC_ERR_AFP_CREATE, "Couldn't init AF_PACKET socket");
         }
-        AFPPeersListReachedInc();
+        NetmapPeersListReachedInc();
     }
     if (ptv->afp_state == AFP_STATE_UP) {
         SCLogInfo("Thread %s using socket %d", tv->name, ptv->socket);
@@ -981,7 +1007,7 @@ TmEcode ReceiveAFPLoop(ThreadVars *tv, void *data, void *slot)
                     dbreak = 1;
                     break;
                 }
-                r = AFPTryReopen(ptv);
+                r = NetmapTryReopen(ptv);
                 fds.fd = ptv->socket;
             } while (r < 0);
             if (dbreak == 1)
@@ -1006,7 +1032,7 @@ TmEcode ReceiveAFPLoop(ThreadVars *tv, void *data, void *slot)
         if (r > 0 &&
                 (fds.revents & (POLLHUP|POLLRDHUP|POLLERR|POLLNVAL))) {
             if (fds.revents & (POLLHUP | POLLRDHUP)) {
-                AFPSwitchState(ptv, AFP_STATE_DOWN);
+                NetmapSwitchState(ptv, AFP_STATE_DOWN);
                 continue;
             } else if (fds.revents & POLLERR) {
                 char c;
@@ -1016,49 +1042,49 @@ TmEcode ReceiveAFPLoop(ThreadVars *tv, void *data, void *slot)
                 SCLogError(SC_ERR_AFP_READ,
                            "Error reading data from iface '%s': (%d" PRIu32 ") %s",
                            ptv->iface, errno, strerror(errno));
-                AFPSwitchState(ptv, AFP_STATE_DOWN);
+                NetmapSwitchState(ptv, AFP_STATE_DOWN);
                 continue;
             } else if (fds.revents & POLLNVAL) {
                 SCLogError(SC_ERR_AFP_READ, "Invalid polling request");
-                AFPSwitchState(ptv, AFP_STATE_DOWN);
+                NetmapSwitchState(ptv, AFP_STATE_DOWN);
                 continue;
             }
         } else if (r > 0) {
             if (ptv->flags & AFP_RING_MODE) {
-                r = AFPReadFromRing(ptv);
+                r = NetmapReadFromRing(ptv);
             } else {
-                /* AFPRead will call TmThreadsSlotProcessPkt on read packets */
-                r = AFPRead(ptv);
+                /* NetmapRead will call TmThreadsSlotProcessPkt on read packets */
+                r = NetmapRead(ptv);
             }
             switch (r) {
                 case AFP_READ_FAILURE:
-                    /* AFPRead in error: best to reset the socket */
+                    /* NetmapRead in error: best to reset the socket */
                     SCLogError(SC_ERR_AFP_READ,
                            "AFPRead error reading data from iface '%s': (%d" PRIu32 ") %s",
                            ptv->iface, errno, strerror(errno));
-                    AFPSwitchState(ptv, AFP_STATE_DOWN);
+                    NetmapSwitchState(ptv, AFP_STATE_DOWN);
                     continue;
                 case AFP_FAILURE:
-                    AFPSwitchState(ptv, AFP_STATE_DOWN);
+                    NetmapSwitchState(ptv, AFP_STATE_DOWN);
                     SCReturnInt(TM_ECODE_FAILED);
                     break;
                 case AFP_READ_OK:
                     /* Trigger one dump of stats every second */
                     TimeGet(&current_time);
                     if (current_time.tv_sec != last_dump) {
-                        AFPDumpCounters(ptv);
+                        NetmapDumpCounters(ptv);
                         last_dump = current_time.tv_sec;
                     }
                     break;
                 case AFP_KERNEL_DROP:
-                    AFPDumpCounters(ptv);
+                    NetmapDumpCounters(ptv);
                     break;
             }
         } else if ((r < 0) && (errno != EINTR)) {
             SCLogError(SC_ERR_AFP_READ, "Error reading data from iface '%s': (%d" PRIu32 ") %s",
                        ptv->iface,
                        errno, strerror(errno));
-            AFPSwitchState(ptv, AFP_STATE_DOWN);
+            NetmapSwitchState(ptv, AFP_STATE_DOWN);
             continue;
         }
         SCPerfSyncCountersIfSignalled(tv, 0);
@@ -1067,7 +1093,7 @@ TmEcode ReceiveAFPLoop(ThreadVars *tv, void *data, void *slot)
     SCReturnInt(TM_ECODE_OK);
 }
 
-static int AFPGetDevFlags(int fd, const char *ifname)
+static int NetmapGetDevFlags(int fd, const char *ifname)
 {
     struct ifreq ifr;
 
@@ -1084,7 +1110,7 @@ static int AFPGetDevFlags(int fd, const char *ifname)
 }
 
 
-static int AFPGetIfnumByDev(int fd, const char *ifname, int verbose)
+static int NetmapGetIfnumByDev(int fd, const char *ifname, int verbose)
 {
     struct ifreq ifr;
 
@@ -1101,7 +1127,7 @@ static int AFPGetIfnumByDev(int fd, const char *ifname, int verbose)
     return ifr.ifr_ifindex;
 }
 
-static int AFPGetDevLinktype(int fd, const char *ifname)
+static int NetmapGetDevLinktype(int fd, const char *ifname)
 {
     struct ifreq ifr;
 
@@ -1124,7 +1150,7 @@ static int AFPGetDevLinktype(int fd, const char *ifname)
     }
 }
 
-static int AFPComputeRingParams(AFPThreadVars *ptv, int order)
+static int NetmapComputeRingParams(NetmapThreadVars *ptv, int order)
 {
     /* Compute structure:
        Target is to store all pending packets
@@ -1169,7 +1195,7 @@ frame size: TPACKET_ALIGN(snaplen + TPACKET_ALIGN(TPACKET_ALIGN(tp_hdrlen) + siz
     return 1;
 }
 
-static int AFPCreateSocket(AFPThreadVars *ptv, char *devname, int verbose)
+static int NetmapCreateSocket(NetmapThreadVars *ptv, char *devname, int verbose)
 {
     int r;
     struct packet_mreq sock_params;
@@ -1184,7 +1210,7 @@ static int AFPCreateSocket(AFPThreadVars *ptv, char *devname, int verbose)
         SCLogError(SC_ERR_AFP_CREATE, "Couldn't create a AF_PACKET socket, error %s", strerror(errno));
         goto error;
     }
-    if_idx = AFPGetIfnumByDev(ptv->socket, devname, verbose);
+    if_idx = NetmapGetIfnumByDev(ptv->socket, devname, verbose);
     /* bind socket */
     memset(&bind_address, 0, sizeof(bind_address));
     bind_address.sll_family = AF_PACKET;
@@ -1254,7 +1280,7 @@ static int AFPCreateSocket(AFPThreadVars *ptv, char *devname, int verbose)
         goto frame_err;
     }
 
-    int if_flags = AFPGetDevFlags(ptv->socket, ptv->iface);
+    int if_flags = NetmapGetDevFlags(ptv->socket, ptv->iface);
     if (if_flags == -1) {
         if (verbose) {
             SCLogError(SC_ERR_AFP_READ,
@@ -1297,7 +1323,7 @@ static int AFPCreateSocket(AFPThreadVars *ptv, char *devname, int verbose)
         /* Allocate RX ring */
 #define DEFAULT_ORDER 3
         for (order = DEFAULT_ORDER; order >= 0; order--) {
-            if (AFPComputeRingParams(ptv, order) != 1) {
+            if (NetmapComputeRingParams(ptv, order) != 1) {
                 SCLogInfo("Ring parameter are incorrect. Please correct the devel");
             }
 
@@ -1372,7 +1398,7 @@ static int AFPCreateSocket(AFPThreadVars *ptv, char *devname, int verbose)
     }
 #endif
 
-    ptv->datalink = AFPGetDevLinktype(ptv->socket, ptv->iface);
+    ptv->datalink = NetmapGetDevLinktype(ptv->socket, ptv->iface);
     switch (ptv->datalink) {
         case ARPHRD_PPP:
         case ARPHRD_ATM:
@@ -1380,14 +1406,14 @@ static int AFPCreateSocket(AFPThreadVars *ptv, char *devname, int verbose)
     }
 
     TmEcode rc;
-    rc = AFPSetBPFFilter(ptv);
+    rc = NetmapSetBPFFilter(ptv);
     if (rc == TM_ECODE_FAILED) {
         SCLogError(SC_ERR_AFP_CREATE, "Set AF_PACKET bpf filter \"%s\" failed.", ptv->bpf_filter);
         goto frame_err;
     }
 
     /* Init is ok */
-    AFPSwitchState(ptv, AFP_STATE_UP);
+    NetmapSwitchState(ptv, AFP_STATE_UP);
     return 0;
 
 frame_err:
@@ -1402,7 +1428,7 @@ error:
     return -1;
 }
 
-TmEcode AFPSetBPFFilter(AFPThreadVars *ptv)
+TmEcode NetmapSetBPFFilter(NetmapThreadVars *ptv)
 {
     struct bpf_program filter;
     struct sock_fprog  fcode;
@@ -1450,32 +1476,36 @@ TmEcode AFPSetBPFFilter(AFPThreadVars *ptv)
 
 
 /**
- * \brief Init function for ReceiveAFP.
+ * \brief Init function for ReceiveNetmap.
  *
  * \param tv pointer to ThreadVars
  * \param initdata pointer to the interface passed from the user
- * \param data pointer gets populated with AFPThreadVars
+ * \param data pointer gets populated with NetmapThreadVars
  *
- * \todo Create a general AFP setup function.
+ * \todo Create a general Netmap setup function.
  */
-TmEcode ReceiveAFPThreadInit(ThreadVars *tv, void *initdata, void **data) {
+TmEcode ReceiveNetmapThreadInit(ThreadVars *tv, void *initdata, void **data) {
     SCEnter();
-    AFPIfaceConfig *afpconfig = initdata;
+    NetmapIfaceConfig *afpconfig = initdata;
 
     if (initdata == NULL) {
         SCLogError(SC_ERR_INVALID_ARGUMENT, "initdata == NULL");
         SCReturnInt(TM_ECODE_FAILED);
     }
 
-    AFPThreadVars *ptv = SCMalloc(sizeof(AFPThreadVars));
+    NetmapThreadVars *ptv = SCMalloc(sizeof(NetmapThreadVars));
     if (unlikely(ptv == NULL)) {
+#if 0
         afpconfig->DerefFunc(afpconfig);
+#endif
         SCReturnInt(TM_ECODE_FAILED);
     }
-    memset(ptv, 0, sizeof(AFPThreadVars));
+    memset(ptv, 0, sizeof(NetmapThreadVars));
 
     ptv->tv = tv;
     ptv->cooked = 0;
+
+#ifdef NOTYET
 
     strlcpy(ptv->iface, afpconfig->iface, AFP_IFACE_NAME_LENGTH);
     ptv->iface[AFP_IFACE_NAME_LENGTH - 1]= '\0';
@@ -1522,6 +1552,7 @@ TmEcode ReceiveAFPThreadInit(ThreadVars *tv, void *initdata, void **data) {
             "NULL");
 #endif
 
+#endif /* NOTYET */
     char *active_runmode = RunmodeGetActive();
 
     if (active_runmode && !strcmp("workers", active_runmode)) {
@@ -1539,6 +1570,7 @@ TmEcode ReceiveAFPThreadInit(ThreadVars *tv, void *initdata, void **data) {
         SCLogInfo("Enabling zero copy mode by using data release call");
     }
 
+#ifdef NOTYET
     ptv->copy_mode = afpconfig->copy_mode;
     if (ptv->copy_mode != AFP_COPY_MODE_NONE) {
         strlcpy(ptv->out_iface, afpconfig->out_iface, AFP_IFACE_NAME_LENGTH);
@@ -1549,18 +1581,23 @@ TmEcode ReceiveAFPThreadInit(ThreadVars *tv, void *initdata, void **data) {
                       " in dropping all non matching packets.");
         }
     }
+#endif /* NOTYET */
 
 
-    if (AFPPeersListAdd(ptv) == TM_ECODE_FAILED) {
+    if (NetmapPeersListAdd(ptv) == TM_ECODE_FAILED) {
         SCFree(ptv);
+#if 0
         afpconfig->DerefFunc(afpconfig);
+#endif
         SCReturnInt(TM_ECODE_FAILED);
     }
 
 #define T_DATA_SIZE 70000
     ptv->data = SCMalloc(T_DATA_SIZE);
     if (ptv->data == NULL) {
+#if 0
         afpconfig->DerefFunc(afpconfig);
+#endif
         SCFree(ptv);
         SCReturnInt(TM_ECODE_FAILED);
     }
@@ -1569,21 +1606,23 @@ TmEcode ReceiveAFPThreadInit(ThreadVars *tv, void *initdata, void **data) {
 
     *data = (void *)ptv;
 
+#ifdef NOTYET
     afpconfig->DerefFunc(afpconfig);
+#endif
     SCReturnInt(TM_ECODE_OK);
 }
 
 /**
  * \brief This function prints stats to the screen at exit.
  * \param tv pointer to ThreadVars
- * \param data pointer that gets cast into AFPThreadVars for ptv
+ * \param data pointer that gets cast into NetmapThreadVars for ptv
  */
-void ReceiveAFPThreadExitStats(ThreadVars *tv, void *data) {
+void ReceiveNetmapThreadExitStats(ThreadVars *tv, void *data) {
     SCEnter();
-    AFPThreadVars *ptv = (AFPThreadVars *)data;
+    NetmapThreadVars *ptv = (NetmapThreadVars *)data;
 
 #ifdef PACKET_STATISTICS
-    AFPDumpCounters(ptv);
+    NetmapDumpCounters(ptv);
     SCLogInfo("(%s) Kernel: Packets %" PRIu64 ", dropped %" PRIu64 "",
             tv->name,
             (uint64_t) SCPerfGetLocalCounterValue(ptv->capture_kernel_packets, tv->sc_perf_pca),
@@ -1596,12 +1635,12 @@ void ReceiveAFPThreadExitStats(ThreadVars *tv, void *data) {
 /**
  * \brief DeInit function closes af packet socket at exit.
  * \param tv pointer to ThreadVars
- * \param data pointer that gets cast into AFPThreadVars for ptv
+ * \param data pointer that gets cast into NetmapThreadVars for ptv
  */
-TmEcode ReceiveAFPThreadDeinit(ThreadVars *tv, void *data) {
-    AFPThreadVars *ptv = (AFPThreadVars *)data;
+TmEcode ReceiveNetmapThreadDeinit(ThreadVars *tv, void *data) {
+    NetmapThreadVars *ptv = (NetmapThreadVars *)data;
 
-    AFPSwitchState(ptv, AFP_STATE_DOWN);
+    NetmapSwitchState(ptv, AFP_STATE_DOWN);
 
     if (ptv->data != NULL) {
         SCFree(ptv->data);
@@ -1617,15 +1656,15 @@ TmEcode ReceiveAFPThreadDeinit(ThreadVars *tv, void *data) {
 /**
  * \brief This function passes off to link type decoders.
  *
- * DecodeAFP reads packets from the PacketQueue and passes
+ * DecodeNetmap reads packets from the PacketQueue and passes
  * them off to the proper link type decoder.
  *
  * \param t pointer to ThreadVars
  * \param p pointer to the current packet
- * \param data pointer that gets cast into AFPThreadVars for ptv
+ * \param data pointer that gets cast into NetmapThreadVars for ptv
  * \param pq pointer to the current PacketQueue
  */
-TmEcode DecodeAFP(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+TmEcode DecodeNetmap(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
     SCEnter();
     DecodeThreadVars *dtv = (DecodeThreadVars *)data;
@@ -1659,14 +1698,14 @@ TmEcode DecodeAFP(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, Packet
             DecodeRaw(tv, dtv, p, GET_PKT_DATA(p), GET_PKT_LEN(p), pq);
             break;
         default:
-            SCLogError(SC_ERR_DATALINK_UNIMPLEMENTED, "Error: datalink type %" PRId32 " not yet supported in module DecodeAFP", p->datalink);
+            SCLogError(SC_ERR_DATALINK_UNIMPLEMENTED, "Error: datalink type %" PRId32 " not yet supported in module DecodeNetmap", p->datalink);
             break;
     }
 
     SCReturnInt(TM_ECODE_OK);
 }
 
-TmEcode DecodeAFPThreadInit(ThreadVars *tv, void *initdata, void **data)
+TmEcode DecodeNetmapThreadInit(ThreadVars *tv, void *initdata, void **data)
 {
     SCEnter();
     DecodeThreadVars *dtv = NULL;

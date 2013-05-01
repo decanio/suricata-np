@@ -37,6 +37,7 @@ enum {
     RUNMODE_UNITTEST,
     RUNMODE_NAPATECH,
     RUNMODE_UNIX_SOCKET,
+    RUNMODE_NETMAP,
     RUNMODE_MAX,
 };
 
@@ -62,6 +63,7 @@ void RunModeShutDown(void);
 #include "runmode-erf-dag.h"
 #include "runmode-napatech.h"
 #include "runmode-af-packet.h"
+#include "runmode-netmap.h"
 #include "runmode-unix-socket.h"
 
 int threading_set_cpu_affinity;

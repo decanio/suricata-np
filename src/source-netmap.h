@@ -25,7 +25,7 @@
 #define __SOURCE_NETMAP_H__
 
 #ifndef NETMAP_PACKET_FANOUT
-/* Placeholder for possible future RSS support
+/* Placeholder for possible future RSS support */
 #define NETMAP_PACKET_FANOUT 1
 #endif /* NETMAP_PACKET_FANOUT */
 
@@ -36,7 +36,11 @@
 #define NETMAP_FILE_MAX_PKTS 256
 #define NETMAP_IFACE_NAME_LENGTH 48
 
-#if 0
+#if 1
+typedef struct NetmapIfaceConfig_
+{
+} NetmapIfaceConfig;
+#else
 typedef struct AFPIfaceConfig_
 {
     char iface[AFP_IFACE_NAME_LENGTH];

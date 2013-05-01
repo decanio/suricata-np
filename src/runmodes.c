@@ -87,7 +87,7 @@ static char *active_runmode;
 
 /**
  * \internal
- * \brief Translate a runmode mode to a printale string.
+ * \brief Translate a runmode mode to a printable string.
  *
  * \param runmode Runmode to be converted into a printable string.
  *
@@ -120,6 +120,8 @@ static const char *RunModeTranslateModeToName(int runmode)
             return "UNITTEST";
         case RUNMODE_AFP_DEV:
             return "AF_PACKET_DEV";
+        case RUNMODE_NETMAP:
+            return "NETMAP";
         case RUNMODE_UNIX_SOCKET:
             return "UNIX_SOCKET";
         default:
@@ -192,6 +194,7 @@ void RunModeRegisterRunModes(void)
     RunModeErfDagRegister();
     RunModeNapatechRegister();
     RunModeIdsAFPRegister();
+    RunModeIdsNetmapRegister();
     RunModeUnixSocketRegister();
 #ifdef UNITTESTS
     UtRunModeRegister();
@@ -282,6 +285,9 @@ void RunModeDispatch(int runmode, const char *custom_mode, DetectEngineCtx *de_c
                 break;
             case RUNMODE_AFP_DEV:
                 custom_mode = RunModeAFPGetDefaultMode();
+                break;
+            case RUNMODE_NETMAP:
+                custom_mode = RunModeNetmapGetDefaultMode();
                 break;
             case RUNMODE_UNIX_SOCKET:
                 custom_mode = RunModeUnixSocketGetDefaultMode();

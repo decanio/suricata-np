@@ -210,6 +210,7 @@ runmode-erf-dag.c runmode-erf-dag.h \
 runmode-erf-file.c runmode-erf-file.h \
 runmode-ipfw.c runmode-ipfw.h \
 runmode-napatech.c runmode-napatech.h \
+runmode-netmap.c runmode-netmap.h \
 runmode-nfq.c runmode-nfq.h \
 runmode-pcap.c runmode-pcap.h \
 runmode-pcap-file.c runmode-pcap-file.h \
