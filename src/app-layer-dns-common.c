@@ -42,6 +42,16 @@ void DNSAppLayerDecoderEventsRegister(int alproto) {
     AppLayerDecoderEventsModuleRegister(alproto, dns_decoder_event_table);
 }
 
+AppLayerDecoderEvents *DNSGetEvents(void *state, int id) {
+    DNSState *dns_state = (DNSState *)state;
+    DNSTransaction *tx;
+    TAILQ_FOREACH(tx, &dns_state->tx_list, next) {
+        if (tx->tx_num == (id+1))
+            return tx->decoder_events;
+    }
+    return NULL;
+}
+
 void *DNSStateAlloc(void) {
     void *s = SCMalloc(sizeof(DNSState));
     if (unlikely(s == NULL))
@@ -70,6 +80,16 @@ void DNSStateFree(void *s) {
 
         SCFree(s);
         s = NULL;
+    }
+}
+
+void DNSSetEvent(DNSState *s, uint8_t e) {
+    if (s && s->curr) {
+        SCLogDebug("s->curr->decoder_events %p", s->curr->decoder_events);
+        AppLayerDecoderEventsSetEventRaw(s->curr->decoder_events, e);
+        SCLogDebug("s->curr->decoder_events %p", s->curr->decoder_events);
+    } else {
+        SCLogDebug("couldn't set event %u", e);
     }
 }
 
@@ -144,20 +164,18 @@ DNSTransaction *DNSTransactionFindByTxId(const DNSState *dns_state, const uint16
  *  \retval 0 ok
  *  \retval -1 error
  */
-int DNSValidateRequestHeader(Flow *f, const DNSHeader *dns_header) {
+int DNSValidateRequestHeader(DNSState *dns_state, const DNSHeader *dns_header) {
     uint16_t flags = ntohs(dns_header->flags);
 
     if ((flags & 0x8000) != 0) {
         SCLogDebug("not a request 0x%04x", flags);
-        if (f != NULL)
-            AppLayerDecoderEventsSetEvent(f, DNS_DECODER_EVENT_NOT_A_REQUEST);
+        DNSSetEvent(dns_state, DNS_DECODER_EVENT_NOT_A_REQUEST);
         goto bad_data;
     }
 
     if ((flags & 0x0040) != 0) {
         SCLogDebug("Z flag not 0, 0x%04x", flags);
-        if (f != NULL)
-            AppLayerDecoderEventsSetEvent(f, DNS_DECODER_EVENT_Z_FLAG_SET);
+        DNSSetEvent(dns_state, DNS_DECODER_EVENT_Z_FLAG_SET);
         goto bad_data;
     }
 
@@ -173,18 +191,18 @@ bad_data:
  *  \retval 0 ok
  *  \retval -1 error
  */
-int DNSValidateResponseHeader(Flow *f, const DNSHeader *dns_header) {
+int DNSValidateResponseHeader(DNSState *dns_state, const DNSHeader *dns_header) {
     uint16_t flags = ntohs(dns_header->flags);
 
     if ((flags & 0x8000) == 0) {
         SCLogDebug("not a response 0x%04x", flags);
-        AppLayerDecoderEventsSetEvent(f, DNS_DECODER_EVENT_NOT_A_RESPONSE);
+        DNSSetEvent(dns_state, DNS_DECODER_EVENT_NOT_A_RESPONSE);
         goto bad_data;
     }
 
     if ((flags & 0x0040) != 0) {
         SCLogDebug("Z flag not 0, 0x%04x", flags);
-        AppLayerDecoderEventsSetEvent(f, DNS_DECODER_EVENT_Z_FLAG_SET);
+        DNSSetEvent(dns_state, DNS_DECODER_EVENT_Z_FLAG_SET);
         goto bad_data;
     }
 
