@@ -1196,8 +1196,7 @@ int SigMatchSignatures(ThreadVars *th_v, DetectEngineCtx *de_ctx, DetectEngineTh
     SigMatch *sm = NULL;
     uint16_t alversion = 0;
     int reset_de_state = 0;
-    AppLayerDecoderEvents *app_decoder_events = NULL;
-    int app_decoder_events_cnt = 0;
+    int app_decoder_events = 0;
 
     SCEnter();
 
@@ -1282,9 +1281,7 @@ int SigMatchSignatures(ThreadVars *th_v, DetectEngineCtx *de_ctx, DetectEngineTh
                 SCLogDebug("packet doesn't have established flag set (proto %d)", p->proto);
             }
 
-            app_decoder_events = AppLayerGetDecoderEventsForFlow(p->flow);
-            if (app_decoder_events != NULL)
-                app_decoder_events_cnt = app_decoder_events->cnt;
+            app_decoder_events = AppLayerFlowHasDecoderEvents(p->flow);
         }
         FLOWLOCK_UNLOCK(p->flow);
 
@@ -1405,7 +1402,7 @@ int SigMatchSignatures(ThreadVars *th_v, DetectEngineCtx *de_ctx, DetectEngineTh
 
     /* create our prefilter mask */
     SignatureMask mask = 0;
-    PacketCreateMask(p, &mask, alproto, alstate, smsg, app_decoder_events_cnt);
+    PacketCreateMask(p, &mask, alproto, alstate, smsg, app_decoder_events);
 
     PACKET_PROFILING_DETECT_START(p, PROF_DETECT_PREFILTER);
     /* build the match array */
@@ -2154,7 +2151,7 @@ deonly:
  */
 static void
 PacketCreateMask(Packet *p, SignatureMask *mask, uint16_t alproto, void *alstate, StreamMsg *smsg,
-        int app_decoder_events_cnt)
+        int app_decoder_events)
 {
     if (!(p->flags & PKT_NOPAYLOAD_INSPECTION) && (p->payload_len > 0 || smsg != NULL)) {
         SCLogDebug("packet has payload");
@@ -2164,7 +2161,7 @@ PacketCreateMask(Packet *p, SignatureMask *mask, uint16_t alproto, void *alstate
         (*mask) |= SIG_MASK_REQUIRE_NO_PAYLOAD;
     }
 
-    if (p->events.cnt > 0 || app_decoder_events_cnt > 0) {
+    if (p->events.cnt > 0 || app_decoder_events != 0) {
         SCLogDebug("packet/flow has events set");
         (*mask) |= SIG_MASK_REQUIRE_ENGINE_EVENT;
     }

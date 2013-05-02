@@ -99,6 +99,68 @@ FileContainer *AppLayerGetFilesFromFlow(Flow *f, uint8_t direction) {
     }
 }
 
+/** \brief Get the decoder events from the flow
+ *  \param f flow pointer to a LOCKED flow
+ *  \param tx_id transaction id
+ *  \retval files void pointer to the state
+ *  \retval NULL in case we have no state */
+AppLayerDecoderEvents *AppLayerGetEventsFromFlowByTx(Flow *f, int tx_id) {
+    SCEnter();
+
+    DEBUG_ASSERT_FLOW_LOCKED(f);
+
+    uint16_t alproto = f->alproto;
+    if (alproto == ALPROTO_UNKNOWN)
+        SCReturnPtr(NULL, "AppLayerDecoderEvents");
+
+    if (al_proto_table[alproto].StateGetEvents != NULL) {
+        AppLayerDecoderEvents *ptr = al_proto_table[alproto].StateGetEvents(AppLayerGetProtoStateFromFlow(f), tx_id);
+        SCReturnPtr(ptr, "AppLayerDecoderEvents");
+    } else {
+        SCReturnPtr(NULL, "AppLayerDecoderEvents");
+    }
+}
+
+/** \brief check if we have decoder events */
+int AppLayerFlowHasDecoderEvents(Flow *f) {
+    AppLayerDecoderEvents *decoder_events;
+    int tx_id, max_id;
+
+    DEBUG_ASSERT_FLOW_LOCKED(f);
+
+    if (f->alproto <= ALPROTO_UNKNOWN || f->alproto >= ALPROTO_MAX)
+        return 0;
+
+    if (AppLayerProtoIsTxEventAware(f->alproto)) {
+        tx_id = AppLayerTransactionGetInspectId(f);
+        if (tx_id != -1) {
+            max_id = AppLayerTransactionGetAvailId(f);
+            for ( ; tx_id < max_id; tx_id++) {
+                decoder_events = AppLayerGetEventsFromFlowByTx(f, tx_id);
+                if (decoder_events && decoder_events->cnt)
+                    return 1;
+            }
+        }
+    }
+
+    decoder_events = AppLayerGetDecoderEventsForFlow(f);
+    if (decoder_events && decoder_events->cnt)
+        return 1;
+
+    return 0;
+}
+
+/** \brief Return true if alproto uses per TX events
+ *  \param alproto proto to check
+ */
+int AppLayerProtoIsTxEventAware(uint16_t alproto) {
+    if (alproto > ALPROTO_UNKNOWN && alproto < ALPROTO_MAX &&
+        al_proto_table[alproto].StateGetEvents != NULL)
+        return 1;
+
+    return 0;
+}
+
 /** \brief Alloc a AppLayerParserResultElmt func for the pool */
 static void *AlpResultElmtPoolAlloc()
 {
@@ -683,6 +745,12 @@ void AppLayerRegisterGetFilesFunc(uint16_t proto,
         FileContainer *(*StateGetFiles)(void *, uint8_t))
 {
     al_proto_table[proto].StateGetFiles = StateGetFiles;
+}
+
+void AppLayerRegisterGetEventsFunc(uint16_t proto,
+        AppLayerDecoderEvents *(*StateGetEvents)(void *, int))
+{
+    al_proto_table[proto].StateGetEvents = StateGetEvents;
 }
 
 /** \brief Indicate to the app layer parser that a logger is active
