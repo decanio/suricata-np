@@ -1084,6 +1084,8 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
             int len = ring->slot[i].len;
             ptv->pkts++;
             ptv->bytes += len;
+            SCLogInfo("Got a packet pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
+                       GET_PKT_LEN(p), p, GET_PKT_DATA(p));
 
             p->datalink = ptv->datalink;
             if (PacketSetData(p, pkt, len) != -1) {
@@ -1348,6 +1350,8 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
         ptv->tx = NETMAP_TXRING(ptv->nifp, 0);
         ptv->rx = NETMAP_RXRING(ptv->nifp, 0);
     }
+    /* Init is ok */
+    NetmapSwitchState(ptv, NETMAP_STATE_UP);
     return (0);
 
 error:
