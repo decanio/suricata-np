@@ -81,6 +81,9 @@
 #include <sys/mman.h>
 #endif
 
+#include <net/netmap.h>
+#include <net/netmap_user.h>
+
 #endif /* HAVE_NETMAP */
 
 extern uint8_t suricata_ctl_flags;
@@ -184,7 +187,7 @@ typedef struct NetmapThreadVars_
     uint8_t *data; /** Per function and thread data */
     int datalen; /** Length of per function and thread data */
 
-    char iface[AFP_IFACE_NAME_LENGTH];
+    char iface[NETMAP_IFACE_NAME_LENGTH];
     LiveDevice *livedev;
     int down_count;
 
@@ -197,12 +200,14 @@ typedef struct NetmapThreadVars_
     ChecksumValidationMode checksum_mode;
 
     /* IPS stuff */
-    char out_iface[AFP_IFACE_NAME_LENGTH];
+    char out_iface[NETMAP_IFACE_NAME_LENGTH];
     NetmapPeer *mpeer;
 
     int flags;
+#if 0
     uint16_t capture_kernel_packets;
     uint16_t capture_kernel_drops;
+#endif
 
     int cluster_id;
     int cluster_type;
@@ -210,6 +215,21 @@ typedef struct NetmapThreadVars_
     int threads;
     int copy_mode;
 
+    /* Netmap stuff starts here */
+    int fd;
+    int ringid;
+    char *mem;				/* userspace mmap address */
+    u_int memsize;
+    u_int queueid;
+    u_int begin, end;			/* first...last+1 rings to check */
+    struct netmap_if *nifp;
+    struct netmap_ring *tx, *rx;	/* shortcuts */
+
+    uint32_t if_flags;
+    uint32_t if_reqcap;
+    uint32_t if_curcap;
+
+#if 0
     struct tpacket_req req;
     unsigned int tp_hdrlen;
     unsigned int ring_buflen;
@@ -217,6 +237,7 @@ typedef struct NetmapThreadVars_
     char *frame_buf;
     unsigned int frame_offset;
     int ring_size;
+#endif
 
 } NetmapThreadVars;
 
@@ -474,7 +495,10 @@ void TmModuleDecodeNetmapRegister (void) {
 }
 
 
+static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose);
+#if 0
 static int NetmapCreateSocket(NetmapThreadVars *ptv, char *devname, int verbose);
+#endif
 
 static inline void NetmapDumpCounters(NetmapThreadVars *ptv)
 {
@@ -486,13 +510,16 @@ static inline void NetmapDumpCounters(NetmapThreadVars *ptv)
         SCLogDebug("(%s) Kernel: Packets %" PRIu32 ", dropped %" PRIu32 "",
                 ptv->tv->name,
                 kstats.tp_packets, kstats.tp_drops);
+#ifdef NOTYET
         SCPerfCounterAddUI64(ptv->capture_kernel_packets, ptv->tv->sc_perf_pca, kstats.tp_packets);
         SCPerfCounterAddUI64(ptv->capture_kernel_drops, ptv->tv->sc_perf_pca, kstats.tp_drops);
+#endif
         (void) SC_ATOMIC_ADD(ptv->livedev->drop, kstats.tp_drops);
     }
 #endif
 }
 
+#if 0
 /**
  * \brief AF packet read function.
  *
@@ -615,6 +642,7 @@ int NetmapRead(NetmapThreadVars *ptv)
     }
     SCReturnInt(NETMAP_READ_OK);
 }
+#endif
 
 TmEcode NetmapWritePacket(Packet *p)
 {
@@ -688,6 +716,7 @@ cleanup:
     return ret;
 }
 
+#if 0
 /**
  * \brief AF packet read function for ring
  *
@@ -713,6 +742,7 @@ int NetmapReadFromRing(NetmapThreadVars *ptv)
             break;
         }
 
+#if 0
         /* Read packet from ring */
         h.raw = (((union thdr **)ptv->frame_buf)[ptv->frame_offset]);
         if (h.raw == NULL) {
@@ -857,10 +887,12 @@ next_frame:
             /* Get out of loop to be sure we will reach maintenance tasks */
             SCReturnInt(NETMAP_READ_OK);
         }
+#endif
     }
 
     SCReturnInt(NETMAP_READ_OK);
 }
+#endif
 
 #if 0
 /**
@@ -907,11 +939,13 @@ void NetmapSwitchState(NetmapThreadVars *ptv, int state)
 
     /* Do cleaning if switching to down state */
     if (state == NETMAP_STATE_DOWN) {
+#if 0
         if (ptv->frame_buf) {
             /* only used in reading phase, we can free it */
             SCFree(ptv->frame_buf);
             ptv->frame_buf = NULL;
         }
+#endif
 #if 0
         if (ptv->socket != -1) {
             /* we need to wait for all packets to return data */
@@ -950,7 +984,11 @@ static int NetmapTryReopen(NetmapThreadVars *ptv)
     }
 #endif
 
+#if 1
+    afp_activate_r = NetmapOpen(ptv, ptv->iface, 0);
+#else
     afp_activate_r = NetmapCreateSocket(ptv, ptv->iface, 0);
+#endif
     if (afp_activate_r != 0) {
         if (ptv->down_count % NETMAP_DOWN_COUNTER_INTERVAL == 0) {
             SCLogWarning(SC_ERR_AFP_CREATE, "Can not open iface '%s'",
@@ -970,6 +1008,7 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
 {
     SCEnter();
 
+    Packet *p = NULL;
     uint16_t packet_q_len = 0;
     NetmapThreadVars *ptv = (NetmapThreadVars *)data;
     struct pollfd fds;
@@ -985,22 +1024,19 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
         while (NetmapPeersListWaitTurn(ptv->mpeer)) {
             usleep(1000);
         }
-#if 1
         r = NetmapOpen(ptv, ptv->iface, 1);
-#else
-        r = NetmapCreateSocket(ptv, ptv->iface, 1);
-#endif
         if (r < 0) {
-            SCLogError(SC_ERR_AFP_CREATE, "Couldn't init AF_PACKET socket");
+            SCLogError(SC_ERR_AFP_CREATE, "Couldn't init Netmap fd");
         }
         NetmapPeersListReachedInc();
     }
     if (ptv->netmap_state == NETMAP_STATE_UP) {
-        SCLogInfo("Thread %s using socket %d", tv->name, ptv->socket);
+        SCLogInfo("Thread %s using Netmap fd %d UP", tv->name, ptv->fd);
     }
 
-    fds.fd = ptv->socket;
+    fds.fd = ptv->fd;
     fds.events = POLLIN;
+    struct netmap_ring *ring = NETMAP_RXRING(ptv->nifp, 0);
 
     while (1) {
         /* Start by checking the state of our interface */
@@ -1034,6 +1070,56 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
         if (suricata_ctl_flags != 0) {
             break;
         }
+
+#if 1
+        for ( ; ring->avail > 0 ; ring->avail--) {
+            p = PacketGetFromQueueOrAlloc();
+            if (p == NULL) {
+                break;
+            }
+            PKT_SET_SRC(p, PKT_SRC_WIRE);
+
+            int i = ring->cur;
+            uint8_t *pkt = NETMAP_BUF(ring, i);
+            int len = ring->slot[i].len;
+            ptv->pkts++;
+            ptv->bytes += len;
+
+            p->datalink = ptv->datalink;
+            if (PacketSetData(p, pkt, len) != -1) {
+                /* TBD: need to do something more efficient than this */
+                gettimeofday(&p->ts, NULL);
+                SCLogDebug("pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
+                           GET_PKT_LEN(p), p, GET_PKT_DATA(p));
+                /* We only check for checksum disable */
+                if (ptv->checksum_mode == CHECKSUM_VALIDATION_DISABLE) {
+                    p->flags |= PKT_IGNORE_CHECKSUM;
+                } else if (ptv->checksum_mode == CHECKSUM_VALIDATION_AUTO) {
+                    if (ptv->livedev->ignore_checksum) {
+                        p->flags |= PKT_IGNORE_CHECKSUM;
+                    } else if (ChecksumAutoModeCheck(ptv->pkts,
+                                SC_ATOMIC_GET(ptv->livedev->pkts),
+                                SC_ATOMIC_GET(ptv->livedev->invalid_checksums))) {
+                        ptv->livedev->ignore_checksum = 1;
+                        p->flags |= PKT_IGNORE_CHECKSUM;
+                    }
+                } else {
+                    p->flags |= PKT_IGNORE_CHECKSUM;
+                }
+
+                if (TmThreadsSlotProcessPkt(ptv->tv, ptv->slot, p) !=
+                     TM_ECODE_OK) {
+                    TmqhOutputPacketpool(ptv->tv, p);
+                }
+
+            } else {
+                TmqhOutputPacketpool(ptv->tv, p);
+            }
+            (void) SC_ATOMIC_ADD(ptv->livedev->pkts, 1);
+            ring->cur = NETMAP_RING_NEXT(ring, i);        
+        }
+        SCPerfSyncCountersIfSignalled(tv, 0);
+#else
 
         if (r > 0 &&
                 (fds.revents & (POLLHUP|POLLRDHUP|POLLERR|POLLNVAL))) {
@@ -1094,6 +1180,7 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
             continue;
         }
         SCPerfSyncCountersIfSignalled(tv, 0);
+#endif
     }
 
     SCReturnInt(TM_ECODE_OK);
@@ -1181,6 +1268,7 @@ in V2: val in getsockopt(instance->fd, SOL_PACKET, PACKET_HDRLEN, &val, &len)
 frame size: TPACKET_ALIGN(snaplen + TPACKET_ALIGN(TPACKET_ALIGN(tp_hdrlen) + sizeof(struct sockaddr_ll) + ETH_HLEN) - ETH_HLEN);
 
      */
+#if 0
     int tp_hdrlen = sizeof(struct tpacket_hdr);
     int snaplen = default_packet_size;
 
@@ -1198,13 +1286,76 @@ frame size: TPACKET_ALIGN(snaplen + TPACKET_ALIGN(TPACKET_ALIGN(tp_hdrlen) + siz
     SCLogInfo("AF_PACKET RX Ring params: block_size=%d block_nr=%d frame_size=%d frame_nr=%d",
               ptv->req.tp_block_size, ptv->req.tp_block_nr,
               ptv->req.tp_frame_size, ptv->req.tp_frame_nr);
+#endif
     return 1;
 }
 
 static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
 {
+    int fd, err, l;
+    struct nmreq req;
+
+   
+    ptv->fd = fd = open("/dev/netmap", O_RDWR);
+    if (fd < 0) {
+        SCLogError(SC_ERR_AFP_CREATE, "Couldn't open /dev/netmap, error %s", strerror(errno));
+        goto error;
+    }
+    memset(&req, 0, sizeof(req));
+    req.nr_version = NETMAP_API;
+    strncpy(req.nr_name, ptv->iface, sizeof(req.nr_name));
+    req.nr_ringid = ptv->ringid;
+    err = ioctl(fd, NIOCGINFO, &req);
+    if (err) {
+        SCLogError(SC_ERR_AFP_CREATE, "Cannot get into on %s, error %s ver %d",
+                   ptv->iface, strerror(errno), req.nr_version);
+        goto error;
+    }
+    ptv->memsize = l = req.nr_memsize;
+    SCLogInfo("memsize is %d MB", l>>20);
+    err = ioctl(fd, NIOCREGIF, &req);
+    if (err) {
+        SCLogError(SC_ERR_AFP_CREATE, "Unable to register %s",
+                   ptv->iface);
+        goto error;
+    }
+    if (ptv->mem == NULL) {
+        ptv->mem = mmap(0, l, PROT_WRITE|PROT_READ, MAP_SHARED, fd, 0);
+        if (ptv->mem == MAP_FAILED) {
+            SCLogError(SC_ERR_AFP_CREATE, "Unable to mmap %s, error %s",
+                   ptv->iface, strerror(errno));
+            ptv->mem = NULL;
+            goto error;
+        }
+    }
+
+    ptv->nifp = NETMAP_IF(ptv->mem, req.nr_offset);
+    ptv->queueid = ptv->ringid;
+    if (ptv->ringid & NETMAP_SW_RING) {
+        ptv->begin = req.nr_rx_rings;
+        ptv->end = ptv->begin + 1;
+        ptv->tx = NETMAP_TXRING(ptv->nifp, req.nr_tx_rings);
+        ptv->rx = NETMAP_RXRING(ptv->nifp, req.nr_rx_rings);
+    } else if (ptv->ringid & NETMAP_HW_RING) {
+        SCLogInfo("XXX check multiple threads");
+        ptv->begin = ptv->ringid & NETMAP_RING_MASK;
+        ptv->end = ptv->begin + 1;
+        ptv->tx = NETMAP_TXRING(ptv->nifp, ptv->begin);
+        ptv->rx = NETMAP_RXRING(ptv->nifp, ptv->begin);
+    } else {
+        ptv->begin = 0;
+        ptv->end = req.nr_rx_rings; /* XXX max of the two */
+        ptv->tx = NETMAP_TXRING(ptv->nifp, 0);
+        ptv->rx = NETMAP_RXRING(ptv->nifp, 0);
+    }
+    return (0);
+
+error:
+    close(ptv->fd);
+    return -1;
 }
 
+#if 0
 static int NetmapCreateSocket(NetmapThreadVars *ptv, char *devname, int verbose)
 {
     int r;
@@ -1437,6 +1588,7 @@ socket_err:
 error:
     return -1;
 }
+#endif
 
 TmEcode NetmapSetBPFFilter(NetmapThreadVars *ptv)
 {
@@ -1625,12 +1777,14 @@ void ReceiveNetmapThreadExitStats(ThreadVars *tv, void *data) {
     SCEnter();
     NetmapThreadVars *ptv = (NetmapThreadVars *)data;
 
+#ifdef NOTYET
 #ifdef PACKET_STATISTICS
     NetmapDumpCounters(ptv);
     SCLogInfo("(%s) Kernel: Packets %" PRIu64 ", dropped %" PRIu64 "",
             tv->name,
             (uint64_t) SCPerfGetLocalCounterValue(ptv->capture_kernel_packets, tv->sc_perf_pca),
             (uint64_t) SCPerfGetLocalCounterValue(ptv->capture_kernel_drops, tv->sc_perf_pca));
+#endif
 #endif
 
     SCLogInfo("(%s) Packets %" PRIu32 ", bytes %" PRIu64 "", tv->name, ptv->pkts, ptv->bytes);
