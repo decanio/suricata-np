@@ -219,6 +219,7 @@ typedef struct NetmapThreadVars_
     int fd;
     int ringid;
     char *mem;				/* userspace mmap address */
+    uint16_t qfirst, qlast;		/* range of queues to scan */
     u_int memsize;
     u_int queueid;
     u_int begin, end;			/* first...last+1 rings to check */
@@ -252,8 +253,8 @@ TmEcode DecodeNetmap(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue 
 
 TmEcode NetmapSetBPFFilter(NetmapThreadVars *ptv);
 static int NetmapGetIfnumByDev(int fd, const char *ifname, int verbose);
-static int NetmapGetDevFlags(int fd, const char *ifname);
 #if 0
+static int NetmapGetDevFlags(int fd, const char *ifname);
 static int NetmapDerefSocket(NetmapPeer* peer);
 static int NetmapRefSocket(NetmapPeer* peer);
 #endif
@@ -1012,10 +1013,12 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
     uint16_t packet_q_len = 0;
     NetmapThreadVars *ptv = (NetmapThreadVars *)data;
     struct pollfd fds;
-    int r;
+    int r, i;
     TmSlot *s = (TmSlot *)slot;
+#if 0
     time_t last_dump = 0;
     struct timeval current_time;
+#endif
 
     ptv->slot = s->slot_next;
 
@@ -1036,7 +1039,6 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
 
     fds.fd = ptv->fd;
     fds.events = POLLIN;
-    struct netmap_ring *ring = NETMAP_RXRING(ptv->nifp, 0);
 
     while (1) {
         /* Start by checking the state of our interface */
@@ -1072,54 +1074,77 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
         }
 
 #if 1
-        for ( ; ring->avail > 0 ; ring->avail--) {
-            p = PacketGetFromQueueOrAlloc();
-            if (p == NULL) {
-                break;
-            }
-            PKT_SET_SRC(p, PKT_SRC_WIRE);
+	if (unlikely(r <= 0)) {
+            SCPerfSyncCountersIfSignalled(tv, 0);
+            continue;
+	}
 
-            int i = ring->cur;
-            uint8_t *pkt = NETMAP_BUF(ring, i);
-            int len = ring->slot[i].len;
-            ptv->pkts++;
-            ptv->bytes += len;
-            SCLogInfo("Got a packet pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
-                       GET_PKT_LEN(p), p, GET_PKT_DATA(p));
+	for (i = ptv->qfirst; i < ptv->qlast; i++) {
 
-            p->datalink = ptv->datalink;
-            if (PacketSetData(p, pkt, len) != -1) {
-                /* TBD: need to do something more efficient than this */
-                gettimeofday(&p->ts, NULL);
-                SCLogDebug("pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
-                           GET_PKT_LEN(p), p, GET_PKT_DATA(p));
-                /* We only check for checksum disable */
-                if (ptv->checksum_mode == CHECKSUM_VALIDATION_DISABLE) {
-                    p->flags |= PKT_IGNORE_CHECKSUM;
-                } else if (ptv->checksum_mode == CHECKSUM_VALIDATION_AUTO) {
-                    if (ptv->livedev->ignore_checksum) {
+            struct netmap_ring *ring = NETMAP_RXRING(ptv->nifp, i);
+	    if (ring->avail > 0) {
+                SCLogDebug("ring[%d]->avail: %" PRIu32 "", i, ring->avail);
+	    }
+            u_int cur = ring->cur;
+            for ( ; ring->avail > 0 ; ring->avail--) {
+                p = PacketGetFromQueueOrAlloc();
+                if (unlikely(p == NULL)) {
+                    break;
+                }
+                PKT_SET_SRC(p, PKT_SRC_WIRE);
+
+                struct netmap_slot *slot = &ring->slot[cur];
+
+                uint8_t *pkt = NETMAP_BUF(ring, slot->buf_idx);
+                //int len = ring->slot[i].len;
+                int len = slot->len;
+                ptv->pkts++;
+                ptv->bytes += len;
+                SCLogDebug("Got a packet pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
+                           len, p, pkt);
+#ifdef DEBUG_PACKET_DUMPER
+	        int j;
+                for (j = 0; j < len; j++) {
+                    printf("%02x ", pkt[j]);
+                    if (((j+1)%16) ==0) printf("\n");
+                }
+                printf("\n");
+#endif
+
+                p->datalink = ptv->datalink;
+                if (likely(PacketSetData(p, pkt, len) != -1)) {
+                    /* TBD: need to do something more efficient than this */
+                    gettimeofday(&p->ts, NULL);
+                    SCLogDebug("pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
+                               GET_PKT_LEN(p), p, GET_PKT_DATA(p));
+                    /* We only check for checksum disable */
+                    if (ptv->checksum_mode == CHECKSUM_VALIDATION_DISABLE) {
                         p->flags |= PKT_IGNORE_CHECKSUM;
-                    } else if (ChecksumAutoModeCheck(ptv->pkts,
-                                SC_ATOMIC_GET(ptv->livedev->pkts),
-                                SC_ATOMIC_GET(ptv->livedev->invalid_checksums))) {
-                        ptv->livedev->ignore_checksum = 1;
+                    } else if (ptv->checksum_mode == CHECKSUM_VALIDATION_AUTO) {
+                        if (ptv->livedev->ignore_checksum) {
+                            p->flags |= PKT_IGNORE_CHECKSUM;
+                        } else if (ChecksumAutoModeCheck(ptv->pkts,
+                                    SC_ATOMIC_GET(ptv->livedev->pkts),
+                                    SC_ATOMIC_GET(ptv->livedev->invalid_checksums))) {
+                            ptv->livedev->ignore_checksum = 1;
+                            p->flags |= PKT_IGNORE_CHECKSUM;
+                        }
+                    } else {
                         p->flags |= PKT_IGNORE_CHECKSUM;
                     }
-                } else {
-                    p->flags |= PKT_IGNORE_CHECKSUM;
-                }
 
-                if (TmThreadsSlotProcessPkt(ptv->tv, ptv->slot, p) !=
-                     TM_ECODE_OK) {
+                    if (TmThreadsSlotProcessPkt(ptv->tv, ptv->slot, p) !=
+                         TM_ECODE_OK) {
+                        TmqhOutputPacketpool(ptv->tv, p);
+                    }
+
+                } else {
                     TmqhOutputPacketpool(ptv->tv, p);
                 }
-
-            } else {
-                TmqhOutputPacketpool(ptv->tv, p);
+                (void) SC_ATOMIC_ADD(ptv->livedev->pkts, 1);
+                ring->cur = NETMAP_RING_NEXT(ring, cur);        
             }
-            (void) SC_ATOMIC_ADD(ptv->livedev->pkts, 1);
-            ring->cur = NETMAP_RING_NEXT(ring, i);        
-        }
+	}
         SCPerfSyncCountersIfSignalled(tv, 0);
 #else
 
@@ -1188,6 +1213,7 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
     SCReturnInt(TM_ECODE_OK);
 }
 
+#if 0
 static int NetmapGetDevFlags(int fd, const char *ifname)
 {
     struct ifreq ifr;
@@ -1203,6 +1229,7 @@ static int NetmapGetDevFlags(int fd, const char *ifname)
 
     return ifr.ifr_flags;
 }
+#endif
 
 
 static int NetmapGetIfnumByDev(int fd, const char *ifname, int verbose)
@@ -1224,6 +1251,9 @@ static int NetmapGetIfnumByDev(int fd, const char *ifname, int verbose)
 
 static int NetmapGetDevLinktype(int fd, const char *ifname)
 {
+#if 1
+    return LINKTYPE_ETHERNET;
+#else
     struct ifreq ifr;
 
     memset(&ifr, 0, sizeof(ifr));
@@ -1243,8 +1273,10 @@ static int NetmapGetDevLinktype(int fd, const char *ifname)
         default:
             return ifr.ifr_hwaddr.sa_family;
     }
+#endif
 }
 
+#if 0
 static int NetmapComputeRingParams(NetmapThreadVars *ptv, int order)
 {
     /* Compute structure:
@@ -1291,6 +1323,7 @@ frame size: TPACKET_ALIGN(snaplen + TPACKET_ALIGN(TPACKET_ALIGN(tp_hdrlen) + siz
 #endif
     return 1;
 }
+#endif
 
 static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
 {
@@ -1333,6 +1366,8 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
 
     ptv->nifp = NETMAP_IF(ptv->mem, req.nr_offset);
     ptv->queueid = ptv->ringid;
+    ptv->qfirst = 0;
+    ptv->qlast = req.nr_rx_rings;
     if (ptv->ringid & NETMAP_SW_RING) {
         ptv->begin = req.nr_rx_rings;
         ptv->end = ptv->begin + 1;
@@ -1350,6 +1385,13 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
         ptv->tx = NETMAP_TXRING(ptv->nifp, 0);
         ptv->rx = NETMAP_RXRING(ptv->nifp, 0);
     }
+    ptv->datalink = NetmapGetDevLinktype(ptv->socket, ptv->iface);
+    switch (ptv->datalink) {
+        case ARPHRD_PPP:
+        case ARPHRD_ATM:
+            ptv->cooked = 1;
+    }
+
     /* Init is ok */
     NetmapSwitchState(ptv, NETMAP_STATE_UP);
     return (0);
