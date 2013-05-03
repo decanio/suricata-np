@@ -55,6 +55,7 @@ enum {
 #include "source-ipfw.h"
 #include "source-pcap.h"
 #include "source-af-packet.h"
+#include "source-netmap.h"
 
 #include "action-globals.h"
 
@@ -389,6 +390,9 @@ typedef struct Packet_
 #endif /* IPFW */
 #ifdef AF_PACKET
         AFPPacketVars afp_v;
+#endif
+#ifdef HAVE_NETMAP
+        NetmapPacketVars netmap_v;
 #endif
 
         /** libpcap vars: shared by Pcap Live mode and Pcap File mode */

@@ -406,7 +406,7 @@ TmEcode NetmapPeersListAdd(NetmapThreadVars *ptv)
     /* add element to iface list */
     TAILQ_INSERT_TAIL(&peerslist.peers, peer, next);
 
-    if (ptv->copy_mode != AFP_COPY_MODE_NONE) {
+    if (ptv->copy_mode != NETMAP_COPY_MODE_NONE) {
         peerslist.cnt++;
 
         /* Iter to find a peer */
@@ -650,42 +650,45 @@ TmEcode NetmapWritePacket(Packet *p)
     struct sockaddr_ll socket_address;
     int socket;
 
-    if (p->afp_v.copy_mode == AFP_COPY_MODE_IPS) {
+    if (p->netmap_v.copy_mode == NETMAP_COPY_MODE_IPS) {
         if (p->action & ACTION_DROP) {
             return TM_ECODE_OK;
         }
     }
 
-    if (SC_ATOMIC_GET(p->afp_v.peer->state) == NETMAP_STATE_DOWN)
+    if (SC_ATOMIC_GET(p->netmap_v.peer->state) == NETMAP_STATE_DOWN)
         return TM_ECODE_OK;
 
     if (p->ethh == NULL) {
         SCLogWarning(SC_ERR_INVALID_VALUE, "Should have an Ethernet header");
         return TM_ECODE_FAILED;
     }
+
+#ifdef NOTYET
     /* Index of the network device */
-    socket_address.sll_ifindex = SC_ATOMIC_GET(p->afp_v.peer->if_idx);
+    socket_address.sll_ifindex = SC_ATOMIC_GET(p->netmap_v.peer->if_idx);
     /* Address length*/
     socket_address.sll_halen = ETH_ALEN;
     /* Destination MAC */
     memcpy(socket_address.sll_addr, p->ethh, 6);
 
     /* Send packet, locking the socket if necessary */
-    if (p->afp_v.peer->flags & AFP_SOCK_PROTECT)
-        SCMutexLock(&p->afp_v.peer->sock_protect);
-    socket = SC_ATOMIC_GET(p->afp_v.peer->socket);
+    if (p->netmap_v.peer->flags & AFP_SOCK_PROTECT)
+        SCMutexLock(&p->netmap_v.peer->sock_protect);
+    socket = SC_ATOMIC_GET(p->netmap_v.peer->socket);
     if (sendto(socket, GET_PKT_DATA(p), GET_PKT_LEN(p), 0,
                (struct sockaddr*) &socket_address,
                sizeof(struct sockaddr_ll)) < 0) {
         SCLogWarning(SC_ERR_SOCKET, "Sending packet failed on socket %d: %s",
                   socket,
                   strerror(errno));
-        if (p->afp_v.peer->flags & AFP_SOCK_PROTECT)
-            SCMutexUnlock(&p->afp_v.peer->sock_protect);
+        if (p->netmap_v.peer->flags & AFP_SOCK_PROTECT)
+            SCMutexUnlock(&p->netmap_v.peer->sock_protect);
         return TM_ECODE_FAILED;
     }
-    if (p->afp_v.peer->flags & AFP_SOCK_PROTECT)
-        SCMutexUnlock(&p->afp_v.peer->sock_protect);
+    if (p->netmap_v.peer->flags & AFP_SOCK_PROTECT)
+        SCMutexUnlock(&p->netmap_v.peer->sock_protect);
+#endif
 
     return TM_ECODE_OK;
 }
@@ -695,25 +698,25 @@ TmEcode NetmapReleaseDataFromRing(ThreadVars *t, Packet *p)
     int ret = TM_ECODE_OK;
     /* Need to be in copy mode and need to detect early release
        where Ethernet header could not be set (and pseudo packet) */
-    if ((p->afp_v.copy_mode != AFP_COPY_MODE_NONE) && !PKT_IS_PSEUDOPKT(p)) {
+    if ((p->netmap_v.copy_mode != NETMAP_COPY_MODE_NONE) && !PKT_IS_PSEUDOPKT(p)) {
         ret = NetmapWritePacket(p);
     }
 
 #if 0
-    if (NetmapDerefSocket(p->afp_v.mpeer) == 0)
+    if (NetmapDerefSocket(p->netmap_v.mpeer) == 0)
         goto cleanup;
 #endif
 
-    if (p->afp_v.relptr) {
+    if (p->netmap_v.relptr) {
         union thdr h;
-        h.raw = p->afp_v.relptr;
+        h.raw = p->netmap_v.relptr;
         h.h2->tp_status = TP_STATUS_KERNEL;
     }
 
 #if 0
 cleanup:
 #endif
-    AFPV_CLEANUP(&p->afp_v);
+    AFPV_CLEANUP(&p->netmap_v);
     return ret;
 }
 
@@ -818,20 +821,20 @@ int NetmapReadFromRing(NetmapThreadVars *ptv)
                 TmqhOutputPacketpool(ptv->tv, p);
                 SCReturnInt(NETMAP_FAILURE);
             } else {
-                p->afp_v.relptr = h.raw;
+                p->netmap_v.relptr = h.raw;
                 p->ReleaseData = NetmapReleaseDataFromRing;
 #if 0
-                p->afp_v.mpeer = ptv->mpeer;
+                p->netmap_v.mpeer = ptv->mpeer;
                 NetmapRefSocket(ptv->mpeer);
 #endif
 
-                p->afp_v.copy_mode = ptv->copy_mode;
-                if (p->afp_v.copy_mode != AFP_COPY_MODE_NONE) {
+                p->netmap_v.copy_mode = ptv->copy_mode;
+                if (p->netmap_v.copy_mode != AFP_COPY_MODE_NONE) {
 #if 0
-                    p->afp_v.peer = ptv->mpeer->peer;
+                    p->netmap_v.peer = ptv->mpeer->peer;
 #endif
                 } else {
-                    p->afp_v.peer = NULL;
+                    p->netmap_v.peer = NULL;
                 }
             }
         } else {
