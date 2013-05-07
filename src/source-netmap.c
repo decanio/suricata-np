@@ -147,11 +147,6 @@ TmEcode NoNetmapSupportExit(ThreadVars *tv, void *initdata, void **data)
 #define TP_STATUS_USER_BUSY (1 << 31)
 #endif
 
-#if 0
-/** protect pfring_set_bpf_filter, as it is not thread safe */
-static SCMutex netmap_bpf_set_filter_lock = PTHREAD_MUTEX_INITIALIZER;
-#endif
-
 enum {
     NETMAP_READ_OK,
     NETMAP_READ_FAILURE,
@@ -242,11 +237,6 @@ TmEcode DecodeNetmap(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue 
 
 TmEcode NetmapSetBPFFilter(NetmapThreadVars *ptv);
 static int NetmapGetIfnumByDev(int fd, const char *ifname, int verbose);
-#if 0
-static int NetmapGetDevFlags(int fd, const char *ifname);
-static int NetmapDerefSocket(NetmapPeer* peer);
-static int NetmapRefSocket(NetmapPeer* peer);
-#endif
 
 /**
  * \brief Registration Function for RecieveNetmap.
@@ -263,7 +253,6 @@ void TmModuleReceiveNetmapRegister (void) {
     tmm_modules[TMM_RECEIVENETMAP].cap_flags = SC_CAP_NET_RAW;
     tmm_modules[TMM_RECEIVENETMAP].flags = TM_FLAG_RECEIVE_TM;
 }
-
 
 /**
  *  \defgroup afppeers Netmap peers list
@@ -310,11 +299,6 @@ void NetmapPeerUpdate(NetmapThreadVars *ptv)
  */
 void NetmapPeerClean(NetmapPeer *peer)
 {
-#if 0
-    if (peer->flags & AFP_SOCK_PROTECT)
-        SCMutexDestroy(&peer->sock_protect);
-    SC_ATOMIC_DESTROY(peer->socket);
-#endif
     SC_ATOMIC_DESTROY(peer->if_idx);
     SC_ATOMIC_DESTROY(peer->state);
     SCFree(peer);
@@ -375,22 +359,11 @@ TmEcode NetmapPeersListAdd(NetmapThreadVars *ptv)
         SCReturnInt(TM_ECODE_FAILED);
     }
     memset(peer, 0, sizeof(NetmapPeer));
-#if 0
-    SC_ATOMIC_INIT(peer->socket);
-    SC_ATOMIC_INIT(peer->sock_usage);
-#endif
     SC_ATOMIC_INIT(peer->if_idx);
     SC_ATOMIC_INIT(peer->state);
     peer->flags = ptv->flags;
     peer->turn = peerslist.turn++;
 
-#if 0
-    if (peer->flags & AFP_SOCK_PROTECT) {
-        SCMutexInit(&peer->sock_protect, NULL);
-    }
-
-    (void)SC_ATOMIC_SET(peer->sock_usage, 0);
-#endif
     (void)SC_ATOMIC_SET(peer->state, NETMAP_STATE_DOWN);
     strlcpy(peer->iface, ptv->iface, NETMAP_IFACE_NAME_LENGTH);
     ptv->mpeer = peer;
@@ -488,9 +461,6 @@ void TmModuleDecodeNetmapRegister (void) {
 
 
 static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose);
-#if 0
-static int NetmapCreateSocket(NetmapThreadVars *ptv, char *devname, int verbose);
-#endif
 
 static inline void NetmapDumpCounters(NetmapThreadVars *ptv)
 {
@@ -502,146 +472,14 @@ static inline void NetmapDumpCounters(NetmapThreadVars *ptv)
         SCLogDebug("(%s) Kernel: Packets %" PRIu32 ", dropped %" PRIu32 "",
                 ptv->tv->name,
                 kstats.tp_packets, kstats.tp_drops);
-#ifdef NOTYET
-        SCPerfCounterAddUI64(ptv->capture_kernel_packets, ptv->tv->sc_perf_pca, kstats.tp_packets);
-        SCPerfCounterAddUI64(ptv->capture_kernel_drops, ptv->tv->sc_perf_pca, kstats.tp_drops);
-#endif
         (void) SC_ATOMIC_ADD(ptv->livedev->drop, kstats.tp_drops);
     }
 #endif
 }
 
-#if 0
-/**
- * \brief AF packet read function.
- *
- * This function fills
- * From here the packets are picked up by the DecodeNetmap thread.
- *
- * \param user pointer to NetmapThreadVars
- * \retval TM_ECODE_FAILED on failure and TM_ECODE_OK on success
- */
-int NetmapRead(NetmapThreadVars *ptv)
-{
-    Packet *p = NULL;
-    /* XXX should try to use read that get directly to packet */
-    int offset = 0;
-    int caplen;
-    struct sockaddr_ll from;
-    struct iovec iov;
-    struct msghdr msg;
-    struct cmsghdr *cmsg;
-    union {
-        struct cmsghdr cmsg;
-        char buf[CMSG_SPACE(sizeof(struct tpacket_auxdata))];
-    } cmsg_buf;
-    unsigned char aux_checksum = 0;
-
-    msg.msg_name = &from;
-    msg.msg_namelen = sizeof(from);
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
-    msg.msg_control = &cmsg_buf;
-    msg.msg_controllen = sizeof(cmsg_buf);
-    msg.msg_flags = 0;
-
-    if (ptv->cooked)
-        offset = SLL_HEADER_LEN;
-    else
-        offset = 0;
-    iov.iov_len = ptv->datalen - offset;
-    iov.iov_base = ptv->data + offset;
-
-    caplen = recvmsg(ptv->socket, &msg, MSG_TRUNC);
-
-    if (caplen < 0) {
-        SCLogWarning(SC_ERR_AFP_READ, "recvmsg failed with error code %" PRId32,
-                errno);
-        SCReturnInt(NETMAP_READ_FAILURE);
-    }
-
-    p = PacketGetFromQueueOrAlloc();
-    if (p == NULL) {
-        SCReturnInt(NETMAP_FAILURE);
-    }
-    PKT_SET_SRC(p, PKT_SRC_WIRE);
-
-    /* get timestamp of packet via ioctl */
-    if (ioctl(ptv->socket, SIOCGSTAMP, &p->ts) == -1) {
-        SCLogWarning(SC_ERR_AFP_READ, "recvmsg failed with error code %" PRId32,
-                errno);
-        TmqhOutputPacketpool(ptv->tv, p);
-        SCReturnInt(NETMAP_READ_FAILURE);
-    }
-
-    ptv->pkts++;
-    ptv->bytes += caplen + offset;
-    (void) SC_ATOMIC_ADD(ptv->livedev->pkts, 1);
-    p->livedev = ptv->livedev;
-
-    /* add forged header */
-    if (ptv->cooked) {
-        SllHdr * hdrp = (SllHdr *)ptv->data;
-        /* XXX this is minimalist, but this seems enough */
-        hdrp->sll_protocol = from.sll_protocol;
-    }
-
-    p->datalink = ptv->datalink;
-    SET_PKT_LEN(p, caplen + offset);
-    if (PacketCopyData(p, ptv->data, GET_PKT_LEN(p)) == -1) {
-        TmqhOutputPacketpool(ptv->tv, p);
-        SCReturnInt(NETMAP_FAILURE);
-    }
-    SCLogDebug("pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
-               GET_PKT_LEN(p), p, GET_PKT_DATA(p));
-
-    /* We only check for checksum disable */
-    if (ptv->checksum_mode == CHECKSUM_VALIDATION_DISABLE) {
-        p->flags |= PKT_IGNORE_CHECKSUM;
-    } else if (ptv->checksum_mode == CHECKSUM_VALIDATION_AUTO) {
-        if (ptv->livedev->ignore_checksum) {
-            p->flags |= PKT_IGNORE_CHECKSUM;
-        } else if (ChecksumAutoModeCheck(ptv->pkts,
-                                          SC_ATOMIC_GET(ptv->livedev->pkts),
-                                          SC_ATOMIC_GET(ptv->livedev->invalid_checksums))) {
-            ptv->livedev->ignore_checksum = 1;
-            p->flags |= PKT_IGNORE_CHECKSUM;
-        }
-    } else {
-        aux_checksum = 1;
-    }
-
-    /* List is NULL if we don't have activated auxiliary data */
-    for (cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
-        struct tpacket_auxdata *aux;
-
-        if (cmsg->cmsg_len < CMSG_LEN(sizeof(struct tpacket_auxdata)) ||
-                cmsg->cmsg_level != SOL_PACKET ||
-                cmsg->cmsg_type != PACKET_AUXDATA)
-            continue;
-
-        aux = (struct tpacket_auxdata *)CMSG_DATA(cmsg);
-
-        if (aux_checksum && (aux->tp_status & TP_STATUS_CSUMNOTREADY)) {
-            p->flags |= PKT_IGNORE_CHECKSUM;
-        }
-        break;
-    }
-
-    if (TmThreadsSlotProcessPkt(ptv->tv, ptv->slot, p) != TM_ECODE_OK) {
-        TmqhOutputPacketpool(ptv->tv, p);
-        SCReturnInt(NETMAP_FAILURE);
-    }
-    SCReturnInt(NETMAP_READ_OK);
-}
-#endif
 
 TmEcode NetmapWritePacket(Packet *p)
 {
-#ifdef NOTYET
-    struct sockaddr_ll socket_address;
-    int socket;
-#endif
 
     if (p->netmap_v.copy_mode == NETMAP_COPY_MODE_IPS) {
         if (p->action & ACTION_DROP) {
@@ -657,32 +495,6 @@ TmEcode NetmapWritePacket(Packet *p)
         return TM_ECODE_FAILED;
     }
 
-#ifdef NOTYET
-    /* Index of the network device */
-    socket_address.sll_ifindex = SC_ATOMIC_GET(p->netmap_v.peer->if_idx);
-    /* Address length*/
-    socket_address.sll_halen = ETH_ALEN;
-    /* Destination MAC */
-    memcpy(socket_address.sll_addr, p->ethh, 6);
-
-    /* Send packet, locking the socket if necessary */
-    if (p->netmap_v.peer->flags & AFP_SOCK_PROTECT)
-        SCMutexLock(&p->netmap_v.peer->sock_protect);
-    socket = SC_ATOMIC_GET(p->netmap_v.peer->socket);
-    if (sendto(socket, GET_PKT_DATA(p), GET_PKT_LEN(p), 0,
-               (struct sockaddr*) &socket_address,
-               sizeof(struct sockaddr_ll)) < 0) {
-        SCLogWarning(SC_ERR_SOCKET, "Sending packet failed on socket %d: %s",
-                  socket,
-                  strerror(errno));
-        if (p->netmap_v.peer->flags & AFP_SOCK_PROTECT)
-            SCMutexUnlock(&p->netmap_v.peer->sock_protect);
-        return TM_ECODE_FAILED;
-    }
-    if (p->netmap_v.peer->flags & AFP_SOCK_PROTECT)
-        SCMutexUnlock(&p->netmap_v.peer->sock_protect);
-#endif
-
     return TM_ECODE_OK;
 }
 
@@ -695,237 +507,15 @@ TmEcode NetmapReleaseDataFromRing(ThreadVars *t, Packet *p)
         ret = NetmapWritePacket(p);
     }
 
-#if 0
-    if (NetmapDerefSocket(p->netmap_v.mpeer) == 0)
-        goto cleanup;
-#endif
-
     if (p->netmap_v.relptr) {
         union thdr h;
         h.raw = p->netmap_v.relptr;
         h.h2->tp_status = TP_STATUS_KERNEL;
     }
 
-#if 0
-cleanup:
-#endif
     AFPV_CLEANUP(&p->netmap_v);
     return ret;
 }
-
-#if 0
-/**
- * \brief AF packet read function for ring
- *
- * This function fills
- * From here the packets are picked up by the DecodeNetmap thread.
- *
- * \param user pointer to NetmapThreadVars
- * \retval TM_ECODE_FAILED on failure and TM_ECODE_OK on success
- */
-int NetmapReadFromRing(NetmapThreadVars *ptv)
-{
-    Packet *p = NULL;
-    union thdr h;
-    struct sockaddr_ll *from;
-    uint8_t emergency_flush = 0;
-    int read_pkts = 0;
-    int loop_start = -1;
-
-
-    /* Loop till we have packets available */
-    while (1) {
-        if (unlikely(suricata_ctl_flags != 0)) {
-            break;
-        }
-
-#if 0
-        /* Read packet from ring */
-        h.raw = (((union thdr **)ptv->frame_buf)[ptv->frame_offset]);
-        if (h.raw == NULL) {
-            SCReturnInt(NETMAP_FAILURE);
-        }
-
-        if (h.h2->tp_status == TP_STATUS_KERNEL) {
-            if (read_pkts == 0) {
-                if (loop_start == -1) {
-                    loop_start = ptv->frame_offset;
-                } else if (unlikely(loop_start == (int)ptv->frame_offset)) {
-                    SCReturnInt(NETMAP_READ_OK);
-                }
-                if (++ptv->frame_offset >= ptv->req.tp_frame_nr) {
-                    ptv->frame_offset = 0;
-                }
-                continue;
-            }
-            if ((emergency_flush) && (ptv->flags & AFP_EMERGENCY_MODE)) {
-                SCReturnInt(NETMAP_KERNEL_DROP);
-            } else {
-                SCReturnInt(NETMAP_READ_OK);
-            }
-        }
-
-        read_pkts++;
-        loop_start = -1;
-
-        /* Our packet is still used by suricata, we exit read loop to
-         * gain some time */
-        if (h.h2->tp_status & TP_STATUS_USER_BUSY) {
-            SCReturnInt(NETMAP_READ_OK);
-        }
-
-        if ((ptv->flags & AFP_EMERGENCY_MODE) && (emergency_flush == 1)) {
-            h.h2->tp_status = TP_STATUS_KERNEL;
-            goto next_frame;
-        }
-
-        p = PacketGetFromQueueOrAlloc();
-        if (p == NULL) {
-            SCReturnInt(NETMAP_FAILURE);
-        }
-        PKT_SET_SRC(p, PKT_SRC_WIRE);
-
-        /* Suricata will treat packet so telling it is busy, this
-         * status will be reset to 0 (ie TP_STATUS_KERNEL) in the release
-         * function. */
-        h.h2->tp_status |= TP_STATUS_USER_BUSY;
-
-        from = (void *)h.raw + TPACKET_ALIGN(ptv->tp_hdrlen);
-
-        ptv->pkts++;
-        ptv->bytes += h.h2->tp_len;
-        (void) SC_ATOMIC_ADD(ptv->livedev->pkts, 1);
-        p->livedev = ptv->livedev;
-
-        /* add forged header */
-        if (ptv->cooked) {
-            SllHdr * hdrp = (SllHdr *)ptv->data;
-            /* XXX this is minimalist, but this seems enough */
-            hdrp->sll_protocol = from->sll_protocol;
-        }
-
-        p->datalink = ptv->datalink;
-        if (h.h2->tp_len > h.h2->tp_snaplen) {
-            SCLogDebug("Packet length (%d) > snaplen (%d), truncating",
-                    h.h2->tp_len, h.h2->tp_snaplen);
-        }
-        if (ptv->flags & AFP_ZERO_COPY) {
-            if (PacketSetData(p, (unsigned char*)h.raw + h.h2->tp_mac, h.h2->tp_snaplen) == -1) {
-                TmqhOutputPacketpool(ptv->tv, p);
-                SCReturnInt(NETMAP_FAILURE);
-            } else {
-                p->netmap_v.relptr = h.raw;
-                p->ReleaseData = NetmapReleaseDataFromRing;
-#if 0
-                p->netmap_v.mpeer = ptv->mpeer;
-                NetmapRefSocket(ptv->mpeer);
-#endif
-
-                p->netmap_v.copy_mode = ptv->copy_mode;
-                if (p->netmap_v.copy_mode != AFP_COPY_MODE_NONE) {
-#if 0
-                    p->netmap_v.peer = ptv->mpeer->peer;
-#endif
-                } else {
-                    p->netmap_v.peer = NULL;
-                }
-            }
-        } else {
-            if (PacketCopyData(p, (unsigned char*)h.raw + h.h2->tp_mac, h.h2->tp_snaplen) == -1) {
-                TmqhOutputPacketpool(ptv->tv, p);
-                SCReturnInt(NETMAP_FAILURE);
-            }
-        }
-        /* Timestamp */
-        p->ts.tv_sec = h.h2->tp_sec;
-        p->ts.tv_usec = h.h2->tp_nsec/1000;
-        SCLogDebug("pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
-                GET_PKT_LEN(p), p, GET_PKT_DATA(p));
-
-        /* We only check for checksum disable */
-        if (ptv->checksum_mode == CHECKSUM_VALIDATION_DISABLE) {
-            p->flags |= PKT_IGNORE_CHECKSUM;
-        } else if (ptv->checksum_mode == CHECKSUM_VALIDATION_AUTO) {
-            if (ptv->livedev->ignore_checksum) {
-                p->flags |= PKT_IGNORE_CHECKSUM;
-            } else if (ChecksumAutoModeCheck(ptv->pkts,
-                        SC_ATOMIC_GET(ptv->livedev->pkts),
-                        SC_ATOMIC_GET(ptv->livedev->invalid_checksums))) {
-                ptv->livedev->ignore_checksum = 1;
-                p->flags |= PKT_IGNORE_CHECKSUM;
-            }
-        } else {
-            if (h.h2->tp_status & TP_STATUS_CSUMNOTREADY) {
-                p->flags |= PKT_IGNORE_CHECKSUM;
-            }
-        }
-        if (h.h2->tp_status & TP_STATUS_LOSING) {
-            emergency_flush = 1;
-            NetmapDumpCounters(ptv);
-        }
-
-        /* release frame if not in zero copy mode */
-        if (!(ptv->flags &  AFP_ZERO_COPY)) {
-            h.h2->tp_status = TP_STATUS_KERNEL;
-        }
-
-        if (TmThreadsSlotProcessPkt(ptv->tv, ptv->slot, p) != TM_ECODE_OK) {
-            h.h2->tp_status = TP_STATUS_KERNEL;
-            if (++ptv->frame_offset >= ptv->req.tp_frame_nr) {
-                ptv->frame_offset = 0;
-            }
-            TmqhOutputPacketpool(ptv->tv, p);
-            SCReturnInt(NETMAP_FAILURE);
-        }
-
-next_frame:
-        if (++ptv->frame_offset >= ptv->req.tp_frame_nr) {
-            ptv->frame_offset = 0;
-            /* Get out of loop to be sure we will reach maintenance tasks */
-            SCReturnInt(NETMAP_READ_OK);
-        }
-#endif
-    }
-
-    SCReturnInt(NETMAP_READ_OK);
-}
-#endif
-
-#if 0
-/**
- * \brief Reference socket
- *
- * \retval O in case of failure, 1 in case of success
- */
-static int NetmapRefSocket(NetmapPeer* peer)
-{
-    if (unlikely(peer == NULL))
-        return 0;
-
-    (void)SC_ATOMIC_ADD(peer->sock_usage, 1);
-    return 1;
-}
-#endif
-
-
-#if 0
-/**
- * \brief Dereference socket
- *
- * \retval 1 if socket is still alive, 0 if not
- */
-static int NetmapDerefSocket(NetmapPeer* peer)
-{
-    if (SC_ATOMIC_SUB(peer->sock_usage, 1) == 0) {
-        if (SC_ATOMIC_GET(peer->state) == NETMAP_STATE_DOWN) {
-            SCLogInfo("Cleaning socket connected to '%s'", peer->iface);
-            close(SC_ATOMIC_GET(peer->socket));
-            return 0;
-        }
-    }
-    return 1;
-}
-#endif
 
 void NetmapSwitchState(NetmapThreadVars *ptv, int state)
 {
@@ -933,32 +523,6 @@ void NetmapSwitchState(NetmapThreadVars *ptv, int state)
     ptv->down_count = 0;
 
     NetmapPeerUpdate(ptv);
-
-    /* Do cleaning if switching to down state */
-    if (state == NETMAP_STATE_DOWN) {
-#if 0
-        if (ptv->frame_buf) {
-            /* only used in reading phase, we can free it */
-            SCFree(ptv->frame_buf);
-            ptv->frame_buf = NULL;
-        }
-#endif
-#if 0
-        if (ptv->socket != -1) {
-            /* we need to wait for all packets to return data */
-            if (SC_ATOMIC_SUB(ptv->mpeer->sock_usage, 1) == 0) {
-                SCLogInfo("Cleaning socket connected to '%s'", ptv->iface);
-                close(ptv->socket);
-                ptv->socket = -1;
-            }
-        }
-#endif
-    }
-#if 0
-    if (state == AFP_STATE_UP) {
-         (void)SC_ATOMIC_SET(ptv->mpeer->sock_usage, 1);
-    }
-#endif
 }
 
 /**
@@ -973,19 +537,7 @@ static int NetmapTryReopen(NetmapThreadVars *ptv)
 
     ptv->down_count++;
 
-
-#if 0
-    /* Don't reconnect till we have packet that did not release data */
-    if (SC_ATOMIC_GET(ptv->mpeer->sock_usage) != 0) {
-        return -1;
-    }
-#endif
-
-#if 1
     afp_activate_r = NetmapOpen(ptv, ptv->iface, 0);
-#else
-    afp_activate_r = NetmapCreateSocket(ptv, ptv->iface, 0);
-#endif
     if (afp_activate_r != 0) {
         if (ptv->down_count % NETMAP_DOWN_COUNTER_INTERVAL == 0) {
             SCLogWarning(SC_ERR_AFP_CREATE, "Can not open iface '%s'",
@@ -1012,10 +564,6 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
     int r;
     u_int i;
     TmSlot *s = (TmSlot *)slot;
-#if 0
-    time_t last_dump = 0;
-    struct timeval current_time;
-#endif
 
     ptv->slot = s->slot_next;
 
@@ -1071,7 +619,6 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
             break;
         }
 
-#if 1
 	if (unlikely(r <= 0)) {
             SCPerfSyncCountersIfSignalled(tv, 0);
             continue;
@@ -1094,7 +641,6 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
                 struct netmap_slot *slot = &ring->slot[cur];
 
                 uint8_t *pkt = NETMAP_BUF(ring, slot->buf_idx);
-                //int len = ring->slot[i].len;
                 int len = slot->len;
                 ptv->pkts++;
                 ptv->bytes += len;
@@ -1144,91 +690,10 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
             }
 	}
         SCPerfSyncCountersIfSignalled(tv, 0);
-#else
-
-        if (r > 0 &&
-                (fds.revents & (POLLHUP|POLLRDHUP|POLLERR|POLLNVAL))) {
-            if (fds.revents & (POLLHUP | POLLRDHUP)) {
-                NetmapSwitchState(ptv, NETMAP_STATE_DOWN);
-                continue;
-            } else if (fds.revents & POLLERR) {
-                char c;
-                /* Do a recv to get errno */
-                if (recv(ptv->socket, &c, sizeof c, MSG_PEEK) != -1)
-                    continue; /* what, no error? */
-                SCLogError(SC_ERR_AFP_READ,
-                           "Error reading data from iface '%s': (%d" PRIu32 ") %s",
-                           ptv->iface, errno, strerror(errno));
-                NetmapSwitchState(ptv, NETMAP_STATE_DOWN);
-                continue;
-            } else if (fds.revents & POLLNVAL) {
-                SCLogError(SC_ERR_AFP_READ, "Invalid polling request");
-                NetmapSwitchState(ptv, NETMAP_STATE_DOWN);
-                continue;
-            }
-        } else if (r > 0) {
-            if (ptv->flags & AFP_RING_MODE) {
-                r = NetmapReadFromRing(ptv);
-            } else {
-                /* NetmapRead will call TmThreadsSlotProcessPkt on read packets */
-                r = NetmapRead(ptv);
-            }
-            switch (r) {
-                case NETMAP_READ_FAILURE:
-                    /* NetmapRead in error: best to reset the socket */
-                    SCLogError(SC_ERR_AFP_READ,
-                           "AFPRead error reading data from iface '%s': (%d" PRIu32 ") %s",
-                           ptv->iface, errno, strerror(errno));
-                    NetmapSwitchState(ptv, NETMAP_STATE_DOWN);
-                    continue;
-                case NETMAP_FAILURE:
-                    NetmapSwitchState(ptv, NETMAP_STATE_DOWN);
-                    SCReturnInt(TM_ECODE_FAILED);
-                    break;
-                case NETMAP_READ_OK:
-                    /* Trigger one dump of stats every second */
-                    TimeGet(&current_time);
-                    if (current_time.tv_sec != last_dump) {
-                        NetmapDumpCounters(ptv);
-                        last_dump = current_time.tv_sec;
-                    }
-                    break;
-                case NETMAP_KERNEL_DROP:
-                    NetmapDumpCounters(ptv);
-                    break;
-            }
-        } else if ((r < 0) && (errno != EINTR)) {
-            SCLogError(SC_ERR_AFP_READ, "Error reading data from iface '%s': (%d" PRIu32 ") %s",
-                       ptv->iface,
-                       errno, strerror(errno));
-            NetmapSwitchState(ptv, NETMAP_STATE_DOWN);
-            continue;
-        }
-        SCPerfSyncCountersIfSignalled(tv, 0);
-#endif
     }
 
     SCReturnInt(TM_ECODE_OK);
 }
-
-#if 0
-static int NetmapGetDevFlags(int fd, const char *ifname)
-{
-    struct ifreq ifr;
-
-    memset(&ifr, 0, sizeof(ifr));
-    strlcpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
-
-    if (ioctl(fd, SIOCGIFFLAGS, &ifr) == -1) {
-        SCLogError(SC_ERR_AFP_CREATE, "Unable to find type for iface \"%s\": %s",
-                   ifname, strerror(errno));
-        return -1;
-    }
-
-    return ifr.ifr_flags;
-}
-#endif
-
 
 static int NetmapGetIfnumByDev(int fd, const char *ifname, int verbose)
 {
@@ -1249,79 +714,8 @@ static int NetmapGetIfnumByDev(int fd, const char *ifname, int verbose)
 
 static int NetmapGetDevLinktype(int fd, const char *ifname)
 {
-#if 1
     return LINKTYPE_ETHERNET;
-#else
-    struct ifreq ifr;
-
-    memset(&ifr, 0, sizeof(ifr));
-    strlcpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
-
-    if (ioctl(fd, SIOCGIFHWADDR, &ifr) == -1) {
-        SCLogError(SC_ERR_AFP_CREATE, "Unable to find type for iface \"%s\": %s",
-                   ifname, strerror(errno));
-        return -1;
-    }
-
-    switch (ifr.ifr_hwaddr.sa_family) {
-        case ARPHRD_LOOPBACK:
-            return LINKTYPE_ETHERNET;
-        case ARPHRD_PPP:
-            return LINKTYPE_RAW;
-        default:
-            return ifr.ifr_hwaddr.sa_family;
-    }
-#endif
 }
-
-#if 0
-static int NetmapComputeRingParams(NetmapThreadVars *ptv, int order)
-{
-    /* Compute structure:
-       Target is to store all pending packets
-       with a size equal to MTU + auxdata
-       And we keep a decent number of block
-
-       To do so:
-       Compute frame_size (aligned to be able to fit in block
-       Check which block size we need. Blocksize is a 2^n * pagesize
-       We then need to get order, big enough to have
-       frame_size < block size
-       Find number of frame per block (divide)
-       Fill in packet_req
-
-       Compute frame size:
-       described in packet_mmap.txt
-       dependant on snaplen (need to use a variable ?)
-snaplen: MTU ?
-tp_hdrlen determine_version in daq_afpacket
-in V1:  sizeof(struct tpacket_hdr);
-in V2: val in getsockopt(instance->fd, SOL_PACKET, PACKET_HDRLEN, &val, &len)
-frame size: TPACKET_ALIGN(snaplen + TPACKET_ALIGN(TPACKET_ALIGN(tp_hdrlen) + sizeof(struct sockaddr_ll) + ETH_HLEN) - ETH_HLEN);
-
-     */
-#if 0
-    int tp_hdrlen = sizeof(struct tpacket_hdr);
-    int snaplen = default_packet_size;
-
-    ptv->req.tp_frame_size = TPACKET_ALIGN(snaplen +TPACKET_ALIGN(TPACKET_ALIGN(tp_hdrlen) + sizeof(struct sockaddr_ll) + ETH_HLEN) - ETH_HLEN);
-    ptv->req.tp_block_size = getpagesize() << order;
-    int frames_per_block = ptv->req.tp_block_size / ptv->req.tp_frame_size;
-    if (frames_per_block == 0) {
-        SCLogInfo("frame size to big");
-        return -1;
-    }
-    ptv->req.tp_frame_nr = ptv->ring_size;
-    ptv->req.tp_block_nr = ptv->req.tp_frame_nr / frames_per_block + 1;
-    /* exact division */
-    ptv->req.tp_frame_nr = ptv->req.tp_block_nr * frames_per_block;
-    SCLogInfo("AF_PACKET RX Ring params: block_size=%d block_nr=%d frame_size=%d frame_nr=%d",
-              ptv->req.tp_block_size, ptv->req.tp_block_nr,
-              ptv->req.tp_frame_size, ptv->req.tp_frame_nr);
-#endif
-    return 1;
-}
-#endif
 
 static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
 {
@@ -1346,7 +740,6 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
     }
     devqueues = req.nr_rx_rings;
     ptv->memsize = l = req.nr_memsize;
-    /*SCLogInfo("memsize is %d MB", l>>20);*/
     req.nr_ringid = (ptv->flags & NETMAP_WORKERS_MODE) ?
                         (ptv->thread_no | NETMAP_HW_RING) :
                         ptv->ringid;
@@ -1402,292 +795,6 @@ error:
     return -1;
 }
 
-#if 0
-static int NetmapCreateSocket(NetmapThreadVars *ptv, char *devname, int verbose)
-{
-    int r;
-    struct packet_mreq sock_params;
-    struct sockaddr_ll bind_address;
-    int order;
-    unsigned int i;
-    int if_idx;
-
-    /* open socket */
-    ptv->socket = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
-    if (ptv->socket == -1) {
-        SCLogError(SC_ERR_AFP_CREATE, "Couldn't create a AF_PACKET socket, error %s", strerror(errno));
-        goto error;
-    }
-    if_idx = NetmapGetIfnumByDev(ptv->socket, devname, verbose);
-    /* bind socket */
-    memset(&bind_address, 0, sizeof(bind_address));
-    bind_address.sll_family = AF_PACKET;
-    bind_address.sll_protocol = htons(ETH_P_ALL);
-    bind_address.sll_ifindex = if_idx;
-    if (bind_address.sll_ifindex == -1) {
-        if (verbose)
-            SCLogError(SC_ERR_AFP_CREATE, "Couldn't find iface %s", devname);
-        goto socket_err;
-    }
-
-
-
-    if (ptv->promisc != 0) {
-        /* Force promiscuous mode */
-        memset(&sock_params, 0, sizeof(sock_params));
-        sock_params.mr_type = PACKET_MR_PROMISC;
-        sock_params.mr_ifindex = bind_address.sll_ifindex;
-        r = setsockopt(ptv->socket, SOL_PACKET, PACKET_ADD_MEMBERSHIP,(void *)&sock_params, sizeof(sock_params));
-        if (r < 0) {
-            SCLogError(SC_ERR_AFP_CREATE,
-                    "Couldn't switch iface %s to promiscuous, error %s",
-                    devname, strerror(errno));
-            goto frame_err;
-        }
-    }
-
-    if (ptv->checksum_mode == CHECKSUM_VALIDATION_KERNEL) {
-        int val = 1;
-        if (setsockopt(ptv->socket, SOL_PACKET, PACKET_AUXDATA, &val,
-                    sizeof(val)) == -1 && errno != ENOPROTOOPT) {
-            SCLogWarning(SC_ERR_NO_AF_PACKET,
-                         "'kernel' checksum mode not supported, failling back to full mode.");
-            ptv->checksum_mode = CHECKSUM_VALIDATION_ENABLE;
-        }
-    }
-
-    /* set socket recv buffer size */
-    if (ptv->buffer_size != 0) {
-        /*
-         * Set the socket buffer size to the specified value.
-         */
-        SCLogInfo("Setting AF_PACKET socket buffer to %d", ptv->buffer_size);
-        if (setsockopt(ptv->socket, SOL_SOCKET, SO_RCVBUF,
-                       &ptv->buffer_size,
-                       sizeof(ptv->buffer_size)) == -1) {
-            SCLogError(SC_ERR_AFP_CREATE,
-                    "Couldn't set buffer size to %d on iface %s, error %s",
-                    ptv->buffer_size, devname, strerror(errno));
-            goto frame_err;
-        }
-    }
-
-    r = bind(ptv->socket, (struct sockaddr *)&bind_address, sizeof(bind_address));
-    if (r < 0) {
-        if (verbose) {
-            if (errno == ENETDOWN) {
-                SCLogError(SC_ERR_AFP_CREATE,
-                        "Couldn't bind AF_PACKET socket, iface %s is down",
-                        devname);
-            } else {
-                SCLogError(SC_ERR_AFP_CREATE,
-                        "Couldn't bind AF_PACKET socket to iface %s, error %s",
-                        devname, strerror(errno));
-            }
-        }
-        goto frame_err;
-    }
-
-    int if_flags = NetmapGetDevFlags(ptv->socket, ptv->iface);
-    if (if_flags == -1) {
-        if (verbose) {
-            SCLogError(SC_ERR_AFP_READ,
-                    "Can not acces to interface '%s'",
-                    ptv->iface);
-        }
-        goto frame_err;
-    }
-    if ((if_flags & IFF_UP) == 0) {
-        if (verbose) {
-            SCLogError(SC_ERR_AFP_READ,
-                    "Interface '%s' is down",
-                    ptv->iface);
-        }
-        goto frame_err;
-    }
-
-    if (ptv->flags & AFP_RING_MODE) {
-        int val = TPACKET_V2;
-        unsigned int len = sizeof(val);
-        if (getsockopt(ptv->socket, SOL_PACKET, PACKET_HDRLEN, &val, &len) < 0) {
-            if (errno == ENOPROTOOPT) {
-                SCLogError(SC_ERR_AFP_CREATE,
-                           "Too old kernel giving up (need 2.6.27 at least)");
-            }
-            SCLogError(SC_ERR_AFP_CREATE, "Error when retrieving packet header len");
-            goto socket_err;
-        }
-        ptv->tp_hdrlen = val;
-
-        val = TPACKET_V2;
-        if (setsockopt(ptv->socket, SOL_PACKET, PACKET_VERSION, &val,
-                    sizeof(val)) < 0) {
-            SCLogError(SC_ERR_AFP_CREATE,
-                       "Can't activate TPACKET_V2 on packet socket: %s",
-                       strerror(errno));
-            goto socket_err;
-        }
-
-        /* Allocate RX ring */
-#define DEFAULT_ORDER 3
-        for (order = DEFAULT_ORDER; order >= 0; order--) {
-            if (NetmapComputeRingParams(ptv, order) != 1) {
-                SCLogInfo("Ring parameter are incorrect. Please correct the devel");
-            }
-
-            r = setsockopt(ptv->socket, SOL_PACKET, PACKET_RX_RING, (void *) &ptv->req, sizeof(ptv->req));
-            if (r < 0) {
-                if (errno == ENOMEM) {
-                    SCLogInfo("Memory issue with ring parameters. Retrying.");
-                    continue;
-                }
-                SCLogError(SC_ERR_MEM_ALLOC,
-                        "Unable to allocate RX Ring for iface %s: (%d) %s",
-                        devname,
-                        errno,
-                        strerror(errno));
-                goto socket_err;
-            } else {
-                break;
-            }
-        }
-
-        if (order < 0) {
-            SCLogError(SC_ERR_MEM_ALLOC,
-                    "Unable to allocate RX Ring for iface %s (order 0 failed)",
-                    devname);
-            goto socket_err;
-        }
-
-        /* Allocate the Ring */
-        ptv->ring_buflen = ptv->req.tp_block_nr * ptv->req.tp_block_size;
-        ptv->ring_buf = mmap(0, ptv->ring_buflen, PROT_READ|PROT_WRITE,
-                MAP_SHARED, ptv->socket, 0);
-        if (ptv->ring_buf == MAP_FAILED) {
-            SCLogError(SC_ERR_MEM_ALLOC, "Unable to mmap");
-            goto socket_err;
-        }
-        /* allocate a ring for each frame header pointer*/
-        ptv->frame_buf = SCMalloc(ptv->req.tp_frame_nr * sizeof (union thdr *));
-        if (ptv->frame_buf == NULL) {
-            SCLogError(SC_ERR_MEM_ALLOC, "Unable to allocate frame buf");
-            goto mmap_err;
-        }
-        memset(ptv->frame_buf, 0, ptv->req.tp_frame_nr * sizeof (union thdr *));
-        /* fill the header ring with proper frame ptr*/
-        ptv->frame_offset = 0;
-        for (i = 0; i < ptv->req.tp_block_nr; ++i) {
-            void *base = &ptv->ring_buf[i * ptv->req.tp_block_size];
-            unsigned int j;
-            for (j = 0; j < ptv->req.tp_block_size / ptv->req.tp_frame_size; ++j, ++ptv->frame_offset) {
-                (((union thdr **)ptv->frame_buf)[ptv->frame_offset]) = base;
-                base += ptv->req.tp_frame_size;
-            }
-        }
-        ptv->frame_offset = 0;
-    }
-
-    SCLogInfo("Using interface '%s' via socket %d", (char *)devname, ptv->socket);
-
-#ifdef HAVE_PACKET_FANOUT
-    /* add binded socket to fanout group */
-    if (ptv->threads > 1) {
-        uint32_t option = 0;
-        uint16_t mode = ptv->cluster_type;
-        uint16_t id = ptv->cluster_id;
-        option = (mode << 16) | (id & 0xffff);
-        r = setsockopt(ptv->socket, SOL_PACKET, PACKET_FANOUT,(void *)&option, sizeof(option));
-        if (r < 0) {
-            SCLogError(SC_ERR_AFP_CREATE,
-                       "Coudn't set fanout mode, error %s",
-                       strerror(errno));
-            goto frame_err;
-        }
-    }
-#endif
-
-    ptv->datalink = NetmapGetDevLinktype(ptv->socket, ptv->iface);
-    switch (ptv->datalink) {
-        case ARPHRD_PPP:
-        case ARPHRD_ATM:
-            ptv->cooked = 1;
-    }
-
-#if 0
-    TmEcode rc;
-    rc = NetmapSetBPFFilter(ptv);
-    if (rc == TM_ECODE_FAILED) {
-        SCLogError(SC_ERR_AFP_CREATE, "Set Netmap bpf filter \"%s\" failed.", ptv->bpf_filter);
-        goto frame_err;
-    }
-#endif
-
-    /* Init is ok */
-    NetmapSwitchState(ptv, NETMAP_STATE_UP);
-    return 0;
-
-frame_err:
-    if (ptv->frame_buf)
-        SCFree(ptv->frame_buf);
-mmap_err:
-    /* Packet mmap does the cleaning when socket is closed */
-socket_err:
-    close(ptv->socket);
-    ptv->socket = -1;
-error:
-    return -1;
-}
-#endif
-
-#if 0
-TmEcode NetmapSetBPFFilter(NetmapThreadVars *ptv)
-{
-    struct bpf_program filter;
-    struct sock_fprog  fcode;
-    int rc;
-
-    if (!ptv->bpf_filter)
-        return TM_ECODE_OK;
-
-    SCMutexLock(&netmap_bpf_set_filter_lock);
-
-    SCLogInfo("Using BPF '%s' on iface '%s'",
-              ptv->bpf_filter,
-              ptv->iface);
-    if (pcap_compile_nopcap(default_packet_size,  /* snaplen_arg */
-                ptv->datalink,    /* linktype_arg */
-                &filter,       /* program */
-                ptv->bpf_filter, /* const char *buf */
-                0,             /* optimize */
-                0              /* mask */
-                ) == -1) {
-        SCLogError(SC_ERR_AFP_CREATE, "Filter compilation failed.");
-        SCMutexUnlock(&netmap_bpf_set_filter_lock);
-        return TM_ECODE_FAILED;
-    }
-    SCMutexUnlock(&netmap_bpf_set_filter_lock);
-
-    if (filter.bf_insns == NULL) {
-        SCLogError(SC_ERR_AFP_CREATE, "Filter badly setup.");
-        return TM_ECODE_FAILED;
-    }
-
-    fcode.len    = filter.bf_len;
-    fcode.filter = (struct sock_filter*)filter.bf_insns;
-
-    rc = setsockopt(ptv->socket, SOL_SOCKET, SO_ATTACH_FILTER, &fcode, sizeof(fcode));
-
-    if(rc == -1) {
-        SCLogError(SC_ERR_AFP_CREATE, "Failed to attach filter: %s", strerror(errno));
-        return TM_ECODE_FAILED;
-    }
-
-    SCMutexUnlock(&netmap_bpf_set_filter_lock);
-    return TM_ECODE_OK;
-}
-#endif
-
-
 /**
  * \brief Init function for ReceiveNetmap.
  *
@@ -1729,67 +836,23 @@ TmEcode ReceiveNetmapThreadInit(ThreadVars *tv, void *initdata, void **data) {
         SCReturnInt(TM_ECODE_FAILED);
     }
 
-#ifdef NOTYET
-    ptv->buffer_size = afpconfig->buffer_size;
-    ptv->ring_size = afpconfig->ring_size;
-#endif
-
     ptv->promisc = netmapconfig->promisc;
     ptv->checksum_mode = netmapconfig->checksum_mode;
     ptv->bpf_filter = NULL;
 
     ptv->threads = 1;
-#ifdef NOTYET
-#ifdef HAVE_PACKET_FANOUT
-    ptv->cluster_type = PACKET_FANOUT_LB;
-    ptv->cluster_id = 1;
-    /* We only set cluster info if the number of reader threads is greater than 1 */
-    if (netmapconfig->threads > 1) {
-            ptv->cluster_id = netmapconfig->cluster_id;
-            ptv->cluster_type = netmapconfig->cluster_type;
-            ptv->threads = netmapconfig->threads;
-    }
-#endif
-#endif
     ptv->flags = netmapconfig->flags;
 
     if (netmapconfig->bpf_filter) {
         ptv->bpf_filter = netmapconfig->bpf_filter;
     }
 
-#ifdef NOTYET
-#ifdef PACKET_STATISTICS
-    ptv->capture_kernel_packets = SCPerfTVRegisterCounter("capture.kernel_packets",
-            ptv->tv,
-            SC_PERF_TYPE_UINT64,
-            "NULL");
-    ptv->capture_kernel_drops = SCPerfTVRegisterCounter("capture.kernel_drops",
-            ptv->tv,
-            SC_PERF_TYPE_UINT64,
-            "NULL");
-#endif
-#endif
 
     char *active_runmode = RunmodeGetActive();
-SCLogInfo("active_runmode: %s", active_runmode);
     if (active_runmode && !strcmp("workers", active_runmode)) {
         ptv->flags |= NETMAP_WORKERS_MODE;
-#if 0
-    } else {
-        /* If we are using copy mode we need a lock */
-        ptv->flags |= AFP_SOCK_PROTECT;
-#endif
     }
     ptv->flags |= NETMAP_ZERO_COPY;
-
-#ifdef NOTYET
-    /* If we are in RING mode, then we can use ZERO copy
-     * by using the data release mechanism */
-    if (ptv->flags & AFP_RING_MODE) {
-        ptv->flags |= AFP_ZERO_COPY;
-        SCLogInfo("Enabling zero copy mode by using data release call");
-    }
-#endif
 
     ptv->copy_mode = netmapconfig->copy_mode;
     if (ptv->copy_mode != NETMAP_COPY_MODE_NONE) {
