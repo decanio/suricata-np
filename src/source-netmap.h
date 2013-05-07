@@ -29,6 +29,10 @@
 #define NETMAP_PACKET_FANOUT 1
 #endif /* NETMAP_PACKET_FANOUT */
 
+/* value for flags */
+#define NETMAP_WORKERS_MODE (1<<0)
+#define NETMAP_ZERO_COPY (1<<1)
+
 #define NETMAP_COPY_MODE_NONE  0
 #define NETMAP_COPY_MODE_TAP   1
 #define NETMAP_COPY_MODE_IPS   2

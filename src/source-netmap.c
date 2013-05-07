@@ -204,10 +204,8 @@ typedef struct NetmapThreadVars_
     NetmapPeer *mpeer;
 
     int flags;
-#if 0
-    uint16_t capture_kernel_packets;
-    uint16_t capture_kernel_drops;
-#endif
+
+    int thread_no;
 
     int cluster_id;
     int cluster_type;
@@ -219,7 +217,6 @@ typedef struct NetmapThreadVars_
     int fd;
     int ringid;
     char *mem;				/* userspace mmap address */
-    uint16_t qfirst, qlast;		/* range of queues to scan */
     u_int memsize;
     u_int queueid;
     u_int begin, end;			/* first...last+1 rings to check */
@@ -229,16 +226,6 @@ typedef struct NetmapThreadVars_
     uint32_t if_flags;
     uint32_t if_reqcap;
     uint32_t if_curcap;
-
-#if 0
-    struct tpacket_req req;
-    unsigned int tp_hdrlen;
-    unsigned int ring_buflen;
-    char *ring_buf;
-    char *frame_buf;
-    unsigned int frame_offset;
-    int ring_size;
-#endif
 
 } NetmapThreadVars;
 
@@ -296,6 +283,8 @@ typedef struct NetmapPeersList_ {
     int turn; /**< Next value for initialisation order */
     SC_ATOMIC_DECLARE(int, reached); /**< Counter used to synchronize start */
 } NetmapPeersList;
+
+SC_ATOMIC_DECL_AND_INIT(int, NetmapThreadOrdinal);
 
 /**
  * \brief Update the peer.
@@ -647,8 +636,10 @@ int NetmapRead(NetmapThreadVars *ptv)
 
 TmEcode NetmapWritePacket(Packet *p)
 {
+#ifdef NOTYET
     struct sockaddr_ll socket_address;
     int socket;
+#endif
 
     if (p->netmap_v.copy_mode == NETMAP_COPY_MODE_IPS) {
         if (p->action & ACTION_DROP) {
@@ -1016,7 +1007,8 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
     uint16_t packet_q_len = 0;
     NetmapThreadVars *ptv = (NetmapThreadVars *)data;
     struct pollfd fds;
-    int r, i;
+    int r;
+    u_int i;
     TmSlot *s = (TmSlot *)slot;
 #if 0
     time_t last_dump = 0;
@@ -1037,7 +1029,8 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
         NetmapPeersListReachedInc();
     }
     if (ptv->netmap_state == NETMAP_STATE_UP) {
-        SCLogInfo("Thread %s using Netmap fd %d UP", tv->name, ptv->fd);
+        SCLogInfo("Thread %s:%d using Netmap fd %d UP",
+                  tv->name, ptv->thread_no, ptv->fd);
     }
 
     fds.fd = ptv->fd;
@@ -1082,7 +1075,7 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
             continue;
 	}
 
-	for (i = ptv->qfirst; i < ptv->qlast; i++) {
+	for (i = ptv->begin; i < ptv->end; i++) {
 
             struct netmap_ring *ring = NETMAP_RXRING(ptv->nifp, i);
 	    if (ring->avail > 0) {
@@ -1332,8 +1325,8 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
 {
     int fd, err, l;
     struct nmreq req;
-
-   
+    int devqueues = 1;
+  
     ptv->fd = fd = open("/dev/netmap", O_RDWR);
     if (fd < 0) {
         SCLogError(SC_ERR_AFP_CREATE, "Couldn't open /dev/netmap, error %s", strerror(errno));
@@ -1345,12 +1338,17 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
     req.nr_ringid = ptv->ringid;
     err = ioctl(fd, NIOCGINFO, &req);
     if (err) {
-        SCLogError(SC_ERR_AFP_CREATE, "Cannot get into on %s, error %s ver %d",
+        SCLogError(SC_ERR_AFP_CREATE, "Cannot get info on %s, error %s ver %d",
                    ptv->iface, strerror(errno), req.nr_version);
         goto error;
     }
+    devqueues = req.nr_rx_rings;
     ptv->memsize = l = req.nr_memsize;
-    SCLogInfo("memsize is %d MB", l>>20);
+    /*SCLogInfo("memsize is %d MB", l>>20);*/
+    req.nr_ringid = (ptv->flags & NETMAP_WORKERS_MODE) ?
+                        (ptv->thread_no | NETMAP_HW_RING) :
+                        ptv->ringid;
+    req.nr_ringid |= NETMAP_NO_TX_POLL;
     err = ioctl(fd, NIOCREGIF, &req);
     if (err) {
         SCLogError(SC_ERR_AFP_CREATE, "Unable to register %s",
@@ -1369,25 +1367,23 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
 
     ptv->nifp = NETMAP_IF(ptv->mem, req.nr_offset);
     ptv->queueid = ptv->ringid;
-    ptv->qfirst = 0;
-    ptv->qlast = req.nr_rx_rings;
-    if (ptv->ringid & NETMAP_SW_RING) {
-        ptv->begin = req.nr_rx_rings;
-        ptv->end = ptv->begin + 1;
-        ptv->tx = NETMAP_TXRING(ptv->nifp, req.nr_tx_rings);
-        ptv->rx = NETMAP_RXRING(ptv->nifp, req.nr_rx_rings);
-    } else if (ptv->ringid & NETMAP_HW_RING) {
-        SCLogInfo("XXX check multiple threads");
-        ptv->begin = ptv->ringid & NETMAP_RING_MASK;
+    if (ptv->flags & NETMAP_WORKERS_MODE) {
+        ptv->begin = ptv->thread_no & NETMAP_RING_MASK;
         ptv->end = ptv->begin + 1;
         ptv->tx = NETMAP_TXRING(ptv->nifp, ptv->begin);
         ptv->rx = NETMAP_RXRING(ptv->nifp, ptv->begin);
     } else {
         ptv->begin = 0;
-        ptv->end = req.nr_rx_rings; /* XXX max of the two */
+        ptv->end = devqueues; /* XXX max of the two */
         ptv->tx = NETMAP_TXRING(ptv->nifp, 0);
         ptv->rx = NETMAP_RXRING(ptv->nifp, 0);
     }
+    /*
+    SCLogInfo("Netmap thread %d begin %d end %d",
+              ptv->thread_no,
+              ptv->begin, ptv->end);
+    */
+
     ptv->datalink = NetmapGetDevLinktype(ptv->socket, ptv->iface);
     switch (ptv->datalink) {
         case ARPHRD_PPP:
@@ -1714,6 +1710,9 @@ TmEcode ReceiveNetmapThreadInit(ThreadVars *tv, void *initdata, void **data) {
     ptv->tv = tv;
     ptv->cooked = 0;
 
+    ptv->thread_no = SC_ATOMIC_ADD(NetmapThreadOrdinal, 1) - 1;
+    SCLogInfo("Initing Netmap %d", ptv->thread_no);
+
     strlcpy(ptv->iface, netmapconfig->iface, NETMAP_IFACE_NAME_LENGTH);
     ptv->iface[AFP_IFACE_NAME_LENGTH - 1]= '\0';
 
@@ -1766,14 +1765,16 @@ TmEcode ReceiveNetmapThreadInit(ThreadVars *tv, void *initdata, void **data) {
 #endif
 
     char *active_runmode = RunmodeGetActive();
-
+SCLogInfo("active_runmode: %s", active_runmode);
     if (active_runmode && !strcmp("workers", active_runmode)) {
-        ptv->flags |= AFP_ZERO_COPY;
-        SCLogInfo("Enabling zero copy mode");
+        ptv->flags |= NETMAP_WORKERS_MODE;
+#if 0
     } else {
         /* If we are using copy mode we need a lock */
         ptv->flags |= AFP_SOCK_PROTECT;
+#endif
     }
+    ptv->flags |= NETMAP_ZERO_COPY;
 
 #ifdef NOTYET
     /* If we are in RING mode, then we can use ZERO copy
