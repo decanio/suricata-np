@@ -132,7 +132,7 @@ TmEcode NoNetmapSupportExit(ThreadVars *tv, void *initdata, void **data)
 
 #else /* We have Netmap support */
 
-#define AFP_IFACE_NAME_LENGTH 48
+#define NETMAP_IFACE_NAME_LENGTH 48
 
 #define NETMAP_STATE_DOWN 0
 #define NETMAP_STATE_UP 1
@@ -354,13 +354,13 @@ TmEcode NetmapPeersListInit()
  */
 TmEcode NetmapPeersListCheck()
 {
-#define AFP_PEERS_MAX_TRY 4
-#define AFP_PEERS_WAIT 20000
+#define NETMAP_PEERS_MAX_TRY 4
+#define NETMAP_PEERS_WAIT 20000
     int try = 0;
     SCEnter();
-    while (try < AFP_PEERS_MAX_TRY) {
+    while (try < NETMAP_PEERS_MAX_TRY) {
         if (peerslist.cnt != peerslist.peered) {
-            usleep(AFP_PEERS_WAIT);
+            usleep(NETMAP_PEERS_WAIT);
         } else {
             SCReturnInt(TM_ECODE_OK);
         }
