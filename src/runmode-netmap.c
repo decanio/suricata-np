@@ -344,11 +344,7 @@ void *ParseNetmapConfig(const char *iface)
 int NetmapConfigGeThreadsCount(void *conf)
 {
     NetmapIfaceConfig *afp = (NetmapIfaceConfig *)conf;
-#if 1
-    return 1; /* just to get started */
-#else
     return afp->threads;
-#endif
 }
 
 /**
