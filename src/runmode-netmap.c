@@ -26,7 +26,7 @@
  *
  * \author Tom DeCanio <td@npulsetech.com>
  *
- * Netmap socket runmode
+ * Netmap runmode
  *
  */
 
@@ -114,14 +114,8 @@ void *ParseNetmapConfig(const char *iface)
     ConfNode *if_default = NULL;
     ConfNode *netmap_node;
     NetmapIfaceConfig *aconf = SCMalloc(sizeof(*aconf));
-#if 0
-    char *tmpclusterid;
-#endif
     char *tmpctype;
     char *copymodestr;
-#if 0
-    intmax_t value;
-#endif
     int boolval;
     char *bpf_filter = NULL;
     char *out_iface = NULL;
@@ -139,11 +133,6 @@ void *ParseNetmapConfig(const char *iface)
     aconf->threads = 1;
     SC_ATOMIC_INIT(aconf->ref);
     (void) SC_ATOMIC_ADD(aconf->ref, 1);
-#ifdef NOTYET
-    aconf->buffer_size = 0;
-    aconf->cluster_id = 1;
-    aconf->cluster_type = PACKET_FANOUT_HASH;
-#endif
     aconf->promisc = 1;
     aconf->checksum_mode = CHECKSUM_VALIDATION_KERNEL;
     aconf->DerefFunc = NetmapDerefConfig;
@@ -200,32 +189,11 @@ void *ParseNetmapConfig(const char *iface)
         }
     }
 
-#if 0
-    (void)ConfGetChildValueBoolWithDefault(if_root, if_default, "use-mmap", (int *)&boolval);
-    if (boolval) {
-        SCLogInfo("Enabling mmaped capture on iface %s",
-                aconf->iface);
-        aconf->flags |= AFP_RING_MODE;
-    }
-    (void)ConfGetChildValueBoolWithDefault(if_root, if_default, "use-emergency-flush", (int *)&boolval);
-    if (boolval) {
-        SCLogInfo("Enabling ring emergency flush on iface %s",
-                aconf->iface);
-        aconf->flags |= AFP_EMERGENCY_MODE;
-    }
-#endif
-
-
-    aconf->copy_mode = AFP_COPY_MODE_NONE;
+    aconf->copy_mode = NETMAP_COPY_MODE_NONE;
     if (ConfGetChildValueWithDefault(if_root, if_default, "copy-mode", &copymodestr) == 1) {
         if (aconf->out_iface == NULL) {
             SCLogInfo("Copy mode activated but no destination"
                       " iface. Disabling feature");
-#if 0
-        } else if (!(aconf->flags & AFP_RING_MODE)) {
-            SCLogInfo("Copy mode activated but use-mmap "
-                      "set to no. Disabling feature");
-#endif
         } else if (strlen(copymodestr) <= 0) {
             aconf->out_iface = NULL;
         } else if (strcmp(copymodestr, "ips") == 0) {
@@ -246,43 +214,6 @@ void *ParseNetmapConfig(const char *iface)
     SC_ATOMIC_RESET(aconf->ref);
     (void) SC_ATOMIC_ADD(aconf->ref, aconf->threads);
 
-#if 0
-    if (ConfGetChildValueWithDefault(if_root, if_default, "cluster-id", &tmpclusterid) != 1) {
-        SCLogError(SC_ERR_INVALID_ARGUMENT,"Could not get cluster-id from config");
-    } else {
-        aconf->cluster_id = (uint16_t)atoi(tmpclusterid);
-        SCLogDebug("Going to use cluster-id %" PRId32, aconf->cluster_id);
-    }
-
-    if (ConfGetChildValueWithDefault(if_root, if_default, "cluster-type", &tmpctype) != 1) {
-        SCLogError(SC_ERR_GET_CLUSTER_TYPE_FAILED,"Could not get cluster-type from config");
-    } else if (strcmp(tmpctype, "cluster_round_robin") == 0) {
-        SCLogInfo("Using round-robin cluster mode for AF_PACKET (iface %s)",
-                aconf->iface);
-        aconf->cluster_type = PACKET_FANOUT_LB;
-    } else if (strcmp(tmpctype, "cluster_flow") == 0) {
-        /* In hash mode, we also ask for defragmentation needed to
-         * compute the hash */
-        uint16_t defrag = 0;
-        SCLogInfo("Using flow cluster mode for AF_PACKET (iface %s)",
-                aconf->iface);
-        ConfGetChildValueBoolWithDefault(if_root, if_default, "defrag", (int *)&defrag);
-        if (defrag) {
-            SCLogInfo("Using defrag kernel functionality for AF_PACKET (iface %s)",
-                    aconf->iface);
-            defrag = PACKET_FANOUT_FLAG_DEFRAG;
-        }
-        aconf->cluster_type = PACKET_FANOUT_HASH | defrag;
-    } else if (strcmp(tmpctype, "cluster_cpu") == 0) {
-        SCLogInfo("Using cpu cluster mode for AF_PACKET (iface %s)",
-                aconf->iface);
-        aconf->cluster_type = PACKET_FANOUT_CPU;
-    } else {
-        SCLogError(SC_ERR_INVALID_CLUSTER_TYPE,"invalid cluster-type %s",tmpctype);
-        SCFree(aconf);
-        return NULL;
-    }
-#endif
     /*load af_packet bpf filter*/
     /* command line value has precedence */
     if (ConfGet("bpf-filter", &bpf_filter) != 1) {
@@ -293,29 +224,6 @@ void *ParseNetmapConfig(const char *iface)
             }
         }
     }
-
-#if 0
-    if ((ConfGetChildValueIntWithDefault(if_root, if_default, "buffer-size", &value)) == 1) {
-        aconf->buffer_size = value;
-    } else {
-        aconf->buffer_size = 0;
-    }
-    if ((ConfGetChildValueIntWithDefault(if_root, if_default, "ring-size", &value)) == 1) {
-        aconf->ring_size = value;
-        if (value * aconf->threads < max_pending_packets) {
-            aconf->ring_size = max_pending_packets / aconf->threads + 1;
-            SCLogWarning(SC_ERR_AFP_CREATE, "Inefficient setup: ring-size < max_pending_packets. "
-                         "Resetting to decent value %d.", aconf->ring_size);
-            /* We want at least that max_pending_packets packets can be handled by the
-             * interface. This is generous if we have multiple interfaces listening. */
-        }
-    } else {
-        /* We want that max_pending_packets packets can be handled by suricata
-         * for this interface. To take burst into account we multiply the obtained
-         * size by 2. */
-        aconf->ring_size = max_pending_packets * 2 / aconf->threads;
-    }
-#endif
 
     (void)ConfGetChildValueBoolWithDefault(if_root, if_default, "disable-promisc", (int *)&boolval);
     if (boolval) {
@@ -379,7 +287,7 @@ int RunModeIdsNetmapAuto(DetectEngineCtx *de_ctx)
 
     (void)ConfGet("netmap.live-interface", &live_dev);
 
-    if (AFPPeersListInit() != TM_ECODE_OK) {
+    if (NetmapPeersListInit() != TM_ECODE_OK) {
         SCLogError(SC_ERR_RUNMODE, "Unable to init peers list.");
         exit(EXIT_FAILURE);
     }
@@ -396,7 +304,7 @@ int RunModeIdsNetmapAuto(DetectEngineCtx *de_ctx)
     }
 
     /* In IPS mode each threads must have a peer */
-    if (AFPPeersListCheck() != TM_ECODE_OK) {
+    if (NetmapPeersListCheck() != TM_ECODE_OK) {
         SCLogError(SC_ERR_RUNMODE, "Some IPS capture threads did not peer.");
         exit(EXIT_FAILURE);
     }
@@ -446,7 +354,7 @@ int RunModeIdsNetmapAutoFp(DetectEngineCtx *de_ctx)
     }
 
     SCLogInfo("RunModeIdsNetmapAutoFp initialised");
-#endif /* HAVE_AF_PACKET */
+#endif /* HAVE_NETMAP */
 
     SCReturnInt(0);
 }
@@ -490,7 +398,7 @@ int RunModeIdsNetmapSingle(DetectEngineCtx *de_ctx)
         exit(EXIT_FAILURE);
     }
 
-    SCLogInfo("RunModeIdsAFPSingle initialised");
+    SCLogInfo("RunModeIdsNetmapSingle initialised");
 
 #endif /* HAVE_NETMAP */
     SCReturnInt(0);

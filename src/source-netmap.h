@@ -40,7 +40,6 @@
 #define NETMAP_FILE_MAX_PKTS 256
 #define NETMAP_IFACE_NAME_LENGTH 48
 
-#if 1
 typedef struct NetmapIfaceConfig_
 {
     char iface[NETMAP_IFACE_NAME_LENGTH];
@@ -57,31 +56,6 @@ typedef struct NetmapIfaceConfig_
     SC_ATOMIC_DECLARE(unsigned int, ref);
     void (*DerefFunc)(void *);
 } NetmapIfaceConfig;
-#else
-typedef struct AFPIfaceConfig_
-{
-    char iface[AFP_IFACE_NAME_LENGTH];
-    /* number of threads */
-    int threads;
-    /* socket buffer size */
-    int buffer_size;
-    /* ring size in number of packets */
-    int ring_size;
-    /* cluster param */
-    int cluster_id;
-    int cluster_type;
-    /* promisc mode */
-    int promisc;
-    /* misc use flags including ring mode */
-    int flags;
-    int copy_mode;
-    ChecksumValidationMode checksum_mode;
-    char *bpf_filter;
-    char *out_iface;
-    SC_ATOMIC_DECLARE(unsigned int, ref);
-    void (*DerefFunc)(void *);
-} AFPIfaceConfig;
-#endif
 
 /**
  * \ingroup afppeers
@@ -102,17 +76,17 @@ typedef struct NetmapPeer_ {
 } NetmapPeer;
 
 /**
- * \brief per packet AF_PACKET vars
+ * \brief per packet Netmap vars
  *
  * This structure is used y the release data system and is cleaned
- * up by the AFPV_CLEANUP macro below.
+ * up by the NETMAPV_CLEANUP macro below.
  */
 typedef struct NetmapPacketVars_
 {
     void *relptr;
     int copy_mode;
     NetmapPeer *peer; /**< Sending peer for IPS/TAP mode */
-    /** Pointer to ::AFPPeer used for capture. Field is used to be able
+    /** Pointer to ::NetmapPeer used for capture. Field is used to be able
      * to do reference counting.
      */
     NetmapPeer *mpeer;

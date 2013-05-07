@@ -346,7 +346,7 @@ TmEcode NetmapPeersListCheck()
 }
 
 /**
- * \brief Declare a new AFP thread to Netmap peers list.
+ * \brief Declare a new Netmap thread to Netmap peers list.
  */
 TmEcode NetmapPeersListAdd(NetmapThreadVars *ptv)
 {
@@ -827,7 +827,7 @@ TmEcode ReceiveNetmapThreadInit(ThreadVars *tv, void *initdata, void **data) {
     SCLogInfo("Initing Netmap %d", ptv->thread_no);
 
     strlcpy(ptv->iface, netmapconfig->iface, NETMAP_IFACE_NAME_LENGTH);
-    ptv->iface[AFP_IFACE_NAME_LENGTH - 1]= '\0';
+    ptv->iface[NETMAP_IFACE_NAME_LENGTH - 1]= '\0';
 
     ptv->livedev = LiveGetDevice(ptv->iface);
     if (ptv->livedev == NULL) {
