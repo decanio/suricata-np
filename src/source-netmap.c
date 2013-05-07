@@ -147,8 +147,10 @@ TmEcode NoNetmapSupportExit(ThreadVars *tv, void *initdata, void **data)
 #define TP_STATUS_USER_BUSY (1 << 31)
 #endif
 
+#if 0
 /** protect pfring_set_bpf_filter, as it is not thread safe */
 static SCMutex netmap_bpf_set_filter_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 enum {
     NETMAP_READ_OK,
@@ -1611,12 +1613,14 @@ static int NetmapCreateSocket(NetmapThreadVars *ptv, char *devname, int verbose)
             ptv->cooked = 1;
     }
 
+#if 0
     TmEcode rc;
     rc = NetmapSetBPFFilter(ptv);
     if (rc == TM_ECODE_FAILED) {
         SCLogError(SC_ERR_AFP_CREATE, "Set Netmap bpf filter \"%s\" failed.", ptv->bpf_filter);
         goto frame_err;
     }
+#endif
 
     /* Init is ok */
     NetmapSwitchState(ptv, NETMAP_STATE_UP);
@@ -1635,6 +1639,7 @@ error:
 }
 #endif
 
+#if 0
 TmEcode NetmapSetBPFFilter(NetmapThreadVars *ptv)
 {
     struct bpf_program filter;
@@ -1680,6 +1685,7 @@ TmEcode NetmapSetBPFFilter(NetmapThreadVars *ptv)
     SCMutexUnlock(&netmap_bpf_set_filter_lock);
     return TM_ECODE_OK;
 }
+#endif
 
 
 /**
