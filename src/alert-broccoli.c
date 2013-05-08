@@ -420,6 +420,11 @@ TmEcode AlertBroccoliDecoderEvent(ThreadVars *tv, Packet *p, void *data, PacketQ
         return TM_ECODE_OK;
 
     for (i = 0; i < p->alerts.cnt; i++) {
+        /* The barnyard2 broccoli format sends flow tuple fields.
+         * We don't have any tuple information here.
+         * As a result just count alerts.  Possibly implement
+         * an alternate message format for this case.
+         */
         SCMutexLock(&aft->ctx->mutex);
         aft->ctx->alerts++;
         SCMutexUnlock(&aft->ctx->mutex);
