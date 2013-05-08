@@ -48,6 +48,7 @@
 #include "output.h"
 #include "alert-broccoli.h"
 
+#include "util-byte.h"
 #include "util-mpm-b2g-cuda.h"
 #include "util-cuda-handlers.h"
 #include "util-privs.h"
@@ -127,6 +128,9 @@ void TmModuleAlertBroccoliRegister (void) {
 
     OutputRegisterModule(MODULE_NAME, "broccoli", AlertBroccoliInitCtx);
 }
+
+/* Default Sensor ID value */
+static uint64_t sensor_id = 0;
 
 typedef struct AlertBroccoliCtx_ {
     /* Connection to Bro */
@@ -220,8 +224,6 @@ TmEcode AlertBroccoliIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
         /* Second value */
         BroRecord *sad = bro_record_new();
         //uint32_t sensor_id_hl = ntohl(uevent->sensor_id);
-        uint64 sensor_id = 0;
-        prio = pa->s->prio;
         gid = pa->s->gid;
         sid = pa->s->id;
         class = pa->s->class;
@@ -344,7 +346,6 @@ TmEcode AlertBroccoliIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
         /* Second value */
         BroRecord *sad = bro_record_new();
         //uint32_t sensor_id_hl = ntohl(uevent->sensor_id);
-        uint64 sensor_id = 0;
         prio = pa->s->prio;
         gid = pa->s->gid;
         sid = pa->s->id;
@@ -487,17 +488,32 @@ void AlertBroccoliExitPrintStats(ThreadVars *tv, void *data) {
 OutputCtx *AlertBroccoliInitCtx(ConfNode *conf)
 {
     char hostname[512];
+    const char *host = "localhost"; /* default host */
+    const char *port = "47758";     /* default port */
     int flags = BRO_CFLAG_RECONNECT | BRO_CFLAG_ALWAYS_QUEUE;
 
-    const char *host = ConfNodeLookupChildValue(conf, "host");
-    if (host == NULL) {
-	SCLogError(SC_ERR_MISSING_CONFIG_PARAM, "No Broccoli host in config,");
-        exit(EXIT_FAILURE);
-    }
-    const char *port = ConfNodeLookupChildValue(conf, "port");
-    if (port == NULL) {
-	SCLogError(SC_ERR_MISSING_CONFIG_PARAM, "No Broccoli port in config,");
-        exit(EXIT_FAILURE);
+    if (conf) {
+        host = ConfNodeLookupChildValue(conf, "host");
+        if (host == NULL) {
+	    SCLogError(SC_ERR_MISSING_CONFIG_PARAM, "No Broccoli host in config,");
+            exit(EXIT_FAILURE);
+        }
+        const char *port = ConfNodeLookupChildValue(conf, "port");
+        if (port == NULL) {
+	    SCLogError(SC_ERR_MISSING_CONFIG_PARAM, "No Broccoli port in config,");
+            exit(EXIT_FAILURE);
+        }
+
+        const char *sensor_id_s = ConfNodeLookupChildValue(conf, "sensor-id");
+        if (sensor_id_s != NULL) {
+            if (ByteExtractStringUint64(&sensor_id, 10, 0, sensor_id_s) == -1) {
+                SCLogError(SC_ERR_INVALID_ARGUMENT,
+                           "Failed to initialize broccoli output, "
+                           "invalid sensor-is: %s", sensor_id_s);
+                exit(EXIT_FAILURE);
+            }
+            sensor_id = htonl(sensor_id);
+        }
     }
 
     snprintf(hostname, sizeof(hostname), "%s:%s", host, port);
