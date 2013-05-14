@@ -1,4 +1,4 @@
-/* Copyright (C) 2011,2012 Open Information Security Foundation
+/* Copyright (C) 2011,2013 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -126,7 +126,7 @@ TmEcode NoNetmapSupportExit(ThreadVars *tv, void *initdata, void **data)
 {
     SCLogError(SC_ERR_NO_AF_PACKET,"Error creating thread %s: you do not have "
                "support for Netmap enabled, please recompile "
-               "with --enable-af-packet", tv->name);
+               "with --enable-netmap", tv->name);
     exit(EXIT_FAILURE);
 }
 
@@ -255,9 +255,9 @@ void TmModuleReceiveNetmapRegister (void) {
 }
 
 /**
- *  \defgroup afppeers Netmap peers list
+ *  \defgroup Netmap peers list
  *
- * AF_PACKET has an IPS mode were interface are peered: packet from
+ * Netmap has an IPS mode were interface are peered: packet from
  * on interface are sent the peered interface and the other way. The ::NetmapPeer
  * list is maitaining the list of peers. Each ::NetmapPeer is storing the needed
  * information to be able to send packet on the interface.
@@ -341,7 +341,7 @@ TmEcode NetmapPeersListCheck()
         }
         try++;
     }
-    SCLogError(SC_ERR_AFP_CREATE, "Threads number not equals");
+    SCLogError(SC_ERR_AFP_CREATE, "Threads number not equal");
     SCReturnInt(TM_ECODE_FAILED);
 }
 
@@ -533,17 +533,17 @@ void NetmapSwitchState(NetmapThreadVars *ptv, int state)
  */
 static int NetmapTryReopen(NetmapThreadVars *ptv)
 {
-    int afp_activate_r;
+    int netmap_activate_r;
 
     ptv->down_count++;
 
-    afp_activate_r = NetmapOpen(ptv, ptv->iface, 0);
-    if (afp_activate_r != 0) {
+    netmap_activate_r = NetmapOpen(ptv, ptv->iface, 0);
+    if (netmap_activate_r != 0) {
         if (ptv->down_count % NETMAP_DOWN_COUNTER_INTERVAL == 0) {
             SCLogWarning(SC_ERR_AFP_CREATE, "Can not open iface '%s'",
                          ptv->iface);
         }
-        return afp_activate_r;
+        return netmap_activate_r;
     }
 
     SCLogInfo("Interface '%s' is back", ptv->iface);
@@ -551,7 +551,7 @@ static int NetmapTryReopen(NetmapThreadVars *ptv)
 }
 
 /**
- *  \brief Main AF_PACKET reading Loop function
+ *  \brief Main Netmap packet reading Loop function
  */
 TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
 {
@@ -910,7 +910,7 @@ void ReceiveNetmapThreadExitStats(ThreadVars *tv, void *data) {
 }
 
 /**
- * \brief DeInit function closes af packet socket at exit.
+ * \brief DeInit function closes Netmap fd at exit.
  * \param tv pointer to ThreadVars
  * \param data pointer that gets cast into NetmapThreadVars for ptv
  */
