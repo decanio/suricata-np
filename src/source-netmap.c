@@ -574,13 +574,14 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
         }
         r = NetmapOpen(ptv, ptv->iface, 1);
         if (r < 0) {
-            SCLogError(SC_ERR_AFP_CREATE, "Couldn't init Netmap fd");
+            SCLogError(SC_ERR_AFP_CREATE, "Couldn't init Netmap fd: %s",
+                       ptv->iface);
         }
         NetmapPeersListReachedInc();
     }
     if (ptv->netmap_state == NETMAP_STATE_UP) {
-        SCLogInfo("Thread %s:%d using Netmap fd %d UP",
-                  tv->name, ptv->thread_no, ptv->fd);
+        SCLogInfo("Thread %s:%d using Netmap %s fd %d UP",
+                  tv->name, ptv->thread_no, ptv->iface, ptv->fd);
     }
 
     fds.fd = ptv->fd;
