@@ -739,6 +739,11 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
         goto error;
     }
     devqueues = req.nr_rx_rings;
+    if (devqueues > ptv->threads) {
+        SCLogError(SC_ERR_AFP_CREATE, "Bad threads number %d, have %d queues %s",
+                   ptv->threads, devqueues);
+        goto error;
+    }
     ptv->memsize = l = req.nr_memsize;
     req.nr_ringid = (ptv->flags & NETMAP_WORKERS_MODE) ?
                         (ptv->thread_no | NETMAP_HW_RING) :
