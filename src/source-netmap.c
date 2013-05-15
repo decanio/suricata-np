@@ -745,6 +745,7 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
         goto error;
     }
     ptv->memsize = req.nr_memsize;
+    SCLogInfo("Device map size is %d Kb", ptv->memsize >> 10);
     
     req.nr_ringid = (ptv->flags & NETMAP_WORKERS_MODE) ?
                         (ptv->thread_no | NETMAP_HW_RING) : 0;
