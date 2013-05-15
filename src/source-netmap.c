@@ -212,7 +212,6 @@ typedef struct NetmapThreadVars_
 
     /* Netmap stuff starts here */
     int fd;
-    int ringid;
     char *mem;				/* userspace mmap address */
     u_int memsize;
     u_int queueid;
@@ -720,7 +719,7 @@ static int NetmapGetDevLinktype(int fd, const char *ifname)
 
 static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
 {
-    int fd, err, l;
+    int fd, err;
     struct nmreq req;
     int devqueues = 1;
   
@@ -732,7 +731,7 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
     memset(&req, 0, sizeof(req));
     req.nr_version = NETMAP_API;
     strncpy(req.nr_name, ptv->iface, sizeof(req.nr_name));
-    req.nr_ringid = ptv->ringid;
+    req.nr_ringid = 0;
     err = ioctl(fd, NIOCGINFO, &req);
     if (err) {
         SCLogError(SC_ERR_NETMAP_CREATE, "Cannot get info on %s, error %s ver %d",
@@ -745,10 +744,11 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
                    ptv->threads, devqueues);
         goto error;
     }
-    ptv->memsize = l = req.nr_memsize;
+    ptv->memsize = req.nr_memsize;
+    
     req.nr_ringid = (ptv->flags & NETMAP_WORKERS_MODE) ?
-                        (ptv->thread_no | NETMAP_HW_RING) :
-                        ptv->ringid;
+                        (ptv->thread_no | NETMAP_HW_RING) : 0;
+
     req.nr_ringid |= NETMAP_NO_TX_POLL;
     err = ioctl(fd, NIOCREGIF, &req);
     if (err) {
@@ -767,7 +767,7 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
     }
 
     ptv->nifp = NETMAP_IF(ptv->mem, req.nr_offset);
-    ptv->queueid = ptv->ringid;
+    ptv->queueid = 0;
     if (ptv->flags & NETMAP_WORKERS_MODE) {
         ptv->begin = ptv->thread_no & NETMAP_RING_MASK;
         ptv->end = ptv->begin + 1;
