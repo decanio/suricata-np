@@ -719,7 +719,7 @@ static int NetmapGetDevLinktype(int fd, const char *ifname)
 
 static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
 {
-    int fd, err;
+    int fd, err, l;
     struct nmreq req;
     int devqueues = 1;
   
@@ -740,11 +740,11 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
     }
     devqueues = req.nr_rx_rings;
     if (devqueues < ptv->threads) {
-        SCLogError(SC_ERR_NETMAP_CREATE, "Bad threads number %d, have %d queues %s",
+        SCLogError(SC_ERR_NETMAP_CREATE, "Bad threads number %d, have %d queues",
                    ptv->threads, devqueues);
         goto error;
     }
-    ptv->memsize = req.nr_memsize;
+    ptv->memsize = l = req.nr_memsize;
     SCLogInfo("Device map size is %d Kb", ptv->memsize >> 10);
     
     req.nr_ringid = (ptv->flags & NETMAP_WORKERS_MODE) ?
