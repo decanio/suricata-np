@@ -739,7 +739,7 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
         goto error;
     }
     devqueues = req.nr_rx_rings;
-    if (devqueues > ptv->threads) {
+    if (devqueues < ptv->threads) {
         SCLogError(SC_ERR_AFP_CREATE, "Bad threads number %d, have %d queues %s",
                    ptv->threads, devqueues);
         goto error;
