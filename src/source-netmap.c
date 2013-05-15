@@ -341,7 +341,7 @@ TmEcode NetmapPeersListCheck()
         }
         try++;
     }
-    SCLogError(SC_ERR_AFP_CREATE, "Threads number not equal");
+    SCLogError(SC_ERR_NETMAP_CREATE, "Threads number not equal");
     SCReturnInt(TM_ECODE_FAILED);
 }
 
@@ -384,7 +384,7 @@ TmEcode NetmapPeersListAdd(NetmapThreadVars *ptv)
             mtu = GetIfaceMTU(ptv->iface);
             out_mtu = GetIfaceMTU(ptv->out_iface);
             if (mtu != out_mtu) {
-                SCLogError(SC_ERR_AFP_CREATE,
+                SCLogError(SC_ERR_NETMAP_CREATE,
                         "MTU on %s (%d) and %s (%d) are not equal, "
                         "transmission of packets bigger than %d will fail.",
                         ptv->iface, mtu,
@@ -540,7 +540,7 @@ static int NetmapTryReopen(NetmapThreadVars *ptv)
     netmap_activate_r = NetmapOpen(ptv, ptv->iface, 0);
     if (netmap_activate_r != 0) {
         if (ptv->down_count % NETMAP_DOWN_COUNTER_INTERVAL == 0) {
-            SCLogWarning(SC_ERR_AFP_CREATE, "Can not open iface '%s'",
+            SCLogWarning(SC_ERR_NETMAP_CREATE, "Can not open iface '%s'",
                          ptv->iface);
         }
         return netmap_activate_r;
@@ -574,7 +574,7 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
         }
         r = NetmapOpen(ptv, ptv->iface, 1);
         if (r < 0) {
-            SCLogError(SC_ERR_AFP_CREATE, "Couldn't init Netmap fd");
+            SCLogError(SC_ERR_NETMAP_CREATE, "Couldn't init Netmap fd");
         }
         NetmapPeersListReachedInc();
     }
@@ -704,7 +704,7 @@ static int NetmapGetIfnumByDev(int fd, const char *ifname, int verbose)
 
     if (ioctl(fd, SIOCGIFINDEX, &ifr) == -1) {
            if (verbose)
-               SCLogError(SC_ERR_AFP_CREATE, "Unable to find iface %s: %s",
+               SCLogError(SC_ERR_NETMAP_CREATE, "Unable to find iface %s: %s",
                           ifname, strerror(errno));
         return -1;
     }
@@ -725,7 +725,7 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
   
     ptv->fd = fd = open("/dev/netmap", O_RDWR);
     if (fd < 0) {
-        SCLogError(SC_ERR_AFP_CREATE, "Couldn't open /dev/netmap, error %s", strerror(errno));
+        SCLogError(SC_ERR_NETMAP_CREATE, "Couldn't open /dev/netmap, error %s", strerror(errno));
         goto error;
     }
     memset(&req, 0, sizeof(req));
@@ -734,11 +734,16 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
     req.nr_ringid = ptv->ringid;
     err = ioctl(fd, NIOCGINFO, &req);
     if (err) {
-        SCLogError(SC_ERR_AFP_CREATE, "Cannot get info on %s, error %s ver %d",
+        SCLogError(SC_ERR_NETMAP_CREATE, "Cannot get info on %s, error %s ver %d",
                    ptv->iface, strerror(errno), req.nr_version);
         goto error;
     }
     devqueues = req.nr_rx_rings;
+    if (devqueues < ptv->threads) {
+        SCLogError(SC_ERR_NETMAP_CREATE, "Bad threads number %d, have %d queues %s",
+                   ptv->threads, devqueues);
+        goto error;
+    }
     ptv->memsize = l = req.nr_memsize;
     req.nr_ringid = (ptv->flags & NETMAP_WORKERS_MODE) ?
                         (ptv->thread_no | NETMAP_HW_RING) :
@@ -746,14 +751,14 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
     req.nr_ringid |= NETMAP_NO_TX_POLL;
     err = ioctl(fd, NIOCREGIF, &req);
     if (err) {
-        SCLogError(SC_ERR_AFP_CREATE, "Unable to register %s",
+        SCLogError(SC_ERR_NETMAP_CREATE, "Unable to register %s",
                    ptv->iface);
         goto error;
     }
     if (ptv->mem == NULL) {
         ptv->mem = mmap(0, l, PROT_WRITE|PROT_READ, MAP_SHARED, fd, 0);
         if (ptv->mem == MAP_FAILED) {
-            SCLogError(SC_ERR_AFP_CREATE, "Unable to mmap %s, error %s",
+            SCLogError(SC_ERR_NETMAP_CREATE, "Unable to mmap %s, error %s",
                    ptv->iface, strerror(errno));
             ptv->mem = NULL;
             goto error;
