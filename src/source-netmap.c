@@ -484,7 +484,9 @@ static inline void NetmapDumpCounters(NetmapThreadVars *ptv)
 
 TmEcode NetmapWritePacket(Packet *p)
 {
+#if 0
     struct netmap_if *src_nifp, *dst_nifp;
+#endif
     struct netmap_ring *rxring, *txring;
     struct netmap_slot *rs, *ts;
     u_int j, k;
@@ -503,15 +505,19 @@ TmEcode NetmapWritePacket(Packet *p)
         return TM_ECODE_FAILED;
     }
 
+#if 0
     src_nifp = p->netmap_v.nifp;
     dst_nifp = p->netmap_v.tx_nifp;
     rxring = NETMAP_RXRING(src_nifp, p->netmap_v.rx_ring);
     txring = NETMAP_TXRING(dst_nifp, p->netmap_v.rx_ring);
+#endif
+    rxring = p->netmap_v.rx;
+    txring = p->netmap_v.tx;
     j = p->netmap_v.rx_slot; /* RX */
     k = txring->cur;         /* TX */
     rs = &rxring->slot[j];
+    ts = &txring->slot[k];
     //SCMutexLock(&p->netmap_v.peer->peer_protect);
-#if 0
     uint32_t pkt;
     pkt = ts->buf_idx;
     ts->buf_idx = rs->buf_idx;
@@ -524,7 +530,6 @@ TmEcode NetmapWritePacket(Packet *p)
     rxring->reserved -= 1;
     rxring->avail -= 1;
     txring->cur = k;
-#endif
 
 #ifdef NOTYET
     src = &src_nifp->slot[i]; /* locate src and dst slots */
@@ -625,6 +630,10 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
 
     fds.fd = ptv->rx_fd;
     fds.events = POLLIN;
+#ifdef NOTYET
+    if (ptv->copy_mode != NETMAP_COPY_MODE_NONE)
+        fds.events |= POLLOUT;
+#endif
 
     while (1) {
         /* Start by checking the state of our interface */
@@ -704,13 +713,13 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
                     gettimeofday(&p->ts, NULL);
                     SCLogDebug("pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
                                GET_PKT_LEN(p), p, GET_PKT_DATA(p));
-                    p->netmap_v.nifp = ptv->nifp;
-                    p->netmap_v.tx_nifp = ptv->tx_nifp;
+                    p->netmap_v.rx = ring;
                     p->netmap_v.rx_ring = i;
                     p->netmap_v.rx_slot = cur;
                     p->ReleaseData = NetmapReleaseDataFromRing;
                     p->netmap_v.copy_mode = ptv->copy_mode;
                     if (p->netmap_v.copy_mode != NETMAP_COPY_MODE_NONE) {
+                        p->netmap_v.tx = NETMAP_TXRING(ptv->tx_nifp, i);
                         p->netmap_v.peer = ptv->mpeer->peer;
                         //ring->reserved++;
                     } else {

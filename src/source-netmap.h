@@ -88,8 +88,8 @@ typedef struct NetmapPeer_ {
  */
 typedef struct NetmapPacketVars_
 {
-    struct netmap_if *nifp;    /* netmap_if packet rxed from */
-    struct netmap_if *tx_nifp; /* netmap_if packet txed to */
+    struct netmap_ring *rx;    /* ring packet rxed from */
+    struct netmap_ring *tx;    /* ring packet to be txed to */
     int rx_ring;               /* ring packet rxed from */
     int rx_slot;               /* index packets rxed from */
     int copy_mode;
