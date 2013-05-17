@@ -481,6 +481,33 @@ static inline void NetmapDumpCounters(NetmapThreadVars *ptv)
 #endif
 }
 
+/* Atomic increment a 32 bit counter.
+ * These operate on resources shared with the Netmap driver
+ * so these couldn't use the usual primitives in util-atomic.h
+ */
+static inline uint32_t NetmapAtomicIncr(uint32_t *x)
+{
+#ifdef SCAtomicAddAndFetch
+    return SCAtomicAddAndFetch(x, 1);
+#else
+#error not implemented yet
+    /* this is going to be ugly and suboptimal */
+#endif
+}
+
+/* Atomic decrement a 32 bit counter.
+ * These operate on resources shared with the Netmap driver
+ * so these couldn't use the usual primitives in util-atomic.h
+ */
+static inline uint32_t NetmapAtomicDecr(uint32_t *x)
+{
+#ifdef SCAtomicSubAndFetch
+    return SCAtomicSubAndFetch(x, 1);
+#else
+#error not implemented yet
+    /* this is going to be ugly and suboptimal */
+#endif
+}
 
 TmEcode NetmapWritePacket(Packet *p)
 {
@@ -515,7 +542,8 @@ TmEcode NetmapWritePacket(Packet *p)
     txring = p->netmap_v.tx;
     j = p->netmap_v.rx_slot; /* RX */
     k = txring->cur;         /* TX */
-    SCLogInfo("Flipping rx slot %d for tx slot %d", j, k);
+    SCLogInfo("Flipping ring %d rx slot %d for tx slot %d",
+              p->netmap_v.rx_ring, j, k);
     rs = &rxring->slot[j];
     ts = &txring->slot[k];
     //SCMutexLock(&p->netmap_v.peer->peer_protect);
@@ -561,7 +589,8 @@ TmEcode NetmapReleaseDataFromRing(ThreadVars *t, Packet *p)
         ret = NetmapWritePacket(p);
     }
     /* TBD: need to make this work across threads */
-    rxring->reserved--;
+    //rxring->reserved--;
+    NetmapAtomicDecr(&rxring->reserved);
 
     return ret;
 }
@@ -689,7 +718,7 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
 	    int avail = ring->avail;
             for (avail = ring->avail; avail > 0; avail--) {
 #else
-            for ( ; ring->avail > 0 ; ring->avail--, ring->reserved++ ) {
+            for ( ; ring->avail > 0 ; ring->avail-- ) {
 #endif
                 p = PacketGetFromQueueOrAlloc();
                 if (unlikely(p == NULL)) {
@@ -765,6 +794,7 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
                 //if (ptv->copy_mode != NETMAP_COPY_MODE_NONE) {
                 //    ring->avail -= 1;
                 //}
+                NetmapAtomicDecr(&ring->reserved);
             }
 	}
         SCPerfSyncCountersIfSignalled(tv, 0);
