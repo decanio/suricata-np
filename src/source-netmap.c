@@ -515,6 +515,7 @@ TmEcode NetmapWritePacket(Packet *p)
     txring = p->netmap_v.tx;
     j = p->netmap_v.rx_slot; /* RX */
     k = txring->cur;         /* TX */
+    SCLogInfo("Flipping rx slot %d for tx slot %d", j, k);
     rs = &rxring->slot[j];
     ts = &txring->slot[k];
     //SCMutexLock(&p->netmap_v.peer->peer_protect);
@@ -527,8 +528,8 @@ TmEcode NetmapWritePacket(Packet *p)
     ts->flags |= NS_BUF_CHANGED;
     rs->flags |= NS_BUF_CHANGED;
     k = NETMAP_RING_NEXT(txring, k);
-    rxring->reserved -= 1;
-    rxring->avail -= 1;
+    //rxring->reserved -= 1;
+    //rxring->avail -= 1;
     txring->cur = k;
 
 #ifdef NOTYET
@@ -552,11 +553,15 @@ TmEcode NetmapWritePacket(Packet *p)
 TmEcode NetmapReleaseDataFromRing(ThreadVars *t, Packet *p)
 {
     int ret = TM_ECODE_OK;
+    struct netmap_ring *rxring = p->netmap_v.rx;
+
     /* Need to be in copy mode and need to detect early release
        where Ethernet header could not be set (and pseudo packet) */
     if ((p->netmap_v.copy_mode != NETMAP_COPY_MODE_NONE) && !PKT_IS_PSEUDOPKT(p)) {
         ret = NetmapWritePacket(p);
     }
+    /* TBD: need to make this work across threads */
+    rxring->reserved--;
 
     return ret;
 }
@@ -680,7 +685,12 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
                 SCLogDebug("ring[%d]->avail: %" PRIu32 "", i, ring->avail);
 	    }
             u_int cur = ring->cur;
-            for ( ; ring->avail > 0 ; ring->avail--) {
+#if 0
+	    int avail = ring->avail;
+            for (avail = ring->avail; avail > 0; avail--) {
+#else
+            for ( ; ring->avail > 0 ; ring->avail--, ring->reserved++ ) {
+#endif
                 p = PacketGetFromQueueOrAlloc();
                 if (unlikely(p == NULL)) {
                     break;
@@ -718,7 +728,7 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
                     p->netmap_v.rx_slot = cur;
                     p->ReleaseData = NetmapReleaseDataFromRing;
                     p->netmap_v.copy_mode = ptv->copy_mode;
-                    if (p->netmap_v.copy_mode != NETMAP_COPY_MODE_NONE) {
+                    if (ptv->copy_mode != NETMAP_COPY_MODE_NONE) {
                         p->netmap_v.tx = NETMAP_TXRING(ptv->tx_nifp, i);
                         p->netmap_v.peer = ptv->mpeer->peer;
                         //ring->reserved++;
@@ -752,6 +762,9 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
                 }
                 (void) SC_ATOMIC_ADD(ptv->livedev->pkts, 1);
                 ring->cur = NETMAP_RING_NEXT(ring, cur);        
+                //if (ptv->copy_mode != NETMAP_COPY_MODE_NONE) {
+                //    ring->avail -= 1;
+                //}
             }
 	}
         SCPerfSyncCountersIfSignalled(tv, 0);
