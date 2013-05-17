@@ -69,6 +69,11 @@ typedef struct NetmapPeer_ {
     SC_ATOMIC_DECLARE(int, if_idx);
     SC_ATOMIC_DECLARE(uint8_t, state);
     //SCMutex sock_protect;
+#if 0
+    void *PeerTV;
+    struct netmap_if *peer_nifp;
+    SCMutex peer_protect;
+#endif
     int flags;
     int turn; /**< Field used to store initialisation order. */
     struct NetmapPeer_ *peer;
@@ -83,7 +88,10 @@ typedef struct NetmapPeer_ {
  */
 typedef struct NetmapPacketVars_
 {
-    void *relptr;
+    struct netmap_if *nifp;    /* netmap_if packet rxed from */
+    struct netmap_if *tx_nifp; /* netmap_if packet txed to */
+    int rx_ring;               /* ring packet rxed from */
+    int rx_slot;               /* index packets rxed from */
     int copy_mode;
     NetmapPeer *peer; /**< Sending peer for IPS/TAP mode */
     /** Pointer to ::NetmapPeer used for capture. Field is used to be able
@@ -93,7 +101,6 @@ typedef struct NetmapPacketVars_
 } NetmapPacketVars;
 
 #define NEMAPV_CLEANUP(v) do {           \
-    (v)->relptr = NULL;                \
     (v)->copy_mode = 0;                \
     (v)->peer = NULL;                  \
     (v)->mpeer = NULL;                 \

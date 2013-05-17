@@ -211,12 +211,15 @@ typedef struct NetmapThreadVars_
     int copy_mode;
 
     /* Netmap stuff starts here */
-    int fd;
+    int rx_fd;
+    int tx_fd;
     char *mem;				/* userspace mmap address */
     u_int memsize;
     u_int queueid;
     u_int begin, end;			/* first...last+1 rings to check */
-    struct netmap_if *nifp;
+    u_int head[16];                     /* tracks cur */
+    struct netmap_if *nifp;		/* netmap_if for rx packets */
+    struct netmap_if *tx_nifp;          /* netmap_if for tx packets if TAP/IPS*/
     struct netmap_ring *tx, *rx;	/* shortcuts */
 
     uint32_t if_flags;
@@ -298,6 +301,7 @@ void NetmapPeerUpdate(NetmapThreadVars *ptv)
  */
 void NetmapPeerClean(NetmapPeer *peer)
 {
+    //SCMutexDestroy(&peer->peer_protect);
     SC_ATOMIC_DESTROY(peer->if_idx);
     SC_ATOMIC_DESTROY(peer->state);
     SCFree(peer);
@@ -362,6 +366,8 @@ TmEcode NetmapPeersListAdd(NetmapThreadVars *ptv)
     SC_ATOMIC_INIT(peer->state);
     peer->flags = ptv->flags;
     peer->turn = peerslist.turn++;
+
+    //SCMutexInit(&peer->peer_protect, NULL);
 
     (void)SC_ATOMIC_SET(peer->state, NETMAP_STATE_DOWN);
     strlcpy(peer->iface, ptv->iface, NETMAP_IFACE_NAME_LENGTH);
@@ -479,6 +485,10 @@ static inline void NetmapDumpCounters(NetmapThreadVars *ptv)
 
 TmEcode NetmapWritePacket(Packet *p)
 {
+    struct netmap_if *src_nifp, *dst_nifp;
+    struct netmap_ring *rxring, *txring;
+    struct netmap_slot *rs, *ts;
+    u_int j, k;
 
     if (p->netmap_v.copy_mode == NETMAP_COPY_MODE_IPS) {
         if (p->action & ACTION_DROP) {
@@ -494,6 +504,44 @@ TmEcode NetmapWritePacket(Packet *p)
         return TM_ECODE_FAILED;
     }
 
+    src_nifp = p->netmap_v.nifp;
+    dst_nifp = p->netmap_v.tx_nifp;
+    rxring = NETMAP_RXRING(src_nifp, p->netmap_v.rx_ring);
+    txring = NETMAP_TXRING(dst_nifp, p->netmap_v.rx_ring);
+    j = p->netmap_v.rx_slot; /* RX */
+    k = txring->cur;         /* TX */
+    rs = &rxring->slot[j];
+    //SCMutexLock(&p->netmap_v.peer->peer_protect);
+#if 0
+    uint32_t pkt;
+    pkt = ts->buf_idx;
+    ts->buf_idx = rs->buf_idx;
+    rs->buf_idx = pkt;
+    ts->len = rs->len;
+    /* report the buffer change. */
+    ts->flags |= NS_BUF_CHANGED;
+    rs->flags |= NS_BUF_CHANGED;
+    k = NETMAP_RING_NEXT(txring, k);
+    rxring->reserved -= 1;
+    rxring->avail -= 1;
+    txring->cur = k;
+#endif
+
+#ifdef NOTYET
+    src = &src_nifp->slot[i]; /* locate src and dst slots */
+    dst = &dst_nifp->slot[j];
+    /* swap the buffers */
+    tmp = dst->buf_index;
+    dst->buf_index = src->buf_index;
+    src->buf_index = tmp;
+    /* update length and flags */
+    dst->len = src->len;
+    /* tell kernel to update addresses in the NIC rings */
+    dst->flags = src->flags = BUF_CHANGED;
+#endif
+
+    //SCMutexUnlock(&p->netmap_v.peer->peer_protect);
+
     return TM_ECODE_OK;
 }
 
@@ -506,13 +554,6 @@ TmEcode NetmapReleaseDataFromRing(ThreadVars *t, Packet *p)
         ret = NetmapWritePacket(p);
     }
 
-    if (p->netmap_v.relptr) {
-        union thdr h;
-        h.raw = p->netmap_v.relptr;
-        h.h2->tp_status = TP_STATUS_KERNEL;
-    }
-
-    AFPV_CLEANUP(&p->netmap_v);
     return ret;
 }
 
@@ -580,10 +621,10 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
     }
     if (ptv->netmap_state == NETMAP_STATE_UP) {
         SCLogInfo("Thread %s:%d using Netmap %s fd %d UP",
-                  tv->name, ptv->thread_no, ptv->iface, ptv->fd);
+                  tv->name, ptv->thread_no, ptv->iface, ptv->rx_fd);
     }
 
-    fds.fd = ptv->fd;
+    fds.fd = ptv->rx_fd;
     fds.events = POLLIN;
 
     while (1) {
@@ -646,7 +687,10 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
                 ptv->bytes += len;
                 SCLogDebug("Got a packet pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
                            len, p, pkt);
+#define DEBUG_PACKET_DUMPER
 #ifdef DEBUG_PACKET_DUMPER
+                printf("Got a packet pktlen: %" PRIu32 " (pkt %p, pkt data %p)\n",
+                           len, p, pkt);
 	        int j;
                 for (j = 0; j < len; j++) {
                     printf("%02x ", pkt[j]);
@@ -661,6 +705,19 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
                     gettimeofday(&p->ts, NULL);
                     SCLogDebug("pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
                                GET_PKT_LEN(p), p, GET_PKT_DATA(p));
+                    p->netmap_v.nifp = ptv->nifp;
+                    p->netmap_v.tx_nifp = ptv->tx_nifp;
+                    p->netmap_v.rx_ring = i;
+                    p->netmap_v.rx_slot = cur;
+                    p->ReleaseData = NetmapReleaseDataFromRing;
+                    p->netmap_v.copy_mode = ptv->copy_mode;
+                    if (p->netmap_v.copy_mode != NETMAP_COPY_MODE_NONE) {
+                        p->netmap_v.peer = ptv->mpeer->peer;
+                        //ring->reserved++;
+                    } else {
+                        p->netmap_v.peer = NULL;
+                    }
+
                     /* We only check for checksum disable */
                     if (ptv->checksum_mode == CHECKSUM_VALIDATION_DISABLE) {
                         p->flags |= PKT_IGNORE_CHECKSUM;
@@ -723,7 +780,7 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
     struct nmreq req;
     int devqueues = 1;
   
-    ptv->fd = fd = open("/dev/netmap", O_RDWR);
+    ptv->rx_fd = fd = open("/dev/netmap", O_RDWR);
     if (fd < 0) {
         SCLogError(SC_ERR_NETMAP_CREATE, "Couldn't open /dev/netmap, error %s", strerror(errno));
         goto error;
@@ -739,18 +796,22 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
         goto error;
     }
     devqueues = req.nr_rx_rings;
-    if (devqueues < ptv->threads) {
-        SCLogError(SC_ERR_NETMAP_CREATE, "Bad threads number %d, have %d queues",
+    if (ptv->threads > devqueues) {
+        SCLogError(SC_ERR_NETMAP_CREATE, "Too many threads %d. NIC has %d only queues.",
                    ptv->threads, devqueues);
         goto error;
     }
     ptv->memsize = l = req.nr_memsize;
     SCLogDebug("Device map size is %"PRIu32" Kb", ptv->memsize >> 10);
     
-    req.nr_ringid = (ptv->flags & NETMAP_WORKERS_MODE) ?
-                        (ptv->thread_no | NETMAP_HW_RING) : 0;
+    if ((ptv->flags & NETMAP_WORKERS_MODE) && (devqueues == ptv->threads))
+        req.nr_ringid = ptv->thread_no | NETMAP_HW_RING;
+    else
+        req.nr_ringid = 0;
 
-    req.nr_ringid |= NETMAP_NO_TX_POLL;
+    if (ptv->copy_mode == NETMAP_COPY_MODE_NONE) {
+        req.nr_ringid |= NETMAP_NO_TX_POLL;
+    }
     err = ioctl(fd, NIOCREGIF, &req);
     if (err) {
         SCLogError(SC_ERR_NETMAP_CREATE, "Unable to register %s",
@@ -770,8 +831,9 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
     ptv->nifp = NETMAP_IF(ptv->mem, req.nr_offset);
     ptv->queueid = 0;
     if (ptv->flags & NETMAP_WORKERS_MODE) {
-        ptv->begin = ptv->thread_no & NETMAP_RING_MASK;
-        ptv->end = ptv->begin + 1;
+	int rings_per_thread = devqueues / ptv->threads;
+        ptv->begin = (ptv->thread_no * rings_per_thread) & NETMAP_RING_MASK;
+        ptv->end = ptv->begin + rings_per_thread;
         ptv->tx = NETMAP_TXRING(ptv->nifp, ptv->begin);
         ptv->rx = NETMAP_RXRING(ptv->nifp, ptv->begin);
     } else {
@@ -780,6 +842,76 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
         ptv->tx = NETMAP_TXRING(ptv->nifp, 0);
         ptv->rx = NETMAP_RXRING(ptv->nifp, 0);
     }
+    SCLogInfo("First ring %"PRIu32" Last ring %"PRIu32, ptv->begin, ptv->end-1);
+
+    /*
+     * If copy_mode is set (IDS/TAP) then we need to open the transmit
+     * interface.
+     */
+#if 1
+    if (ptv->copy_mode != NETMAP_COPY_MODE_NONE) {
+
+        if ((ptv->flags & NETMAP_WORKERS_MODE) == 0) {
+            SCLogError(SC_ERR_NETMAP_CREATE,
+                       "%s mode only supported for \"workers\" runmode.",
+                       (ptv->copy_mode == NETMAP_COPY_MODE_TAP) ?
+                            "TAP" : "IPS" );
+
+            goto error;
+        }
+
+        ptv->tx_fd = fd = open("/dev/netmap", O_RDWR);
+        if (fd < 0) {
+            SCLogError(SC_ERR_NETMAP_CREATE, "Couldn't open /dev/netmap, error %s", strerror(errno));
+            goto error;
+        }
+        memset(&req, 0, sizeof(req));
+        req.nr_version = NETMAP_API;
+        strncpy(req.nr_name, ptv->out_iface, sizeof(req.nr_name));
+        req.nr_ringid = 0;
+        err = ioctl(fd, NIOCGINFO, &req);
+        if (err) {
+            SCLogError(SC_ERR_NETMAP_CREATE, "Cannot get info on %s, error %s ver %d",
+                       ptv->iface, strerror(errno), req.nr_version);
+            goto error;
+        }
+        devqueues = req.nr_tx_rings;
+        if (devqueues < ptv->threads) {
+            SCLogError(SC_ERR_NETMAP_CREATE, "Too many threads %d. NIC has %d only queues.",
+                       ptv->threads, devqueues);
+            goto error;
+        }
+        ptv->memsize = l = req.nr_memsize;
+        SCLogDebug("Device map size is %"PRIu32" Kb", ptv->memsize >> 10);
+    
+        req.nr_ringid = (ptv->flags & NETMAP_WORKERS_MODE) ?
+                            (ptv->thread_no | NETMAP_HW_RING) : 0;
+
+        err = ioctl(fd, NIOCREGIF, &req);
+        if (err) {
+            SCLogError(SC_ERR_NETMAP_CREATE, "Unable to register %s",
+                       ptv->iface);
+            goto error;
+        }
+        if (ptv->mem == NULL) {
+            ptv->mem = mmap(0, l, PROT_WRITE|PROT_READ, MAP_SHARED, fd, 0);
+            if (ptv->mem == MAP_FAILED) {
+                SCLogError(SC_ERR_NETMAP_CREATE, "Unable to mmap %s, error %s",
+                       ptv->iface, strerror(errno));
+                ptv->mem = NULL;
+                goto error;
+            }
+        }
+
+        ptv->tx_nifp = NETMAP_IF(ptv->mem, req.nr_offset);
+        ptv->queueid = 0;
+        if (ptv->flags & NETMAP_WORKERS_MODE) {
+            ptv->tx = NETMAP_TXRING(ptv->tx_nifp, ptv->begin);
+        } else {
+            ptv->tx = NETMAP_TXRING(ptv->tx_nifp, 0);
+        }
+    }
+#endif
     /*
     SCLogInfo("Netmap thread %d begin %d end %d",
               ptv->thread_no,
@@ -798,7 +930,14 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
     return (0);
 
 error:
-    close(ptv->fd);
+    if (ptv->rx_fd) {
+        close(ptv->rx_fd);
+        ptv->rx_fd = 0;
+    }
+    if (ptv->tx_fd) {
+        close(ptv->tx_fd);
+        ptv->tx_fd = 0;
+    }
     return -1;
 }
 
@@ -847,7 +986,7 @@ TmEcode ReceiveNetmapThreadInit(ThreadVars *tv, void *initdata, void **data) {
     ptv->checksum_mode = netmapconfig->checksum_mode;
     ptv->bpf_filter = NULL;
 
-    ptv->threads = 1;
+    ptv->threads = netmapconfig->threads;
     ptv->flags = netmapconfig->flags;
 
     if (netmapconfig->bpf_filter) {
