@@ -215,7 +215,6 @@ typedef struct NetmapThreadVars_
     int tx_fd;
     char *mem;				/* userspace mmap address */
     u_int memsize;
-    u_int queueid;
     u_int begin, end;			/* first...last+1 rings to check */
     u_int head[16];                     /* tracks cur */
     struct netmap_if *nifp;		/* netmap_if for rx packets */
@@ -796,10 +795,18 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
         goto error;
     }
     devqueues = req.nr_rx_rings;
+    if ((devqueues % ptv->threads) != 0) {
+        SCLogError(SC_ERR_NETMAP_CREATE,
+                   "Number of NIC queues (%d) should be an integer multiple"
+                   " of the number of threads (%d).",
+                   devqueues, ptv->threads);
+        exit(EXIT_FAILURE);
+    }
     if (ptv->threads > devqueues) {
-        SCLogError(SC_ERR_NETMAP_CREATE, "Too many threads %d. NIC has %d only queues.",
+        SCLogError(SC_ERR_NETMAP_CREATE,
+                   "Too many threads %d. NIC has %d only queues.",
                    ptv->threads, devqueues);
-        goto error;
+        exit(EXIT_FAILURE);
     }
     ptv->memsize = l = req.nr_memsize;
     SCLogDebug("Device map size is %"PRIu32" Kb", ptv->memsize >> 10);
@@ -829,7 +836,6 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
     }
 
     ptv->nifp = NETMAP_IF(ptv->mem, req.nr_offset);
-    ptv->queueid = 0;
     if (ptv->flags & NETMAP_WORKERS_MODE) {
 	int rings_per_thread = devqueues / ptv->threads;
         ptv->begin = (ptv->thread_no * rings_per_thread) & NETMAP_RING_MASK;
@@ -842,13 +848,13 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
         ptv->tx = NETMAP_TXRING(ptv->nifp, 0);
         ptv->rx = NETMAP_RXRING(ptv->nifp, 0);
     }
-    SCLogInfo("First ring %"PRIu32" Last ring %"PRIu32, ptv->begin, ptv->end-1);
+    SCLogDebug("First ring %"PRIu32" Last ring %"PRIu32,
+               ptv->begin, ptv->end-1);
 
     /*
      * If copy_mode is set (IDS/TAP) then we need to open the transmit
      * interface.
      */
-#if 1
     if (ptv->copy_mode != NETMAP_COPY_MODE_NONE) {
 
         if ((ptv->flags & NETMAP_WORKERS_MODE) == 0) {
@@ -856,8 +862,7 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
                        "%s mode only supported for \"workers\" runmode.",
                        (ptv->copy_mode == NETMAP_COPY_MODE_TAP) ?
                             "TAP" : "IPS" );
-
-            goto error;
+            exit(EXIT_FAILURE);
         }
 
         ptv->tx_fd = fd = open("/dev/netmap", O_RDWR);
@@ -877,15 +882,18 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
         }
         devqueues = req.nr_tx_rings;
         if (devqueues < ptv->threads) {
-            SCLogError(SC_ERR_NETMAP_CREATE, "Too many threads %d. NIC has %d only queues.",
+            SCLogError(SC_ERR_NETMAP_CREATE,
+                       "Too many threads %d. NIC has %d only queues.",
                        ptv->threads, devqueues);
-            goto error;
+            exit(EXIT_FAILURE);
         }
         ptv->memsize = l = req.nr_memsize;
         SCLogDebug("Device map size is %"PRIu32" Kb", ptv->memsize >> 10);
     
-        req.nr_ringid = (ptv->flags & NETMAP_WORKERS_MODE) ?
-                            (ptv->thread_no | NETMAP_HW_RING) : 0;
+        if ((ptv->flags & NETMAP_WORKERS_MODE) && (devqueues == ptv->threads))
+            req.nr_ringid = ptv->thread_no | NETMAP_HW_RING;
+        else
+            req.nr_ringid = 0;
 
         err = ioctl(fd, NIOCREGIF, &req);
         if (err) {
@@ -904,19 +912,12 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
         }
 
         ptv->tx_nifp = NETMAP_IF(ptv->mem, req.nr_offset);
-        ptv->queueid = 0;
         if (ptv->flags & NETMAP_WORKERS_MODE) {
             ptv->tx = NETMAP_TXRING(ptv->tx_nifp, ptv->begin);
         } else {
             ptv->tx = NETMAP_TXRING(ptv->tx_nifp, 0);
         }
     }
-#endif
-    /*
-    SCLogInfo("Netmap thread %d begin %d end %d",
-              ptv->thread_no,
-              ptv->begin, ptv->end);
-    */
 
     ptv->datalink = NetmapGetDevLinktype(ptv->socket, ptv->iface);
     switch (ptv->datalink) {
