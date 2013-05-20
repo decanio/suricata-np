@@ -58,22 +58,14 @@ typedef struct NetmapIfaceConfig_
 } NetmapIfaceConfig;
 
 /**
- * \ingroup afppeers
+ * \ingroup netmappeers
  * @{
  */
 
 typedef struct NetmapPeer_ {
     char iface[NETMAP_IFACE_NAME_LENGTH];
-    //SC_ATOMIC_DECLARE(int, socket);
-    //SC_ATOMIC_DECLARE(int, sock_usage);
     SC_ATOMIC_DECLARE(int, if_idx);
     SC_ATOMIC_DECLARE(uint8_t, state);
-    //SCMutex sock_protect;
-#if 0
-    void *PeerTV;
-    struct netmap_if *peer_nifp;
-    SCMutex peer_protect;
-#endif
     int flags;
     int turn; /**< Field used to store initialisation order. */
     struct NetmapPeer_ *peer;
