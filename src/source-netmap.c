@@ -511,9 +511,6 @@ static inline uint32_t NetmapAtomicDecr(uint32_t *x)
 
 TmEcode NetmapWritePacket(Packet *p)
 {
-#if 0
-    struct netmap_if *src_nifp, *dst_nifp;
-#endif
     struct netmap_ring *rxring, *txring;
     struct netmap_slot *rs, *ts;
     u_int j, k;
@@ -532,12 +529,6 @@ TmEcode NetmapWritePacket(Packet *p)
         return TM_ECODE_FAILED;
     }
 
-#if 0
-    src_nifp = p->netmap_v.nifp;
-    dst_nifp = p->netmap_v.tx_nifp;
-    rxring = NETMAP_RXRING(src_nifp, p->netmap_v.rx_ring);
-    txring = NETMAP_TXRING(dst_nifp, p->netmap_v.rx_ring);
-#endif
     rxring = p->netmap_v.rx;
     txring = p->netmap_v.tx;
     j = p->netmap_v.rx_slot; /* RX */
@@ -546,7 +537,6 @@ TmEcode NetmapWritePacket(Packet *p)
               p->netmap_v.rx_ring, j, k);
     rs = &rxring->slot[j];
     ts = &txring->slot[k];
-    //SCMutexLock(&p->netmap_v.peer->peer_protect);
     uint32_t pkt;
     pkt = ts->buf_idx;
     ts->buf_idx = rs->buf_idx;
@@ -556,24 +546,7 @@ TmEcode NetmapWritePacket(Packet *p)
     ts->flags |= NS_BUF_CHANGED;
     rs->flags |= NS_BUF_CHANGED;
     k = NETMAP_RING_NEXT(txring, k);
-    //rxring->reserved -= 1;
-    //rxring->avail -= 1;
     txring->cur = k;
-
-#ifdef NOTYET
-    src = &src_nifp->slot[i]; /* locate src and dst slots */
-    dst = &dst_nifp->slot[j];
-    /* swap the buffers */
-    tmp = dst->buf_index;
-    dst->buf_index = src->buf_index;
-    src->buf_index = tmp;
-    /* update length and flags */
-    dst->len = src->len;
-    /* tell kernel to update addresses in the NIC rings */
-    dst->flags = src->flags = BUF_CHANGED;
-#endif
-
-    //SCMutexUnlock(&p->netmap_v.peer->peer_protect);
 
     return TM_ECODE_OK;
 }
@@ -736,8 +709,8 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
                            len, p, pkt);
 #define DEBUG_PACKET_DUMPER
 #ifdef DEBUG_PACKET_DUMPER
-                printf("Got a packet pktlen: %" PRIu32 " (pkt %p, pkt data %p)\n",
-                           len, p, pkt);
+                printf("Got a packet %s pktlen: %" PRIu32 " (pkt %p, pkt data %p)\n",
+                           ptv->iface, len, p, pkt);
 	        int j;
                 for (j = 0; j < len; j++) {
                     printf("%02x ", pkt[j]);
