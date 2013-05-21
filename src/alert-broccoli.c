@@ -148,22 +148,22 @@ typedef struct AlertBroccoliThread_ {
 } AlertBroccoliThread;
 
 static void
-bro_util_fill_v4_addr(BroAddr *a, uint32 addr)
+FillIPv4Addr(BroAddr *a, uint32 addr)
 {
-  if ( ! a )
-    return;
+    if ( ! a )
+        return;
 
-  memcpy(a->addr, BRO_IPV4_MAPPED_PREFIX, sizeof(BRO_IPV4_MAPPED_PREFIX));
-  a->addr[3] = addr;
+    memcpy(a->addr, BRO_IPV4_MAPPED_PREFIX, sizeof(BRO_IPV4_MAPPED_PREFIX));
+    a->addr[3] = addr;
 }
 
 static void
-bro_util_fill_v6_addr(BroAddr *a, uint32_t *addr)
+FillIPv6Addr(BroAddr *a, uint32_t *addr)
 {
-  if ( ! a )
-    return;
+    if ( ! a )
+        return;
 
-  memcpy(a->addr, addr, sizeof(BroAddr));
+    memcpy(a->addr, addr, sizeof(BroAddr));
 }
 
 TmEcode AlertBroccoliIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
@@ -188,9 +188,9 @@ TmEcode AlertBroccoliIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
         }
 
         SCMutexLock(&aft->ctx->mutex);
-    	if (! (ev = bro_event_new("suricata_alert"))) {
+        if (! (ev = bro_event_new("suricata_alert"))) {
       	    return TM_ECODE_FAILED;
-    	}
+        }
 
         /* First value */
         BroRecord *packet_id = bro_record_new();
@@ -211,19 +211,18 @@ TmEcode AlertBroccoliIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
             }
         }
         
-        bro_util_fill_v4_addr(&src_ip, GET_IPV4_SRC_ADDR_U32(p));
-        bro_util_fill_v4_addr(&dst_ip, GET_IPV4_DST_ADDR_U32(p));
+        FillIPv4Addr(&src_ip, GET_IPV4_SRC_ADDR_U32(p));
+        FillIPv4Addr(&dst_ip, GET_IPV4_DST_ADDR_U32(p));
         bro_record_add_val(packet_id, "src_ip", BRO_TYPE_IPADDR, NULL, &src_ip);
         bro_record_add_val(packet_id, "src_p",  BRO_TYPE_PORT,   NULL, &src_p);
         bro_record_add_val(packet_id, "dst_ip", BRO_TYPE_IPADDR, NULL, &dst_ip);
         bro_record_add_val(packet_id, "dst_p",  BRO_TYPE_PORT,   NULL, &dst_p);
-        //bro_event_add_val(ev, BRO_TYPE_RECORD, "PacketID", packet_id);
+        /*bro_event_add_val(ev, BRO_TYPE_RECORD, "PacketID", packet_id);*/
         bro_event_add_val(ev, BRO_TYPE_RECORD, NULL, packet_id);
         bro_record_free(packet_id);
        
         /* Second value */
         BroRecord *sad = bro_record_new();
-        //uint32_t sensor_id_hl = ntohl(uevent->sensor_id);
         gid = pa->s->gid;
         sid = pa->s->id;
         class = pa->s->class;
@@ -244,6 +243,7 @@ TmEcode AlertBroccoliIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
         uint64 event_id_hl = 0;
         bro_record_add_val(sad, "event_id",           BRO_TYPE_COUNT, NULL, &event_id_hl);
 
+        /*
         //BroSet *ref_set = bro_set_new();
         //BroString ref_name_bs;
         //rn = sn->refs;
@@ -257,8 +257,9 @@ TmEcode AlertBroccoliIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
         //}
         //bro_record_add_val(sad, "references", BRO_TYPE_SET, NULL, ref_set);
         //bro_set_free(ref_set);
+        */
         
-        //bro_event_add_val(ev, BRO_TYPE_RECORD, "alert_data", sad);
+        /*bro_event_add_val(ev, BRO_TYPE_RECORD, "alert_data", sad);*/
         bro_event_add_val(ev, BRO_TYPE_RECORD, NULL, sad);
         bro_record_free(sad);
 
@@ -310,9 +311,9 @@ TmEcode AlertBroccoliIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
         }
 
         SCMutexLock(&aft->ctx->mutex);
-    	if (! (ev = bro_event_new("suricata_alert"))) {
+        if (! (ev = bro_event_new("suricata_alert"))) {
       	    return TM_ECODE_FAILED;
-    	}
+        }
 
         /* First value */
         BroRecord *packet_id = bro_record_new();
@@ -333,19 +334,18 @@ TmEcode AlertBroccoliIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
             }
         }
         
-        bro_util_fill_v6_addr(&src_ip, GET_IPV6_SRC_ADDR(p));
-        bro_util_fill_v6_addr(&dst_ip, GET_IPV6_DST_ADDR(p));
+        FillIPv6Addr(&src_ip, GET_IPV6_SRC_ADDR(p));
+        FillIPv6Addr(&dst_ip, GET_IPV6_DST_ADDR(p));
         bro_record_add_val(packet_id, "src_ip", BRO_TYPE_IPADDR, NULL, &src_ip);
         bro_record_add_val(packet_id, "src_p",  BRO_TYPE_PORT,   NULL, &src_p);
         bro_record_add_val(packet_id, "dst_ip", BRO_TYPE_IPADDR, NULL, &dst_ip);
         bro_record_add_val(packet_id, "dst_p",  BRO_TYPE_PORT,   NULL, &dst_p);
-        //bro_event_add_val(ev, BRO_TYPE_RECORD, "PacketID", packet_id);
+        /*bro_event_add_val(ev, BRO_TYPE_RECORD, "PacketID", packet_id);*/
         bro_event_add_val(ev, BRO_TYPE_RECORD, NULL, packet_id);
         bro_record_free(packet_id);
        
         /* Second value */
         BroRecord *sad = bro_record_new();
-        //uint32_t sensor_id_hl = ntohl(uevent->sensor_id);
         prio = pa->s->prio;
         gid = pa->s->gid;
         sid = pa->s->id;
@@ -367,6 +367,7 @@ TmEcode AlertBroccoliIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
         uint64 event_id_hl = 0;
         bro_record_add_val(sad, "event_id",           BRO_TYPE_COUNT, NULL, &event_id_hl);
 
+        /*
         //BroSet *ref_set = bro_set_new();
         //BroString ref_name_bs;
         //rn = sn->refs;
@@ -380,6 +381,7 @@ TmEcode AlertBroccoliIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
         //}
         //bro_record_add_val(sad, "references", BRO_TYPE_SET, NULL, ref_set);
         //bro_set_free(ref_set);
+        */
         
         //bro_event_add_val(ev, BRO_TYPE_RECORD, "alert_data", sad);
         bro_event_add_val(ev, BRO_TYPE_RECORD, NULL, sad);
@@ -500,12 +502,14 @@ OutputCtx *AlertBroccoliInitCtx(ConfNode *conf)
     if (conf) {
         host = ConfNodeLookupChildValue(conf, "host");
         if (host == NULL) {
-	    SCLogError(SC_ERR_MISSING_CONFIG_PARAM, "No Broccoli host in config,");
+            SCLogError(SC_ERR_MISSING_CONFIG_PARAM,
+                       "No Broccoli host in config,");
             exit(EXIT_FAILURE);
         }
         const char *port = ConfNodeLookupChildValue(conf, "port");
         if (port == NULL) {
-	    SCLogError(SC_ERR_MISSING_CONFIG_PARAM, "No Broccoli port in config,");
+            SCLogError(SC_ERR_MISSING_CONFIG_PARAM,
+                       "No Broccoli port in config,");
             exit(EXIT_FAILURE);
         }
 
