@@ -187,7 +187,6 @@ TmEcode AlertBroccoliIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
             continue;
         }
 
-        SCMutexLock(&aft->ctx->mutex);
         if (! (ev = bro_event_new("suricata_alert"))) {
       	    return TM_ECODE_FAILED;
         }
@@ -277,13 +276,16 @@ TmEcode AlertBroccoliIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
         bro_event_add_val(ev, BRO_TYPE_STRING, NULL, &contents_bs);
         bro_string_cleanup(&contents_bs);
         
+        SCMutexLock(&aft->ctx->mutex);
+
         /* send and free the event */
         bro_event_send(aft->ctx->bc, ev);
-        bro_event_free(ev);
 
         aft->ctx->alerts++;
 
         SCMutexUnlock(&aft->ctx->mutex);
+
+        bro_event_free(ev);
     }
 
     return TM_ECODE_OK;
@@ -310,7 +312,6 @@ TmEcode AlertBroccoliIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
             continue;
         }
 
-        SCMutexLock(&aft->ctx->mutex);
         if (! (ev = bro_event_new("suricata_alert"))) {
       	    return TM_ECODE_FAILED;
         }
@@ -401,13 +402,16 @@ TmEcode AlertBroccoliIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq
         bro_event_add_val(ev, BRO_TYPE_STRING, NULL, &contents_bs);
         bro_string_cleanup(&contents_bs);
         
+        SCMutexLock(&aft->ctx->mutex);
+
         /* send and free the event */
         bro_event_send(aft->ctx->bc, ev);
-        bro_event_free(ev);
 
         aft->ctx->alerts++;
 
         SCMutexUnlock(&aft->ctx->mutex);
+
+        bro_event_free(ev);
     }
 
     return TM_ECODE_OK;
