@@ -78,6 +78,7 @@
 #include "alert-prelude.h"
 #include "alert-syslog.h"
 #include "alert-pcapinfo.h"
+#include "alert-json.h"
 
 #include "log-droplog.h"
 #include "log-httplog.h"
@@ -786,6 +787,8 @@ void RegisterAllModules()
     TmModuleAlertPcapInfoRegister();
     /* drop log */
     TmModuleLogDropLogRegister();
+    /* json log */
+    TmModuleAlertJsonRegister();
     /* http log */
     TmModuleLogHttpLogRegister();
     TmModuleLogTlsLogRegister();
