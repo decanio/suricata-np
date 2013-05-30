@@ -100,6 +100,7 @@
 #include "alert-prelude.h"
 #include "alert-syslog.h"
 #include "alert-pcapinfo.h"
+#include "alert-json.h"
 
 #include "log-droplog.h"
 #include "log-httplog.h"
@@ -1580,6 +1581,8 @@ int main(int argc, char **argv)
     TmModuleUnified2AlertRegister();
     /* pcap info log */
     TmModuleAlertPcapInfoRegister();
+    /* json log */
+    TmModuleAlertJsonRegister();
     /* drop log */
     TmModuleLogDropLogRegister();
     /* http log */
