@@ -48,6 +48,18 @@
 
 #include "util-logopenfile.h"
 
+#if HAVE_LIBJANSSON
+#include <jansson.h>
+
+#define DEFAULT_HTTP_SYSLOG_FACILITY_STR       "local0"
+#define DEFAULT_HTTP_SYSLOG_FACILITY           LOG_LOCAL0
+#define DEFAULT_HTTP_SYSLOG_LEVEL              LOG_INFO
+
+#ifndef OS_WIN32
+static int http_syslog_level = DEFAULT_HTTP_SYSLOG_LEVEL;
+#endif
+#endif
+
 #define DEFAULT_LOG_FILENAME "http.log"
 
 #define MODULE_NAME "LogHttpLog"
@@ -133,6 +145,8 @@ typedef struct LogHttpFileCtx_ {
 #define LOG_HTTP_DEFAULT 0
 #define LOG_HTTP_EXTENDED 1
 #define LOG_HTTP_CUSTOM 2
+#define LOG_HTTP_JSON 4        /* JSON output */
+#define LOG_HTTP_JSON_SYSLOG 8 /* JSON output via syslog */
 
 typedef struct LogHttpLogThread_ {
     LogHttpFileCtx *httplog_ctx;
@@ -312,6 +326,129 @@ static void LogHttpLogCustom(LogHttpLogThread *aft, htp_tx_t *tx, const struct t
     MemBufferWriteString(aft->buffer, "\n");
 }
 
+#ifdef HAVE_LIBJANSSON
+/* JSON format logging */
+static void LogHttpLogJSON(LogHttpLogThread *aft, htp_tx_t *tx, char * timebuf,
+                           char *srcip, Port sp, char *dstip, Port dp)
+{
+    LogHttpFileCtx *hlog = aft->httplog_ctx;
+    json_t *js = json_object();
+    if (js == NULL)
+        return;
+#if 0
+    json_t *hjs = js;
+#else
+    json_t *hjs = json_object();
+    if (hjs == NULL) {
+        free(js);
+        return;
+    }
+#endif
+
+    /* time */
+    json_object_set_new(js, "time", json_string(timebuf));
+
+    /* tuple */
+    json_object_set_new(js, "srcip", json_string(srcip));
+    json_object_set_new(js, "sp", json_integer(sp));
+    json_object_set_new(js, "dstip", json_string(dstip));
+    json_object_set_new(js, "dp", json_integer(dp));
+
+
+    char *c;
+    /* hostname */
+    if (tx->parsed_uri != NULL &&
+            tx->parsed_uri->hostname != NULL)
+    {
+        json_object_set_new(hjs, "hostname",
+            json_string(c = strndup(bstr_ptr(tx->parsed_uri->hostname),
+                                    bstr_len(tx->parsed_uri->hostname))));
+            if (c) free(c);
+    } else {
+        json_object_set_new(hjs, "hostname", json_string("<hostname unknown>"));
+    }
+
+    /* uri */
+    if (tx->request_uri != NULL)
+    {
+        json_object_set_new(hjs, "uri",
+                            json_string(c = strndup(bstr_ptr(tx->request_uri),
+                                                    bstr_len(tx->request_uri))));
+        if (c) free(c);
+    }
+
+    /* user agent */
+    htp_header_t *h_user_agent = NULL;
+    if (tx->request_headers != NULL) {
+        h_user_agent = table_getc(tx->request_headers, "user-agent");
+    }
+    if (h_user_agent != NULL) {
+        json_object_set_new(hjs, "user-agent",
+            json_string(c = strndup(bstr_ptr(h_user_agent->value),
+                                    bstr_len(h_user_agent->value))));
+        if (c) free(c);
+    } else {
+        json_object_set_new(hjs, "user-agent", json_string("<useragent unknown>"));
+    }
+
+    if (hlog->flags & LOG_HTTP_EXTENDED) {
+        /* referer */
+        htp_header_t *h_referer = NULL;
+        if (tx->request_headers != NULL) {
+            h_referer = table_getc(tx->request_headers, "referer");
+        }
+        if (h_referer != NULL) {
+            json_object_set_new(hjs, "referer",
+                json_string(c = strndup(bstr_ptr(h_referer->value),
+                                        bstr_len(h_referer->value))));
+            if (c) free(c);
+        }
+
+        /* method */
+        if (tx->request_method != NULL) {
+            json_object_set_new(hjs, "method",
+                json_string(c = strndup(bstr_ptr(tx->request_method),
+                                        bstr_len(tx->request_method))));
+            if (c) free(c);
+        }
+
+        /* protocol */
+        if (tx->request_protocol != NULL) {
+            json_object_set_new(hjs, "protocol",
+                json_string(c = strndup(bstr_ptr(tx->request_protocol),
+                                        bstr_len(tx->request_protocol))));
+            if (c) free(c);
+        }
+
+        /* response status */
+        if (tx->response_status != NULL) {
+            json_object_set_new(hjs, "status",
+                 json_string(c = strndup(bstr_ptr(tx->response_status),
+                                         bstr_len(tx->response_status))));
+            if (c) free(c);
+
+            htp_header_t *h_location = table_getc(tx->response_headers, "location");
+            if (h_location != NULL) {
+                json_object_set_new(hjs, "redirect",
+                    json_string(c = strndup(bstr_ptr(h_location->value),
+                                            bstr_len(h_location->value))));
+                if (c) free(c);
+            }
+        }
+
+        /* length */
+        json_object_set_new(hjs, "length", json_integer(tx->response_message_len));
+    }
+
+    json_object_set_new(js, "http", hjs);
+    char *s = json_dumps(js, JSON_PRESERVE_ORDER|JSON_COMPACT|JSON_ENSURE_ASCII);
+    MemBufferWriteRaw(aft->buffer, s, strlen(s));
+    free(s);
+    free(hjs);
+    free(js);
+}
+#endif
+
 static void LogHttpLogExtended(LogHttpLogThread *aft, htp_tx_t *tx)
 {
     MemBufferWriteString(aft->buffer, " [**] ");
@@ -472,6 +609,10 @@ static TmEcode LogHttpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
 
         if (hlog->flags & LOG_HTTP_CUSTOM) {
             LogHttpLogCustom(aft, tx, &p->ts, srcip, sp, dstip, dp);
+#ifdef HAVE_LIBJANSSON
+        } else if (hlog->flags & LOG_HTTP_JSON) {
+            LogHttpLogJSON(aft, tx, timebuf, srcip, sp, dstip, dp);
+#endif
         } else {
             /* time */
             MemBufferWriteString(aft->buffer, "%s ", timebuf);
@@ -521,8 +662,19 @@ static TmEcode LogHttpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
         aft->uri_cnt ++;
 
         SCMutexLock(&hlog->file_ctx->fp_mutex);
-        (void)MemBufferPrintToFPAsString(aft->buffer, hlog->file_ctx->fp);
-        fflush(hlog->file_ctx->fp);
+#ifdef HAVE_LIBJANSSON
+        if (hlog->flags & LOG_HTTP_JSON_SYSLOG) {
+            syslog(http_syslog_level, "%s", (char *)aft->buffer->buffer);
+        } else {
+            if (hlog->flags & LOG_HTTP_JSON) {
+                MemBufferWriteString(aft->buffer, "\n");
+            }
+#endif
+            (void)MemBufferPrintToFPAsString(aft->buffer, hlog->file_ctx->fp);
+            fflush(hlog->file_ctx->fp);
+#ifdef HAVE_LIBJANSSON
+        }
+#endif
         SCMutexUnlock(&hlog->file_ctx->fp_mutex);
 
         AppLayerTransactionUpdateLoggedId(p->flow);
@@ -649,6 +801,7 @@ OutputCtx *LogHttpLogInitCtx(ConfNode *conf)
     const char *extended = ConfNodeLookupChildValue(conf, "extended");
     const char *custom = ConfNodeLookupChildValue(conf, "custom");
     const char *customformat = ConfNodeLookupChildValue(conf, "customformat");
+    const char *json = ConfNodeLookupChildValue(conf, "json");
 
     /* If custom logging format is selected, lets parse it */
     if (custom != NULL && customformat != NULL && ConfValIsTrue(custom)) {
@@ -709,6 +862,15 @@ OutputCtx *LogHttpLogInitCtx(ConfNode *conf)
             }
         }
     }
+#ifdef HAVE_LIBJANSSON
+    if (json) {
+        if (strcmp(json, "syslog") == 0) {
+            httplog_ctx->flags |= (LOG_HTTP_JSON | LOG_HTTP_JSON_SYSLOG);
+        } else if (ConfValIsTrue(json)) {
+            httplog_ctx->flags |= LOG_HTTP_JSON;
+        }
+    }
+#endif
 
     OutputCtx *output_ctx = SCCalloc(1, sizeof(OutputCtx));
     if (unlikely(output_ctx == NULL)) {
