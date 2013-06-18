@@ -85,6 +85,14 @@
 /* All other commands are represented by this var */
 #define SMTP_COMMAND_OTHER_CMD 5
 
+#define SMTP_DATA_UNKNOWN      0
+#define SMTP_DATA_TO           1
+#define SMTP_DATA_FROM         2
+#define SMTP_DATA_CC           3
+#define SMTP_DATA_SUBJECT      4
+#define SMTP_DATA_BODY         5
+#define SMTP_DATA_END          6
+
 /* Different EHLO extensions.  Not used now. */
 #define SMTP_EHLO_EXTENSION_PIPELINING
 #define SMTP_EHLO_EXTENSION_SIZE
@@ -458,6 +466,29 @@ static int SMTPProcessCommandDATA(SMTPState *state, Flow *f,
                                   AppLayerParserState *pstate)
 {
     SCEnter();
+    char *s = strndup((char *)state->current_line, state->current_line_len);
+    SCLogInfo("Data \"%s\"", s);
+    free(s);
+
+    if (state->current_line_len >= 6 &&
+        SCMemcmpLowercase("from:", state->current_line, 5) == 0) {
+        char *s = strndup((char *)&state->current_line[6], state->current_line_len-6);
+        SCLogInfo("FROM: \"%s\"", s);
+        free(s);
+        state->data_state = SMTP_DATA_FROM;
+    } else if (state->current_line_len >= 4 &&
+               SCMemcmpLowercase("to:", state->current_line, 3) == 0) {
+        char *s = strndup((char *)&state->current_line[4], state->current_line_len-4);
+        SCLogInfo("TO: \"%s\"", s);
+        free(s);
+        state->data_state = SMTP_DATA_TO;
+    } else if (state->current_line_len >= 9 &&
+               SCMemcmpLowercase("subject:", state->current_line, 8) == 0) {
+        char *s = strndup((char *)&state->current_line[9], state->current_line_len-9);
+        SCLogInfo("SUBJECT: \"%s\"", s);
+        free(s);
+        state->data_state = SMTP_DATA_SUBJECT;
+    }
 
     if (!(state->parser_state & SMTP_PARSER_STATE_COMMAND_DATA_MODE)) {
         /* looks like are still waiting for a confirmination from the server */
@@ -466,11 +497,34 @@ static int SMTPProcessCommandDATA(SMTPState *state, Flow *f,
 
     if (state->current_line_len == 1 && state->current_line[0] == '.') {
         state->parser_state &= ~SMTP_PARSER_STATE_COMMAND_DATA_MODE;
+        state->data_state = SMTP_DATA_END;
         /* kinda like a hack.  The mail sent in DATA mode, would be
          * acknowledged with a reply.  We insert a dummy command to
          * the command buffer to be used by the reply handler to match
          * the reply received */
         SMTPInsertCommandIntoCommandBuffer(SMTP_COMMAND_DATA_MODE, state, f);
+    }
+
+    switch (state->data_state) {
+        case SMTP_DATA_TO:
+            if (!state->to_line) {
+                state->to_line = (uint8_t *)strndup((char *)&state->current_line[4], state->current_line_len-4);
+            }
+            break;
+        case SMTP_DATA_FROM:
+            if (!state->from_line) {
+                state->from_line = (uint8_t *)strndup((char *)&state->current_line[6], state->current_line_len-6);
+            }
+            break;
+        case SMTP_DATA_SUBJECT:
+            if (!state->subject_line) {
+                state->subject_line = (uint8_t *)strndup((char *)&state->current_line[9], state->current_line_len-9);
+            }
+            break;
+        case SMTP_DATA_CC:
+        case SMTP_DATA_UNKNOWN:
+        case SMTP_DATA_BODY:
+            break;
     }
 
     return 0;
@@ -486,6 +540,8 @@ static int SMTPProcessReply(SMTPState *state, Flow *f,
                             AppLayerParserState *pstate)
 {
     SCEnter();
+
+    SCLogInfo("Reply %s", state->current_line);
 
     uint64_t reply_code = 0;
     PatternMatcherQueue *pmq = state->thread_local_data;
@@ -633,6 +689,10 @@ static int SMTPProcessRequest(SMTPState *state, Flow *f,
 {
     SCEnter();
 
+    //char *s = strndup((char *)state->current_line, state->current_line_len);
+    //SCLogInfo("Request \"%s\"", s);
+    //free(s);
+
     /* there are 2 commands that can push it into this COMMAND_DATA mode -
      * STARTTLS and DATA */
     if (!(state->parser_state & SMTP_PARSER_STATE_COMMAND_DATA_MODE)) {
@@ -644,6 +704,7 @@ static int SMTPProcessRequest(SMTPState *state, Flow *f,
         } else if (state->current_line_len >= 4 &&
                    SCMemcmpLowercase("data", state->current_line, 4) == 0) {
             state->current_command = SMTP_COMMAND_DATA;
+            state->data_state = SMTP_DATA_UNKNOWN;
         } else if (state->current_line_len >= 4 &&
                    SCMemcmpLowercase("bdat", state->current_line, 4) == 0) {
             r = SMTPParseCommandBDAT(state);
@@ -683,7 +744,7 @@ static int SMTPProcessRequest(SMTPState *state, Flow *f,
     }
 }
 
-static int SMTPParse(int direction, Flow *f, SMTPState *state,
+ int SMTPParse(int direction, Flow *f, SMTPState *state,
                      AppLayerParserState *pstate, uint8_t *input,
                      uint32_t input_len,
                      PatternMatcherQueue *local_data, AppLayerParserResult *output)
