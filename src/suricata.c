@@ -103,6 +103,7 @@
 
 #include "log-droplog.h"
 #include "log-httplog.h"
+#include "log-smtplog.h"
 #include "log-tlslog.h"
 #include "log-pcap.h"
 #include "log-file.h"
@@ -1590,6 +1591,9 @@ int main(int argc, char **argv)
     TmModuleLogHttpLogRegister();
     TmModuleLogHttpLogIPv4Register();
     TmModuleLogHttpLogIPv6Register();
+    /* smtp log */
+    TmModuleLogSmtpLogRegister();
+    /* tls log */
     TmModuleLogTlsLogRegister();
     TmModuleLogTlsLogIPv4Register();
     TmModuleLogTlsLogIPv6Register();

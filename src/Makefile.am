@@ -199,6 +199,7 @@ log-file.c log-file.h \
 log-filestore.c log-filestore.h \
 log-httplog.c log-httplog.h \
 log-pcap.c log-pcap.h \
+log-smtplog.c log-smtplog.h \
 log-tlslog.c log-tlslog.h \
 output.c output.h \
 packet-queue.c packet-queue.h \
