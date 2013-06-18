@@ -77,6 +77,13 @@ typedef struct SMTPState_ {
     /** bdat chunk idx */
     uint32_t bdat_chunk_idx;
 
+    /** var to indicate message data state */
+    /* TBD: we need to free this stuff */
+    uint8_t data_state;
+    uint8_t *from_line;
+    uint8_t *to_line;
+    uint8_t *subject_line;
+
     /* the request commands are store here and the reply handler uses these
      * stored command in the buffer to match the reply(ies) with the command */
     /** the command buffer */
