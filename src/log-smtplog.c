@@ -297,7 +297,7 @@ TmEcode LogSmtpLogThreadInit(ThreadVars *t, void *initdata, void **data)
 
     if(initdata == NULL)
     {
-        SCLogDebug("Error getting context for DNSLog.  \"initdata\" argument NULL");
+        SCLogDebug("Error getting context for SMTPLog.  \"initdata\" argument NULL");
         SCFree(aft);
         return TM_ECODE_FAILED;
     }
@@ -336,7 +336,7 @@ void LogSmtpLogExitPrintStats(ThreadVars *tv, void *data) {
         return;
     }
 
-    SCLogInfo("DNS logger logged %" PRIu32 " requests", aft->smtp_cnt);
+    SCLogInfo("SMTP logger logged %" PRIu32 " requests", aft->smtp_cnt);
 }
 
 /** \brief Create a new dns log LogFileCtx.
