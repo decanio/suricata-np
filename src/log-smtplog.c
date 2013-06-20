@@ -184,11 +184,19 @@ static TmEcode LogSmtpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
         sp = p->dp;
         dp = p->sp;
     }
-    if (smtp_state->data_state == 6) {
+    if (smtp_state->data_state == SMTP_DATA_END) {
         SCLogInfo("SMTP LOG TO: \"%s\" FROM: \"%s\" SUBJECT \"%s\"",
                   (char *)((smtp_state->to_line != NULL) ? smtp_state->to_line : ""),
                   (char *)((smtp_state->from_line != NULL) ? smtp_state->from_line : ""),
                   (char *)((smtp_state->subject_line != NULL) ? smtp_state->subject_line : ""));
+        if (smtp_state->content_type_line) {
+            SCLogInfo("SMTP LOG TYPE: \"%s\"",
+                  (char *)((smtp_state->content_type_line != NULL) ? smtp_state->content_type_line : ""));
+        }
+        if (smtp_state->content_disp_line) {
+            SCLogInfo("SMTP LOG DISP: \"%s\"",
+                  (char *)((smtp_state->content_disp_line != NULL) ? smtp_state->content_disp_line : ""));
+        }
 
         /* reset */
         MemBufferReset(aft->buffer);
@@ -219,15 +227,61 @@ static TmEcode LogSmtpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
         json_object_set_new(sjs, "subject", json_string(
                   (char *)((smtp_state->subject_line != NULL) ? smtp_state->subject_line : "")));
 
+        json_t *ajs = NULL;
+        if (smtp_state->attachment_count > 0) {
+            if (smtp_state->attachment_count == 1) {
+                ajs = json_object();
+                if (ajs != NULL) {
+                    int i = 0;
+                    SCLogInfo("Adding \"%s\" into array", smtp_state->attachments[i].name);
+                    json_object_set_new(ajs, "name",
+                        json_string(smtp_state->attachments[i].name));
+                    SCFree(smtp_state->attachments[i].name);
+                    smtp_state->attachments[i].name = NULL;
+                    json_object_set_new(sjs, "attachment", ajs);
+                }
+
+            } else {
+                ajs = json_array();
+                if (ajs != NULL) {
+                    unsigned i;
+                    json_t *njs = json_object();;
+                    for (i = 0; i < smtp_state->attachment_count; i++) {
+                        int r;
+                        SCLogInfo("Adding \"%s\" into array", smtp_state->attachments[i].name);
+                        r = json_object_set_new(njs, "name",
+                            json_string((char *)smtp_state->attachments[i].name));
+                        if (r!=0)
+                            SCLogInfo("json_object_set_new failed");
+                        SCFree(smtp_state->attachments[i].name);
+                        smtp_state->attachments[i].name = NULL;
+                        json_dumpf(njs, stdout, JSON_PRESERVE_ORDER|JSON_COMPACT|JSON_ENSURE_ASCII);
+                        printf("\n");
+                        json_array_append(ajs, njs);
+                    }
+                    json_dumpf(ajs, stdout, JSON_PRESERVE_ORDER|JSON_COMPACT|JSON_ENSURE_ASCII);
+                    printf("\n");
+                    json_object_set_new(sjs, "attachment", ajs);
+                }
+            }
+            smtp_state->attachment_count = 0; 
+        }
+
         /* smtp */
         json_object_set_new(js, "smtp", sjs);
         char *s = json_dumps(js, JSON_PRESERVE_ORDER|JSON_COMPACT|JSON_ENSURE_ASCII);
         MemBufferWriteString(aft->buffer, "%s", s);
         free(s);
+        if (ajs) free(ajs);
         free(sjs);
         free(js);
+        if (smtp_state->to_line != NULL) free(smtp_state->to_line);
+        if (smtp_state->from_line != NULL) free(smtp_state->from_line);
+        if (smtp_state->subject_line != NULL) free(smtp_state->subject_line);
+        if (smtp_state->content_type_line != NULL) free(smtp_state->content_type_line);
+        if (smtp_state->content_disp_line != NULL) free(smtp_state->content_disp_line);
 
-        smtp_state->data_state = 0;
+        smtp_state->data_state = SMTP_DATA_UNKNOWN;
 
         aft->smtp_cnt++;
 
