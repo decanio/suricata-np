@@ -18,7 +18,7 @@
 /**
  * \file
  *
- * \author Victor Julien <td@npulsetech.com>
+ * \author Tom DeCanio <td@npulsetech.com>
  */
 
 #ifndef __LOG_SMTPLOG_H__
