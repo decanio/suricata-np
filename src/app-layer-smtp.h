@@ -102,6 +102,8 @@ typedef struct SMTPState_ {
     uint8_t *from_line;
     uint8_t *to_line;
     uint32_t to_line_len;
+    uint8_t *cc_line;
+    uint32_t cc_line_len;
     uint8_t *subject_line;
     uint8_t *content_type_line;
     uint32_t content_type_line_len;

@@ -226,26 +226,51 @@ static TmEcode LogSmtpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
         json_object_set_new(sjs, "to", json_string(
                   (char *)((smtp_state->to_line != NULL) ? smtp_state->to_line : "")));
 #else
-        json_t *tjs = json_array();
-        if (tjs != NULL) {
-            char *savep;
-            char *p;
-            json_t *njs[128];
-            int i = 0;
-            njs[i] = json_object();
-            p = strtok_r(smtp_state->to_line, ",", &savep);
-            SCLogInfo("first token: \"%s\"", &p[strspn(p, " \t")]);
-            json_object_set_new(njs[i], "emailaddr", json_string(&p[strspn(p, " \t")]));
-            json_array_append(tjs, njs[i++]);
-            while ((p = strtok_r(NULL, ",", &savep)) != NULL) {
-                SCLogInfo("next token: \"%s\"", &p[strspn(p, " \t")]);
+        if (smtp_state->to_line != NULL) {
+            json_t *tjs = json_array();
+            if (tjs != NULL) {
+                char *savep;
+                char *p;
+                json_t *njs[128];
+                int i = 0;
                 njs[i] = json_object();
-                json_object_set(njs[i], "emailaddr", json_string(&p[strspn(p, " \t")]));
+                p = strtok_r((char *)smtp_state->to_line, ",", &savep);
+                SCLogInfo("first token: \"%s\"", &p[strspn(p, " \t")]);
+                json_object_set_new(njs[i], "emailaddr", json_string(&p[strspn(p, " \t")]));
                 json_array_append(tjs, njs[i++]);
+                while ((p = strtok_r(NULL, ",", &savep)) != NULL) {
+                    SCLogInfo("next token: \"%s\"", &p[strspn(p, " \t")]);
+                    njs[i] = json_object();
+                    json_object_set(njs[i], "emailaddr", json_string(&p[strspn(p, " \t")]));
+                    json_array_append(tjs, njs[i++]);
+                }
             }
+            json_object_set_new(sjs, "to", tjs);
         }
-        json_object_set_new(sjs, "to", tjs);
 #endif
+
+        if (smtp_state->cc_line != NULL) {
+            json_t *cjs = json_array();
+            if (cjs != NULL) {
+                char *savep;
+                char *p;
+                json_t *njs[128];
+                int i = 0;
+                njs[i] = json_object();
+                p = strtok_r((char *)smtp_state->cc_line, ",", &savep);
+                SCLogInfo("first token: \"%s\"", &p[strspn(p, " \t")]);
+                json_object_set_new(njs[i], "emailaddr", json_string(&p[strspn(p, " \t")]));
+                json_array_append(cjs, njs[i++]);
+                while ((p = strtok_r(NULL, ",", &savep)) != NULL) {
+                    SCLogInfo("next token: \"%s\"", &p[strspn(p, " \t")]);
+                    njs[i] = json_object();
+                    json_object_set(njs[i], "emailaddr", json_string(&p[strspn(p, " \t")]));
+                    json_array_append(cjs, njs[i++]);
+                }
+            }
+            json_object_set_new(sjs, "cc", cjs);
+        }
+
         json_object_set_new(sjs, "subject", json_string(
                   (char *)((smtp_state->subject_line != NULL) ? smtp_state->subject_line : "")));
 
