@@ -48,7 +48,7 @@
 
 #include "util-logopenfile.h"
 
-#if HAVE_LIBJANSSON
+#ifdef HAVE_LIBJANSSON
 #include <jansson.h>
 
 #define DEFAULT_HTTP_SYSLOG_FACILITY_STR       "local0"
@@ -389,6 +389,18 @@ static void LogHttpLogJSON(LogHttpLogThread *aft, htp_tx_t *tx, char * timebuf,
         if (c) free(c);
     } else {
         json_object_set_new(hjs, "user-agent", json_string("<useragent unknown>"));
+    }
+
+    /* x-forwarded-for */
+    htp_header_t *h_x_forwarded_for = NULL;
+    if (tx->request_headers != NULL) {
+        h_x_forwarded_for = table_getc(tx->request_headers, "x-forwarded-for");
+    }
+    if (h_x_forwarded_for != NULL) {
+        json_object_set_new(hjs, "xff",
+            json_string(c = strndup(bstr_ptr(h_x_forwarded_for->value),
+                                    bstr_len(h_x_forwarded_for->value))));
+        if (c) free(c);
     }
 
     if (hlog->flags & LOG_HTTP_EXTENDED) {
