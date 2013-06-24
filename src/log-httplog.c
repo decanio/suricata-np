@@ -403,6 +403,21 @@ static void LogHttpLogJSON(LogHttpLogThread *aft, htp_tx_t *tx, char * timebuf,
         if (c) free(c);
     }
 
+    /* content-type */
+    htp_header_t *h_content_type = NULL;
+    if (tx->response_headers != NULL) {
+        h_content_type = table_getc(tx->response_headers, "content-type");
+    }
+    if (h_content_type != NULL) {
+        char *p;
+        c = strndup(bstr_ptr(h_content_type->value),
+                    bstr_len(h_content_type->value));
+        p = strchrnul(c, ';');
+        *p = '\0';
+        json_object_set_new(hjs, "content-type", json_string(c));
+        if (c) free(c);
+    }
+
     if (hlog->flags & LOG_HTTP_EXTENDED) {
         /* referer */
         htp_header_t *h_referer = NULL;
