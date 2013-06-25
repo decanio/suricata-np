@@ -511,8 +511,10 @@ static TmEcode LogTlsLogIPWrapperJSON(ThreadVars *tv, Packet *p, void *data, Pac
     }
 
 
+/*
     if (AppLayerTransactionGetLogId(p->flow) != 0)
         goto end;
+*/
 
     CreateTimeString(&p->ts, timebuf, sizeof(timebuf));
 
@@ -570,7 +572,9 @@ static TmEcode LogTlsLogIPWrapperJSON(ThreadVars *tv, Packet *p, void *data, Pac
         LogTlsLogExtendedJSON(aft, ssl_state);
     }
 
+/*
     AppLayerTransactionUpdateLogId(p->flow);
+*/
 
     aft->tls_cnt ++;
 
