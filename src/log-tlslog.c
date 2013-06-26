@@ -49,7 +49,20 @@
 #include "util-logopenfile.h"
 #include "util-crypt.h"
 
+#ifdef HAVE_LIBJANSSON
+#include <jansson.h>
+
+#define DEFAULT_TLS_SYSLOG_FACILITY_STR       "local0"
+#define DEFAULT_TLS_SYSLOG_FACILITY           LOG_LOCAL0
+#define DEFAULT_TLS_SYSLOG_LEVEL              LOG_INFO
+
+#ifndef OS_WIN32
+static int tls_syslog_level = DEFAULT_TLS_SYSLOG_LEVEL;
+#endif
+#endif
+
 #define DEFAULT_LOG_FILENAME "tls.log"
+
 
 static char tls_logfile_base_dir[PATH_MAX] = "/tmp";
 SC_ATOMIC_DECLARE(unsigned int, cert_id);
@@ -62,6 +75,7 @@ SC_ATOMIC_DECLARE(unsigned int, cert_id);
 #define LOG_TLS_DEFAULT     0
 #define LOG_TLS_EXTENDED    (1 << 0)
 #define LOG_TLS_JSON        (1 << 1)
+#define LOG_TLS_JSON_SYSLOG (1 << 2)
 
 TmEcode LogTlsLog(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
 TmEcode LogTlsLogIPv4(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
@@ -171,6 +185,45 @@ static void LogTlsLogExtended(LogTlsLogThread *aft, SSLState * state)
 
 #define SSL_VERSION_LENGTH 13
 
+
+#ifdef HAVE_LIBJANSSON
+static void LogTlsLogExtendedJSON(json_t *tjs, SSLState * state)
+{
+    char ssl_version[SSL_VERSION_LENGTH + 1];
+
+    /* tls.fingerprint */
+    json_object_set_new(tjs, "fingerprint",
+                        json_string(state->server_connp.cert0_fingerprint));
+    
+    /* tls.version */
+    switch (state->server_connp.version) {
+        case TLS_VERSION_UNKNOWN:
+            snprintf(ssl_version, SSL_VERSION_LENGTH, "UNDETERMINED");
+            break;
+        case SSL_VERSION_2:
+            snprintf(ssl_version, SSL_VERSION_LENGTH, "SSLv2");
+            break;
+        case SSL_VERSION_3:
+            snprintf(ssl_version, SSL_VERSION_LENGTH, "SSLv3");
+            break;
+        case TLS_VERSION_10:
+            snprintf(ssl_version, SSL_VERSION_LENGTH, "TLSv1");
+            break;
+        case TLS_VERSION_11:
+            snprintf(ssl_version, SSL_VERSION_LENGTH, "TLS 1.1");
+            break;
+        case TLS_VERSION_12:
+            snprintf(ssl_version, SSL_VERSION_LENGTH, "TLS 1.2");
+            break;
+        default:
+            snprintf(ssl_version, SSL_VERSION_LENGTH, "0x%04x",
+                     state->server_connp.version);
+            break;
+    }
+    json_object_set_new(tjs, "version", json_string(ssl_version));
+
+}
+#else
 static void LogTlsLogExtendedJSON(LogTlsLogThread *aft, SSLState * state)
 {
     FILE *fp = aft->tlslog_ctx->file_ctx->fp;
@@ -209,6 +262,7 @@ static void LogTlsLogExtendedJSON(LogTlsLogThread *aft, SSLState * state)
     PrintRawJsonFp(fp, (uint8_t *)ssl_version, strlen(ssl_version));
     fprintf(fp, "\"");
 }
+#endif
 
 static int GetIPInformations(Packet *p, char* srcip, size_t srcip_len,
                              Port* sp, char* dstip, size_t dstip_len,
@@ -479,12 +533,16 @@ end:
 
 }
 
+#ifdef HAVE_LIBJANSSON
+
 static TmEcode LogTlsLogIPWrapperJSON(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq, int ipproto)
 {
     SCEnter();
     LogTlsLogThread *aft = (LogTlsLogThread *) data;
     LogTlsFileCtx *hlog = aft->tlslog_ctx;
+#ifndef HAVE_LIBJANSSON
     FILE *fp = aft->tlslog_ctx->file_ctx->fp;
+#endif
 
     char timebuf[64];
 
@@ -512,14 +570,98 @@ static TmEcode LogTlsLogIPWrapperJSON(ThreadVars *tv, Packet *p, void *data, Pac
         LogTlsLogPem(aft, p, ssl_state, hlog, ipproto);
     }
 
-
-/*
-    if (AppLayerTransactionGetLogId(p->flow) != 0)
+    if (AppLayerTransactionGetLoggedId(p->flow) != 0)
         goto end;
-*/
 
     CreateTimeString(&p->ts, timebuf, sizeof(timebuf));
 
+#ifdef HAVE_LIBJANSSON
+
+
+    json_t *js = json_object();
+    if (js == NULL)
+        goto end;
+
+    json_t *tjs = json_object();
+    if (tjs == NULL) {
+        free(js);
+        goto end;
+    }
+
+    char srcip[46], dstip[46];
+    Port sp, dp;
+    switch (ipproto) {
+        case AF_INET:
+            PrintInet(AF_INET, (const void *)GET_IPV4_SRC_ADDR_PTR(p), srcip, sizeof(srcip));
+            PrintInet(AF_INET, (const void *)GET_IPV4_DST_ADDR_PTR(p), dstip, sizeof(dstip));
+            break;
+        case AF_INET6:
+            PrintInet(AF_INET6, (const void *)GET_IPV6_SRC_ADDR(p), srcip, sizeof(srcip));
+            PrintInet(AF_INET6, (const void *)GET_IPV6_DST_ADDR(p), dstip, sizeof(dstip));
+            break;
+        default:
+            strlcpy(srcip, "<unknown>", sizeof(srcip));
+            strlcpy(dstip, "<unknown>", sizeof(dstip));
+            break;
+    }
+    sp = p->sp;
+    dp = p->dp;
+
+    /* time */
+    json_object_set_new(js, "time", json_string(timebuf));
+
+    /* tuple */
+    json_object_set_new(js, "srcip", json_string(srcip));
+    json_object_set_new(js, "sp", json_integer(sp));
+    json_object_set_new(js, "dstip", json_string(dstip));
+    json_object_set_new(js, "dp", json_integer(dp));
+   
+    /* tls.subject */ 
+    json_object_set_new(tjs, "subject",
+                        json_string(ssl_state->server_connp.cert0_subject));
+
+    /* tls.issuerdn */
+    json_object_set_new(tjs, "issuerdn",
+                        json_string(ssl_state->server_connp.cert0_issuerdn));
+
+    if (hlog->flags & LOG_TLS_EXTENDED) {
+        LogTlsLogExtendedJSON(tjs, ssl_state);
+    }
+
+    json_object_set_new(js, "tls", tjs);
+    char *s = json_dumps(js, JSON_PRESERVE_ORDER|JSON_COMPACT|JSON_ENSURE_ASCII);
+printf("%s\n", s);
+
+    /* reset */
+    MemBufferReset(aft->buffer);
+
+    printf("before size: %d offset: %d\n", aft->buffer->size, aft->buffer->offset); fflush(stdout);
+    printf("adding %d\n", strlen(s)); fflush(stdout);
+    //MemBufferWriteRaw(aft->buffer, s, strlen(s));
+    //MemBufferWriteRaw(aft->buffer, "ABCDEFG", 7);
+    MemBufferWriteString(aft->buffer, "%s", s);
+    printf("after size: %d offset: %d\n", aft->buffer->size, aft->buffer->offset); fflush(stdout);
+    free(s);
+    free(tjs);
+    free(js);
+
+    aft->tls_cnt ++;
+
+    SCMutexLock(&hlog->file_ctx->fp_mutex);
+#ifdef HAVE_LIBJANSSON
+    if (hlog->flags & LOG_TLS_JSON_SYSLOG) {
+        syslog(tls_syslog_level, "%s", (char *)aft->buffer->buffer);
+    } else {
+        MemBufferWriteString(aft->buffer, "\n");
+#endif
+        (void)MemBufferPrintToFPAsString(aft->buffer, hlog->file_ctx->fp);
+        fflush(hlog->file_ctx->fp);
+#ifdef HAVE_LIBJANSSON
+    }
+#endif
+    SCMutexUnlock(&hlog->file_ctx->fp_mutex);
+
+#else
     fprintf(fp, "{ ");
 
     fprintf(fp, "\"timestamp\": \"");
@@ -574,9 +716,7 @@ static TmEcode LogTlsLogIPWrapperJSON(ThreadVars *tv, Packet *p, void *data, Pac
         LogTlsLogExtendedJSON(aft, ssl_state);
     }
 
-/*
-    AppLayerTransactionUpdateLogId(p->flow);
-*/
+    AppLayerTransactionUpdateLoggedId(p->flow);
 
     aft->tls_cnt ++;
 
@@ -587,12 +727,14 @@ static TmEcode LogTlsLogIPWrapperJSON(ThreadVars *tv, Packet *p, void *data, Pac
     fprintf(fp, "}\n");
     fflush(fp);
     SCMutexUnlock(&hlog->file_ctx->fp_mutex);
+#endif
 
 end:
     FLOWLOCK_UNLOCK(p->flow);
     SCReturnInt(TM_ECODE_OK);
 
 }
+#endif
 
 TmEcode LogTlsLogIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
