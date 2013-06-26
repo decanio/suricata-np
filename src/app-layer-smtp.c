@@ -454,7 +454,7 @@ static int SMTPProcessCommandBDAT(SMTPState *state, Flow *f,
     SCReturnInt(0);
 }
 
-static int SMTPProcessAttachment(SMTPState *state, Flow *f)
+static void SMTPProcessAttachment(SMTPState *state, Flow *f)
 {
     char *p;
     if (state->attachment_count < SMTP_MAX_ATTACHMENTS) {
@@ -464,7 +464,7 @@ static int SMTPProcessAttachment(SMTPState *state, Flow *f)
                 p = &p[10];
                 char *p1 = strchrnul(p, '"');
                 *p1 = '\0';
-                SCLogInfo("adding attachment \"%s\"", p);
+                /*SCLogInfo("adding attachment \"%s\"", p);*/
                 state->attachments[state->attachment_count].name = SCStrdup(p);
                 state->attachment_count++;
             }
@@ -481,15 +481,17 @@ static int SMTPProcessCommandDATA(SMTPState *state, Flow *f,
                                   AppLayerParserState *pstate)
 {
     SCEnter();
+    /*
     char *s = strndup((char *)state->current_line, state->current_line_len);
     SCLogInfo("Data \"%s\"", s);
     free(s);
+    */
 
     /*
      * Normalize multiline bits
      */
     if (state->data_state & SMTP_DATA_MULTILINE) {
-        SCLogInfo("continuation");
+        /*SCLogInfo("continuation");*/
         uint8_t *s;
         switch (state->data_state & ~SMTP_DATA_MULTILINE) {
             case SMTP_DATA_TO:
@@ -503,15 +505,17 @@ static int SMTPProcessCommandDATA(SMTPState *state, Flow *f,
                 s[state->to_line_len] = '\0';
                 free(state->to_line);
                 state->to_line = s;
+                /*
                 {
                 char *s = strndup(state->to_line, state->to_line_len);
                 SCLogInfo("New TO: \"%s\"", s);
                 free(s);
                 }
+                */
                 if ((state->current_line[state->current_line_len-1] == ',') ||
                     ((state->current_line[state->current_line_len-1] == ',') &&
                      (state->current_line[state->current_line_len-1] == ' '))) {
-                    SCLogInfo("line continues");
+                    /*SCLogInfo("line continues")*/;
                 } else {
                     state->data_state &= ~SMTP_DATA_MULTILINE;
                 }
@@ -527,15 +531,17 @@ static int SMTPProcessCommandDATA(SMTPState *state, Flow *f,
                 s[state->cc_line_len] = '\0';
                 free(state->cc_line);
                 state->cc_line = s;
+                /*
                 {
                 char *s = strndup(state->cc_line, state->cc_line_len);
                 SCLogInfo("New CC: \"%s\"", s);
                 free(s);
                 }
+                */
                 if ((state->current_line[state->current_line_len-1] == ',') ||
                     ((state->current_line[state->current_line_len-1] == ',') &&
                      (state->current_line[state->current_line_len-1] == ' '))) {
-                    SCLogInfo("line continues");
+                    /*SCLogInfo("line continues")*/;
                 } else {
                     state->data_state &= ~SMTP_DATA_MULTILINE;
                 }
@@ -553,13 +559,15 @@ static int SMTPProcessCommandDATA(SMTPState *state, Flow *f,
                 s[state->content_type_line_len] = '\0';
                 free(state->content_type_line);
                 state->content_type_line = s;
+                /*
                 {
                 char *s = strndup(state->content_type_line, state->content_type_line_len);
                 SCLogInfo("New CONTENT-TYPE: \"%s\"", s);
                 free(s);
                 }
+                */
 	        if (state->current_line[state->current_line_len-1] == ';') {
-                    SCLogInfo("line continues");
+                    /*SCLogInfo("line continues")*/;
                 } else {
                     state->data_state &= ~SMTP_DATA_MULTILINE;
                 }
@@ -577,13 +585,15 @@ static int SMTPProcessCommandDATA(SMTPState *state, Flow *f,
                 s[state->content_disp_line_len] = '\0';
                 free(state->content_disp_line);
                 state->content_disp_line = s;
+                /*
                 {
                 char *s = strndup(state->content_disp_line, state->content_disp_line_len);
                 SCLogInfo("New CONTENT-DISPOSITION: \"%s\"", s);
                 free(s);
                 }
+                */
 	        if (state->current_line[state->current_line_len-1] == ';') {
-                    SCLogInfo("line continues");
+                    /*SCLogInfo("line continues")*/;
                 } else {
                     state->data_state &= ~SMTP_DATA_MULTILINE;
                     SMTPProcessAttachment(state, f);
@@ -594,58 +604,70 @@ static int SMTPProcessCommandDATA(SMTPState *state, Flow *f,
 
     if (state->current_line_len >= 6 &&
         SCMemcmpLowercase("from:", state->current_line, 5) == 0) {
+        /*
         char *s = strndup((char *)&state->current_line[6], state->current_line_len-6);
         SCLogInfo("FROM: \"%s\"", s);
         free(s);
+        */
         state->data_state = SMTP_DATA_FROM;
     } else if (state->current_line_len >= 4 &&
                SCMemcmpLowercase("to:", state->current_line, 3) == 0) {
+        /*
         char *s = strndup((char *)&state->current_line[4], state->current_line_len-4);
         SCLogInfo("TO: \"%s\"", s);
         free(s);
+        */
         state->data_state = SMTP_DATA_TO;
 	if ((state->current_line[state->current_line_len-1] == ',') ||
 	    ((state->current_line[state->current_line_len-2] == ',') &&
 	     (state->current_line[state->current_line_len-1] == ' '))) {
-            SCLogInfo("line continues");
+            /*SCLogInfo("line continues")*/;
             state->data_state |= SMTP_DATA_MULTILINE;
         }
     } else if (state->current_line_len >= 4 &&
                SCMemcmpLowercase("cc:", state->current_line, 3) == 0) {
+        /*
         char *s = strndup((char *)&state->current_line[4], state->current_line_len-4);
         SCLogInfo("CC: \"%s\"", s);
         free(s);
+        */
         state->data_state = SMTP_DATA_TO;
 	if ((state->current_line[state->current_line_len-1] == ',') ||
 	    ((state->current_line[state->current_line_len-2] == ',') &&
 	     (state->current_line[state->current_line_len-1] == ' '))) {
-            SCLogInfo("line continues");
+            /*SCLogInfo("line continues")*/;
             state->data_state |= SMTP_DATA_MULTILINE;
         }
     } else if (state->current_line_len >= 9 &&
                SCMemcmpLowercase("subject:", state->current_line, 8) == 0) {
+        /*
         char *s = strndup((char *)&state->current_line[9], state->current_line_len-9);
         SCLogInfo("SUBJECT: \"%s\"", s);
         free(s);
+        */
         state->data_state = SMTP_DATA_SUBJECT;
     } else if (state->current_line_len >= 21 &&
                SCMemcmpLowercase("content-disposition:", state->current_line, 20) == 0) {
+        /*
         char *s = strndup((char *)&state->current_line[21], state->current_line_len-21);
         SCLogInfo("CONTENT-DISPOSITION: \"%s\"", s);
         free(s);
+        */
         state->data_state = SMTP_DATA_CONTENT_DISPOSITION;
 	if (state->current_line[state->current_line_len-1] == ';') {
-            SCLogInfo("line continues");
+            /*SCLogInfo("line continues")*/;
             state->data_state |= SMTP_DATA_MULTILINE;
         }
     } else if (state->current_line_len >= 14 &&
                SCMemcmpLowercase("content-type:", state->current_line, 13) == 0) {
+        /*
         char *s = strndup((char *)&state->current_line[14], state->current_line_len-14);
         SCLogInfo("CONTENT-TYPE: \"%s\"", s);
         free(s);
-            state->data_state = SMTP_DATA_CONTENT_TYPE;
+        */
+        state->data_state = SMTP_DATA_CONTENT_TYPE;
 	if (state->current_line[state->current_line_len-1] == ';') {
-            SCLogInfo("line continues");
+            /*SCLogInfo("line continues")*/;
             state->data_state |= SMTP_DATA_MULTILINE;
         }
     }
@@ -722,7 +744,7 @@ static int SMTPProcessReply(SMTPState *state, Flow *f,
 {
     SCEnter();
 
-    SCLogInfo("Reply %s", state->current_line);
+    /*SCLogInfo("Reply %s", state->current_line);*/
 
     uint64_t reply_code = 0;
     PatternMatcherQueue *pmq = state->thread_local_data;
