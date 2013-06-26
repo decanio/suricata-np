@@ -76,7 +76,7 @@ void TmModuleAlertBroccoliRegister (void) {
     tmm_modules[TMM_ALERTBROCCOLI].RegisterTests = AlertBroccoliRegisterTests;
 }
 
-LogFileCtx *AlertBroccoliInitCtx(ConfNode *conf)
+OutputCtx *AlertBroccoliInitCtx(ConfNode *conf)
 {
     SCLogDebug("Can't init Broccoli output - Broccoli support was disabled during build.");
     return NULL;
