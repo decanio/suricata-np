@@ -308,12 +308,16 @@ static TmEcode LogSmtpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
                             /*SCLogInfo("json_object_set_new failed")*/;
                         SCFree(smtp_state->attachments[i].name);
                         smtp_state->attachments[i].name = NULL;
+                        /*
                         json_dumpf(njs, stdout, JSON_PRESERVE_ORDER|JSON_COMPACT|JSON_ENSURE_ASCII);
                         printf("\n");
+                        */
                         json_array_append(ajs, njs);
                     }
+                    /*
                     json_dumpf(ajs, stdout, JSON_PRESERVE_ORDER|JSON_COMPACT|JSON_ENSURE_ASCII);
                     printf("\n");
+                    */
                     json_object_set_new(sjs, "attachment", ajs);
                 }
             }
