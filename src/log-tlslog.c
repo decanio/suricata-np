@@ -628,17 +628,11 @@ static TmEcode LogTlsLogIPWrapperJSON(ThreadVars *tv, Packet *p, void *data, Pac
 
     json_object_set_new(js, "tls", tjs);
     char *s = json_dumps(js, JSON_PRESERVE_ORDER|JSON_COMPACT|JSON_ENSURE_ASCII);
-printf("%s\n", s);
 
     /* reset */
     MemBufferReset(aft->buffer);
 
-    printf("before size: %d offset: %d\n", aft->buffer->size, aft->buffer->offset); fflush(stdout);
-    printf("adding %d\n", strlen(s)); fflush(stdout);
-    //MemBufferWriteRaw(aft->buffer, s, strlen(s));
-    //MemBufferWriteRaw(aft->buffer, "ABCDEFG", 7);
     MemBufferWriteString(aft->buffer, "%s", s);
-    printf("after size: %d offset: %d\n", aft->buffer->size, aft->buffer->offset); fflush(stdout);
     free(s);
     free(tjs);
     free(js);
