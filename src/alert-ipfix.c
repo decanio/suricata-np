@@ -56,8 +56,6 @@
 #include "util-optimize.h"
 #include "util-logopenfile.h"
 
-#include <fixbuf/public.h>
-
 #ifndef HAVE_IPFIX
 /** Handle the case where no IPFIX support is compiled in.
  *
@@ -103,6 +101,8 @@ void AlertIPFIXRegisterTests (void) {
 }
 
 #else /* implied we do have IPFIX support */
+
+#include <fixbuf/public.h>
 
 #define DEFAULT_LOG_FILENAME "ipfix.log"
 
