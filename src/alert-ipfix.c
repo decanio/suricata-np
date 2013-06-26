@@ -77,7 +77,7 @@ void TmModuleAlertIPFIXRegister (void) {
     tmm_modules[TMM_ALERTIPFIX].RegisterTests = AlertIPFIXRegisterTests;
 }
 
-LogFileCtx *AlertIPFIXInitCtx(ConfNode *conf)
+OutputCtx *AlertIPFIXInitCtx(ConfNode *conf)
 {
     SCLogDebug("Can't init IPFIX output - IPFIX support was disabled during build.");
     return NULL;
