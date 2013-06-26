@@ -185,6 +185,7 @@ static TmEcode LogSmtpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
         dp = p->sp;
     }
     if (smtp_state->data_state == SMTP_DATA_END) {
+        /*
         SCLogInfo("SMTP LOG TO: \"%s\" FROM: \"%s\" SUBJECT \"%s\"",
                   (char *)((smtp_state->to_line != NULL) ? smtp_state->to_line : ""),
                   (char *)((smtp_state->from_line != NULL) ? smtp_state->from_line : ""),
@@ -197,6 +198,7 @@ static TmEcode LogSmtpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
             SCLogInfo("SMTP LOG DISP: \"%s\"",
                   (char *)((smtp_state->content_disp_line != NULL) ? smtp_state->content_disp_line : ""));
         }
+        */
 
         /* reset */
         MemBufferReset(aft->buffer);
@@ -235,11 +237,11 @@ static TmEcode LogSmtpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
                 int i = 0;
                 njs[i] = json_object();
                 p = strtok_r((char *)smtp_state->to_line, ",", &savep);
-                SCLogInfo("first token: \"%s\"", &p[strspn(p, " \t")]);
+                /*SCLogInfo("first token: \"%s\"", &p[strspn(p, " \t")]);*/
                 json_object_set_new(njs[i], "emailaddr", json_string(&p[strspn(p, " \t")]));
                 json_array_append(tjs, njs[i++]);
                 while ((p = strtok_r(NULL, ",", &savep)) != NULL) {
-                    SCLogInfo("next token: \"%s\"", &p[strspn(p, " \t")]);
+                    /*SCLogInfo("next token: \"%s\"", &p[strspn(p, " \t")]);*/
                     njs[i] = json_object();
                     json_object_set(njs[i], "emailaddr", json_string(&p[strspn(p, " \t")]));
                     json_array_append(tjs, njs[i++]);
@@ -258,11 +260,11 @@ static TmEcode LogSmtpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
                 int i = 0;
                 njs[i] = json_object();
                 p = strtok_r((char *)smtp_state->cc_line, ",", &savep);
-                SCLogInfo("first token: \"%s\"", &p[strspn(p, " \t")]);
+                /*SCLogInfo("first token: \"%s\"", &p[strspn(p, " \t")]);*/
                 json_object_set_new(njs[i], "emailaddr", json_string(&p[strspn(p, " \t")]));
                 json_array_append(cjs, njs[i++]);
                 while ((p = strtok_r(NULL, ",", &savep)) != NULL) {
-                    SCLogInfo("next token: \"%s\"", &p[strspn(p, " \t")]);
+                    /*SCLogInfo("next token: \"%s\"", &p[strspn(p, " \t")]);*/
                     njs[i] = json_object();
                     json_object_set(njs[i], "emailaddr", json_string(&p[strspn(p, " \t")]));
                     json_array_append(cjs, njs[i++]);
@@ -299,11 +301,11 @@ static TmEcode LogSmtpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
                     json_t *njs = json_object();;
                     for (i = 0; i < smtp_state->attachment_count; i++) {
                         int r;
-                        SCLogInfo("Adding \"%s\" into array", smtp_state->attachments[i].name);
+                        /*SCLogInfo("Adding \"%s\" into array", smtp_state->attachments[i].name);*/
                         r = json_object_set_new(njs, "name",
                             json_string((char *)smtp_state->attachments[i].name));
                         if (r!=0)
-                            SCLogInfo("json_object_set_new failed");
+                            /*SCLogInfo("json_object_set_new failed")*/;
                         SCFree(smtp_state->attachments[i].name);
                         smtp_state->attachments[i].name = NULL;
                         json_dumpf(njs, stdout, JSON_PRESERVE_ORDER|JSON_COMPACT|JSON_ENSURE_ASCII);
