@@ -491,7 +491,7 @@ static TmEcode LogDnsLogIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQ
                 LogAnswer(aft, timebuf, srcip, dstip, sp, dp, tx, entry);
             }
 
-            SCLogDebug("calling AppLayerTransactionUpdateLoggedId");
+            SCLogDebug("calling AppLayerTransactionUpdateLogId");
             AppLayerTransactionUpdateLogId(p->flow);
         }
     }
