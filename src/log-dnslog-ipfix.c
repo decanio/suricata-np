@@ -39,7 +39,7 @@
 #include "util-debug.h"
 
 #include "output.h"
-#include "log-dnslog.h"
+#include "log-dnslog-ipfix.h"
 #include "app-layer-dns-udp.h"
 #include "app-layer.h"
 #include "util-privs.h"
@@ -58,24 +58,24 @@
  * TX id handling doesn't expect it */
 #define QUERY 0
 
-TmEcode LogDnsLog (ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogDnsLogIPv4(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogDnsLogIPv6(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogDnsLogThreadInit(ThreadVars *, void *, void **);
-TmEcode LogDnsLogThreadDeinit(ThreadVars *, void *);
-void LogDnsLogExitPrintStats(ThreadVars *, void *);
-static void LogDnsLogDeInitCtx(OutputCtx *);
+TmEcode LogDnsLogIPFIX (ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+TmEcode LogDnsLogIPFIXIPv4(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+TmEcode LogDnsLogIPFIXIPv6(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+TmEcode LogDnsLogIPFIXThreadInit(ThreadVars *, void *, void **);
+TmEcode LogDnsLogIPFIXThreadDeinit(ThreadVars *, void *);
+void LogDnsLogIPFIXExitPrintStats(ThreadVars *, void *);
+static void LogDnsLogIPFIXDeInitCtx(OutputCtx *);
 
-void TmModuleLogDnsLogRegister (void) {
-    tmm_modules[TMM_LOGDNSLOG].name = MODULE_NAME;
-    tmm_modules[TMM_LOGDNSLOG].ThreadInit = LogDnsLogThreadInit;
-    tmm_modules[TMM_LOGDNSLOG].Func = LogDnsLog;
-    tmm_modules[TMM_LOGDNSLOG].ThreadExitPrintStats = LogDnsLogExitPrintStats;
-    tmm_modules[TMM_LOGDNSLOG].ThreadDeinit = LogDnsLogThreadDeinit;
-    tmm_modules[TMM_LOGDNSLOG].RegisterTests = NULL;
-    tmm_modules[TMM_LOGDNSLOG].cap_flags = 0;
+void TmModuleLogDnsLogIPFIXRegister (void) {
+    tmm_modules[TMM_LOGDNSLOGIPFIX].name = MODULE_NAME;
+    tmm_modules[TMM_LOGDNSLOGIPFIX].ThreadInit = LogDnsLogIPFIXThreadInit;
+    tmm_modules[TMM_LOGDNSLOGIPFIX].Func = LogDnsLogIPFIX;
+    tmm_modules[TMM_LOGDNSLOGIPFIX].ThreadExitPrintStats = LogDnsLogIPFIXExitPrintStats;
+    tmm_modules[TMM_LOGDNSLOGIPFIX].ThreadDeinit = LogDnsLogIPFIXThreadDeinit;
+    tmm_modules[TMM_LOGDNSLOGIPFIX].RegisterTests = NULL;
+    tmm_modules[TMM_LOGDNSLOGIPFIX].cap_flags = 0;
 
-    OutputRegisterModule(MODULE_NAME, "dns-log", LogDnsLogInitCtx);
+    OutputRegisterModule(MODULE_NAME, "dns-log", LogDnsLogIPFIXInitCtx);
 
     /* enable the logger for the app layer */
     AppLayerRegisterLogger(ALPROTO_DNS_UDP);
@@ -84,7 +84,11 @@ void TmModuleLogDnsLogRegister (void) {
 }
 
 typedef struct LogDnsFileCtx_ {
+#if 1
+    SCMutex mutex;
+#else
     LogFileCtx *file_ctx;
+#endif
     uint32_t flags; /** Store mode */
 } LogDnsFileCtx;
 
@@ -149,10 +153,13 @@ static void LogQuery(LogDnsLogThread *aft, char *timebuf, char *srcip, char *dst
 
     aft->dns_cnt++;
 
-    SCMutexLock(&hlog->file_ctx->fp_mutex);
+    SCMutexLock(&hlog->mutex);
+#if 1
+#else
     (void)MemBufferPrintToFPAsString(aft->buffer, hlog->file_ctx->fp);
     fflush(hlog->file_ctx->fp);
-    SCMutexUnlock(&hlog->file_ctx->fp_mutex);
+#endif
+    SCMutexUnlock(&hlog->mutex);
 }
 
 static void LogAnswer(LogDnsLogThread *aft, char *timebuf, char *srcip, char *dstip, Port sp, Port dp, DNSTransaction *tx, DNSAnswerEntry *entry) {
@@ -209,10 +216,13 @@ static void LogAnswer(LogDnsLogThread *aft, char *timebuf, char *srcip, char *ds
 
     aft->dns_cnt++;
 
-    SCMutexLock(&hlog->file_ctx->fp_mutex);
+    SCMutexLock(&hlog->mutex);
+#if 1
+#else
     (void)MemBufferPrintToFPAsString(aft->buffer, hlog->file_ctx->fp);
     fflush(hlog->file_ctx->fp);
-    SCMutexUnlock(&hlog->file_ctx->fp_mutex);
+#endif
+    SCMutexUnlock(&hlog->mutex);
 }
 
 static TmEcode LogDnsLogIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq,
@@ -332,17 +342,17 @@ end:
     SCReturnInt(TM_ECODE_OK);
 }
 
-TmEcode LogDnsLogIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+TmEcode LogDnsLogIPFIXIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
     return LogDnsLogIPWrapper(tv, p, data, pq, postpq, AF_INET);
 }
 
-TmEcode LogDnsLogIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+TmEcode LogDnsLogIPFIXIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
     return LogDnsLogIPWrapper(tv, p, data, pq, postpq, AF_INET6);
 }
 
-TmEcode LogDnsLog (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+TmEcode LogDnsLogIPFIX (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
     SCEnter();
 
@@ -357,17 +367,17 @@ TmEcode LogDnsLog (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, Packe
     }
 
     if (PKT_IS_IPV4(p)) {
-        int r  = LogDnsLogIPv4(tv, p, data, pq, postpq);
+        int r  = LogDnsLogIPFIXIPv4(tv, p, data, pq, postpq);
         SCReturnInt(r);
     } else if (PKT_IS_IPV6(p)) {
-        int r  = LogDnsLogIPv6(tv, p, data, pq, postpq);
+        int r  = LogDnsLogIPFIXIPv6(tv, p, data, pq, postpq);
         SCReturnInt(r);
     }
 
     SCReturnInt(TM_ECODE_OK);
 }
 
-TmEcode LogDnsLogThreadInit(ThreadVars *t, void *initdata, void **data)
+TmEcode LogDnsLogIPFIXThreadInit(ThreadVars *t, void *initdata, void **data)
 {
     LogDnsLogThread *aft = SCMalloc(sizeof(LogDnsLogThread));
     if (unlikely(aft == NULL))
@@ -394,7 +404,7 @@ TmEcode LogDnsLogThreadInit(ThreadVars *t, void *initdata, void **data)
     return TM_ECODE_OK;
 }
 
-TmEcode LogDnsLogThreadDeinit(ThreadVars *t, void *data)
+TmEcode LogDnsLogIPFIXThreadDeinit(ThreadVars *t, void *data)
 {
     LogDnsLogThread *aft = (LogDnsLogThread *)data;
     if (aft == NULL) {
@@ -409,7 +419,7 @@ TmEcode LogDnsLogThreadDeinit(ThreadVars *t, void *data)
     return TM_ECODE_OK;
 }
 
-void LogDnsLogExitPrintStats(ThreadVars *tv, void *data) {
+void LogDnsLogIPFIXExitPrintStats(ThreadVars *tv, void *data) {
     LogDnsLogThread *aft = (LogDnsLogThread *)data;
     if (aft == NULL) {
         return;
@@ -422,8 +432,10 @@ void LogDnsLogExitPrintStats(ThreadVars *tv, void *data) {
  *  \param conf Pointer to ConfNode containing this loggers configuration.
  *  \return NULL if failure, LogFileCtx* to the file_ctx if succesful
  * */
-OutputCtx *LogDnsLogInitCtx(ConfNode *conf)
+OutputCtx *LogDnsLogIPFIXInitCtx(ConfNode *conf)
 {
+#if 1
+#else
     LogFileCtx* file_ctx = LogFileNewCtx();
 
     if(file_ctx == NULL) {
@@ -436,34 +448,43 @@ OutputCtx *LogDnsLogInitCtx(ConfNode *conf)
         return NULL;
     }
 
+#endif
     LogDnsFileCtx *dnslog_ctx = SCMalloc(sizeof(LogDnsFileCtx));
     if (unlikely(dnslog_ctx == NULL)) {
+#if 0
         LogFileFreeCtx(file_ctx);
+#endif
         return NULL;
     }
     memset(dnslog_ctx, 0x00, sizeof(LogDnsFileCtx));
 
+#if 0
     dnslog_ctx->file_ctx = file_ctx;
+#endif
 
     OutputCtx *output_ctx = SCCalloc(1, sizeof(OutputCtx));
     if (unlikely(output_ctx == NULL)) {
+#if 0
         LogFileFreeCtx(file_ctx);
+#endif
         SCFree(dnslog_ctx);
         return NULL;
     }
 
     output_ctx->data = dnslog_ctx;
-    output_ctx->DeInit = LogDnsLogDeInitCtx;
+    output_ctx->DeInit = LogDnsLogIPFIXDeInitCtx;
 
-    SCLogDebug("DNS log output initialized");
+    SCLogDebug("DNS IPFIX log output initialized");
 
     return output_ctx;
 }
 
-static void LogDnsLogDeInitCtx(OutputCtx *output_ctx)
+static void LogDnsLogIPFIXDeInitCtx(OutputCtx *output_ctx)
 {
     LogDnsFileCtx *dnslog_ctx = (LogDnsFileCtx *)output_ctx->data;
+#if 0
     LogFileFreeCtx(dnslog_ctx->file_ctx);
+#endif
     SCFree(dnslog_ctx);
     SCFree(output_ctx);
 }

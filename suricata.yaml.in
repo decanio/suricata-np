@@ -113,6 +113,16 @@ outputs:
       #customformat: "%{%D-%H:%M:%S}t.%z %{X-Forwarded-For}i %H %m %h %u %s %B %a:%p -> %A:%P"
       #filetype: regular # 'regular', 'unix_stream' or 'unix_dgram'
 
+  # a line based log of HTTP requests (no alerts)
+  - http-log-ipfix:
+      enabled: yes
+      filename: http-ipfix.log
+      append: yes
+      #extended: yes     # enable this for extended logging information
+      #custom: yes       # enabled the custom logging format (defined by customformat)
+      #customformat: "%{%D-%H:%M:%S}t.%z %{X-Forwarded-For}i %H %m %h %u %s %B %a:%p -> %A:%P"
+      #filetype: regular # 'regular', 'unix_stream' or 'unix_dgram'
+
   # a line based log of TLS handshake parameters (no alerts)
   - tls-log:
       enabled: no  # Log TLS connections.

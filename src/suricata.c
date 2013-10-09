@@ -80,7 +80,9 @@
 
 #include "log-droplog.h"
 #include "log-httplog.h"
+#include "log-httplog-ipfix.h"
 #include "log-dnslog.h"
+#include "log-dnslog-ipfix.h"
 #include "log-tlslog.h"
 #include "log-pcap.h"
 #include "log-file.h"
@@ -756,6 +758,11 @@ void RegisterAllModules()
     TmModuleLogHttpLogRegister();
     TmModuleLogHttpLogIPv4Register();
     TmModuleLogHttpLogIPv6Register();
+    /* http ipfix log */
+    TmModuleLogHttpLogIPFIXRegister();
+    TmModuleLogHttpLogIPFIXIPv4Register();
+    TmModuleLogHttpLogIPFIXIPv6Register();
+    /* tls log */
     TmModuleLogTlsLogRegister();
     TmModuleLogTlsLogIPv4Register();
     TmModuleLogTlsLogIPv6Register();
@@ -766,6 +773,8 @@ void RegisterAllModules()
     TmModuleLogFilestoreRegister();
     /* dns log */
     TmModuleLogDnsLogRegister();
+    /* dns ipfix log */
+    TmModuleLogDnsLogIPFIXRegister();
     /* cuda */
     TmModuleDebugList();
 

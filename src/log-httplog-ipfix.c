@@ -18,10 +18,9 @@
 /**
  * \file
  *
- * \author Victor Julien <victor@inliniac.net>
- * \author Ignacio Sanchez <sanchezmartin.ji@gmail.com>
+ * \author Tom DeCanio <td@npulsetech.com>
  *
- * Implements http logging portion of the engine.
+ * Implements http logging to IPFIX portion of the engine.
  */
 
 #include "suricata-common.h"
@@ -40,60 +39,68 @@
 #include "util-debug.h"
 
 #include "output.h"
-#include "log-httplog.h"
+#include "log-httplog-ipfix.h"
 #include "app-layer-htp.h"
 #include "app-layer.h"
 #include "util-privs.h"
 #include "util-buffer.h"
 
 #include "util-logopenfile.h"
+#include "util-logipfix.h"
 #include "util-time.h"
 
-#define DEFAULT_LOG_FILENAME "http.log"
+#define DEFAULT_LOG_FILENAME "http-ipfix.log"
 
-#define MODULE_NAME "LogHttpLog"
+#define MODULE_NAME "LogHttpLogIPFIX"
 
 #define OUTPUT_BUFFER_SIZE 65535
 
-TmEcode LogHttpLog (ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogHttpLogIPv4(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogHttpLogIPv6(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogHttpLogThreadInit(ThreadVars *, void *, void **);
-TmEcode LogHttpLogThreadDeinit(ThreadVars *, void *);
-void LogHttpLogExitPrintStats(ThreadVars *, void *);
-static void LogHttpLogDeInitCtx(OutputCtx *);
+#ifndef HAVE_IPFIX
+#error Need to finish this
+#else /* implied we do have IPFIX support */
 
-void TmModuleLogHttpLogRegister (void) {
-    tmm_modules[TMM_LOGHTTPLOG].name = MODULE_NAME;
-    tmm_modules[TMM_LOGHTTPLOG].ThreadInit = LogHttpLogThreadInit;
-    tmm_modules[TMM_LOGHTTPLOG].Func = LogHttpLog;
-    tmm_modules[TMM_LOGHTTPLOG].ThreadExitPrintStats = LogHttpLogExitPrintStats;
-    tmm_modules[TMM_LOGHTTPLOG].ThreadDeinit = LogHttpLogThreadDeinit;
-    tmm_modules[TMM_LOGHTTPLOG].RegisterTests = NULL;
-    tmm_modules[TMM_LOGHTTPLOG].cap_flags = 0;
+#include <fixbuf/public.h>
+#include <glib.h>
 
-    OutputRegisterModule(MODULE_NAME, "http-log", LogHttpLogInitCtx);
+TmEcode LogHttpLogIPFIX (ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+TmEcode LogHttpLogIPFIXIPv4(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+TmEcode LogHttpLogIPFIXIPv6(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+TmEcode LogHttpLogIPFIXThreadInit(ThreadVars *, void *, void **);
+TmEcode LogHttpLogIPFIXThreadDeinit(ThreadVars *, void *);
+void LogHttpLogIPFIXExitPrintStats(ThreadVars *, void *);
+static void LogHttpLogIPFIXDeInitCtx(OutputCtx *);
+
+void TmModuleLogHttpLogIPFIXRegister (void) {
+    tmm_modules[TMM_LOGHTTPLOGIPFIX].name = MODULE_NAME;
+    tmm_modules[TMM_LOGHTTPLOGIPFIX].ThreadInit = LogHttpLogIPFIXThreadInit;
+    tmm_modules[TMM_LOGHTTPLOGIPFIX].Func = LogHttpLogIPFIX;
+    tmm_modules[TMM_LOGHTTPLOGIPFIX].ThreadExitPrintStats = LogHttpLogIPFIXExitPrintStats;
+    tmm_modules[TMM_LOGHTTPLOGIPFIX].ThreadDeinit = LogHttpLogIPFIXThreadDeinit;
+    tmm_modules[TMM_LOGHTTPLOGIPFIX].RegisterTests = NULL;
+    tmm_modules[TMM_LOGHTTPLOGIPFIX].cap_flags = 0;
+
+    OutputRegisterModule(MODULE_NAME, "http-log-ipfix", LogHttpLogIPFIXInitCtx);
 
     /* enable the logger for the app layer */
     AppLayerRegisterLogger(ALPROTO_HTTP);
 }
 
-void TmModuleLogHttpLogIPv4Register (void) {
-    tmm_modules[TMM_LOGHTTPLOG4].name = "LogHttpLogIPv4";
-    tmm_modules[TMM_LOGHTTPLOG4].ThreadInit = LogHttpLogThreadInit;
-    tmm_modules[TMM_LOGHTTPLOG4].Func = LogHttpLogIPv4;
-    tmm_modules[TMM_LOGHTTPLOG4].ThreadExitPrintStats = LogHttpLogExitPrintStats;
-    tmm_modules[TMM_LOGHTTPLOG4].ThreadDeinit = LogHttpLogThreadDeinit;
-    tmm_modules[TMM_LOGHTTPLOG4].RegisterTests = NULL;
+void TmModuleLogHttpLogIPFIXIPv4Register (void) {
+    tmm_modules[TMM_LOGHTTPLOGIPFIX4].name = "LogHttpLogIPFIXIPv4";
+    tmm_modules[TMM_LOGHTTPLOGIPFIX4].ThreadInit = LogHttpLogIPFIXThreadInit;
+    tmm_modules[TMM_LOGHTTPLOGIPFIX4].Func = LogHttpLogIPFIXIPv4;
+    tmm_modules[TMM_LOGHTTPLOGIPFIX4].ThreadExitPrintStats = LogHttpLogIPFIXExitPrintStats;
+    tmm_modules[TMM_LOGHTTPLOGIPFIX4].ThreadDeinit = LogHttpLogIPFIXThreadDeinit;
+    tmm_modules[TMM_LOGHTTPLOGIPFIX4].RegisterTests = NULL;
 }
 
-void TmModuleLogHttpLogIPv6Register (void) {
-    tmm_modules[TMM_LOGHTTPLOG6].name = "LogHttpLogIPv6";
-    tmm_modules[TMM_LOGHTTPLOG6].ThreadInit = LogHttpLogThreadInit;
-    tmm_modules[TMM_LOGHTTPLOG6].Func = LogHttpLogIPv6;
-    tmm_modules[TMM_LOGHTTPLOG6].ThreadExitPrintStats = LogHttpLogExitPrintStats;
-    tmm_modules[TMM_LOGHTTPLOG6].ThreadDeinit = LogHttpLogThreadDeinit;
-    tmm_modules[TMM_LOGHTTPLOG6].RegisterTests = NULL;
+void TmModuleLogHttpLogIPFIXIPv6Register (void) {
+    tmm_modules[TMM_LOGHTTPLOGIPFIX6].name = "LogHttpLogIPFIXIPv6";
+    tmm_modules[TMM_LOGHTTPLOGIPFIX6].ThreadInit = LogHttpLogIPFIXThreadInit;
+    tmm_modules[TMM_LOGHTTPLOGIPFIX6].Func = LogHttpLogIPFIXIPv6;
+    tmm_modules[TMM_LOGHTTPLOGIPFIX6].ThreadExitPrintStats = LogHttpLogIPFIXExitPrintStats;
+    tmm_modules[TMM_LOGHTTPLOGIPFIX6].ThreadDeinit = LogHttpLogIPFIXThreadDeinit;
+    tmm_modules[TMM_LOGHTTPLOGIPFIX6].RegisterTests = NULL;
 }
 
 #define LOG_HTTP_MAXN_NODES 64
@@ -128,7 +135,16 @@ typedef struct LogHttpCustomFormatNode_ {
 } LogHttpCustomFormatNode;
 
 typedef struct LogHttpFileCtx_ {
-    LogFileCtx *file_ctx;
+#if 0
+    SCMutex mutex;
+    fbInfoModel_t *fb_model;
+    fbExporter_t *exporter;
+    fbSession_t *session;
+    fBuf_t *fbuf;
+#else
+    LogIPFIXCtx *ipfix_ctx;
+#endif
+
     uint32_t flags; /** Store mode */
     uint32_t cf_n; /** Total number of custom string format nodes */
     LogHttpCustomFormatNode *cf_nodes[LOG_HTTP_MAXN_NODES]; /** Custom format string nodes */
@@ -138,13 +154,174 @@ typedef struct LogHttpFileCtx_ {
 #define LOG_HTTP_EXTENDED 1
 #define LOG_HTTP_CUSTOM 2
 
-typedef struct LogHttpLogThread_ {
+typedef struct LogHttpLogIPFIXThread_ {
     LogHttpFileCtx *httplog_ctx;
     /** LogFileCtx has the pointer to the file and a mutex to allow multithreading */
     uint32_t uri_cnt;
 
     MemBuffer *buffer;
 } LogHttpLogThread;
+
+#if 0
+#define CERT_PEN        6871
+#define NPULSE_PEN	38885
+#endif
+
+#define SURI_HTTP_BASE_TID	0x3100
+#define SURI_HTTP_BASIC_TID	0x5001
+
+/* Special dimensions */
+#define SURI_IP4		0x0001
+#define SURI_IP6		0x0002
+
+/* IPFIX definition of the HTTP log record */
+static fbInfoElementSpec_t http_log_int_spec[] = {
+    /* Alert Millisecond (epoch) (native time) */
+    { "alertMilliseconds",                  0, 0 },
+    /* http info */
+    { "httpHost",                           0, 0 },
+    { "httpGet",                            0, 0 },
+    { "httpUserAgent",                      0, 0 },
+    { "httpX-Forwarded-For",                0, 0 },
+    { "httpContentType",                    0, 0 },
+    { "httpReferer",                        0, 0 },
+    /* 5-tuple */
+    { "sourceIPv6Address",                  0, 0 },
+    { "destinationIPv6Address",             0, 0 },
+    { "sourceIPv4Address",                  0, 0 },
+    { "destinationIPv4Address",             0, 0 },
+    { "sourceTransportPort",                0, 0 },
+    { "destinationTransportPort",           0, 0 },
+    { "protocolIdentifier",                 0, 0 },
+    { "paddingOctets",                      7, 1 },
+    FB_IESPEC_NULL
+};
+
+static fbInfoElementSpec_t http_log_ext_spec[] = {
+    /* Alert Millisecond (epoch) (native time) */
+    { "alertMilliseconds",                  0, 0 },
+    /* 5-tuple */
+    { "sourceIPv6Address",                  0, SURI_IP6 },
+    { "destinationIPv6Address",             0, SURI_IP6 },
+    { "sourceIPv4Address",                  0, SURI_IP4 },
+    { "destinationIPv4Address",             0, SURI_IP4 },
+    { "sourceTransportPort",                0, 0 },
+    { "destinationTransportPort",           0, 0 },
+    { "protocolIdentifier",                 0, 0 },
+    /* http info */
+    { "httpHost",                           0, 0 },
+    { "httpGet",                            0, 0 },
+    { "httpUserAgent",                      0, 0 },
+    { "httpX-Forwarded-For",                0, 0 },
+    { "httpContentType",                    0, 0 },
+    { "httpReferer",                        0, 0 },
+    FB_IESPEC_NULL
+};
+
+#if 0
+static fbInfoElement_t info_elements[] = {
+    FB_IE_INIT("alertMilliseconds", NPULSE_PEN, 40, 8, FB_IE_F_ENDIAN),
+    FB_IE_INIT("httpServerString", CERT_PEN, 110, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpUserAgent", CERT_PEN, 111, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpGet", CERT_PEN, 112, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpConnection", CERT_PEN, 113, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpVersion", CERT_PEN, 114, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpReferer", CERT_PEN, 115, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpLocation", CERT_PEN, 116, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpHost", CERT_PEN, 117, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpContentLength", CERT_PEN, 118, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpAge", CERT_PEN, 119, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpAccept", CERT_PEN, 120, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpAcceptLanguage", CERT_PEN, 121, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpContentType", CERT_PEN, 122, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpResponse", CERT_PEN, 123, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpCookie", CERT_PEN, 220, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpSetCookie", CERT_PEN, 221, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpAuthorization", CERT_PEN, 252, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpVia", CERT_PEN, 253, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpX-Forwarded-For", CERT_PEN, 254, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("httpRefresh", CERT_PEN, 256, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_NULL
+};
+#endif
+
+/* HTTP Metadata Record */
+#pragma pack(push, 1)
+typedef struct HttpLog_st {
+    uint64_t	 AlertMilliseconds;
+    fbVarfield_t hostname;
+    fbVarfield_t uri;
+    fbVarfield_t userAgent;
+    fbVarfield_t xff;
+    fbVarfield_t contentType;
+    fbVarfield_t referer;
+    //fbVarfield_t method;
+    //fbVarfield_t status;
+    //fbVarfield_t redirect;
+    //uint64_t     length;
+
+    uint8_t      sourceIPv6Address[16];
+    uint8_t      destinationIPv6Address[16];
+
+    uint32_t     sourceIPv4Address;
+    uint32_t     destinationIPv4Address;
+
+    uint16_t     sourceTransportPort;
+    uint16_t     destinationTransportPort;
+    uint8_t      protocolIdentifier;
+} HttpLog_t;
+#pragma pack(pop)
+
+typedef struct HttpBasicLog_st {
+    fbVarfield_t hostname;
+    fbVarfield_t uri;
+    fbVarfield_t userAgent;
+} HttpBasicLog_t;
+
+typedef struct Templates_st {
+    fbTemplate_t *HttpBasicTemplate;
+} Templates_t;
+
+static Templates_t tmpl;
+
+gboolean SetExportTemplate(
+    fbInfoModel_t       *fb_model,
+    fBuf_t              *fbuf,
+    uint16_t            tid,
+    GError              **err)
+{
+    fbSession_t         *session = NULL;
+    fbTemplate_t        *tmpl = NULL;
+
+    /* Try to set export template */
+    if (fBufSetExportTemplate(fbuf, tid, err)) {
+        return TRUE;
+    }
+
+    /* Check for error other than missing template */
+    if (!g_error_matches(*err, FB_ERROR_DOMAIN, FB_ERROR_TMPL)) {
+        return FALSE;
+    }
+
+    /* Okay. We have a missing template. Clear the Teerror and try to load it. */
+    g_clear_error(err);
+    session = fBufGetSession(fbuf);
+    tmpl = fbTemplateAlloc(fb_model);
+
+    SCLogInfo("tid: %x Appending tid: %x\n", tid, (tid & (~SURI_HTTP_BASE_TID)));
+    if (!fbTemplateAppendSpecArray(tmpl, http_log_ext_spec,
+                                   (tid & (~SURI_HTTP_BASE_TID)), err))    {
+        return FALSE;
+    }
+
+    if (!fbSessionAddTemplate(session, FALSE, tid, tmpl, err)) {
+        SCLogInfo("failed to add external template");
+        return FALSE;
+    }
+
+    /* Template should be loaded. Try setting the template again. */
+    return fBufSetExportTemplate(fbuf, tid, err);
+}
 
 /* Retrieves the selected cookie value */
 static uint32_t GetCookieValue(uint8_t *rawcookies, uint32_t rawcookies_len, char *cookiename,
@@ -425,11 +602,15 @@ static void LogHttpLogExtended(LogHttpLogThread *aft, htp_tx_t *tx)
     MemBufferWriteString(aft->buffer, " [**] %"PRIuMAX" bytes", (uintmax_t)tx->response_message_len);
 }
 
-static TmEcode LogHttpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq,
+static TmEcode LogHttpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq,
                             PacketQueue *postpq, int ipproto)
 {
     SCEnter();
 
+    HttpLog_t rec;
+    HttpBasicLog_t *httprec;
+    GError *err = NULL;
+    uint16_t tid;
     uint64_t tx_id = 0;
     uint64_t total_txs = 0;
     htp_tx_t *tx = NULL;
@@ -439,7 +620,10 @@ static TmEcode LogHttpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
     int tx_progress_done_value_tc = 0;
     LogHttpLogThread *aft = (LogHttpLogThread *)data;
     LogHttpFileCtx *hlog = aft->httplog_ctx;
+    TmEcode rc = TM_ECODE_OK;
+#if 0
     char timebuf[64];
+#endif
 
     /* no flow, no htp state */
     if (p->flow == NULL) {
@@ -452,6 +636,8 @@ static TmEcode LogHttpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
     if (proto != ALPROTO_HTTP)
         goto end;
 
+    //SCLogInfo("logging http to IPFIX");
+
     htp_state = (HtpState *)AppLayerGetProtoStateFromPacket(p);
     if (htp_state == NULL) {
         SCLogDebug("no http state, so no request logging");
@@ -463,41 +649,84 @@ static TmEcode LogHttpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
     tx_progress_done_value_ts = AppLayerGetAlstateProgressCompletionStatus(ALPROTO_HTTP, 0);
     tx_progress_done_value_tc = AppLayerGetAlstateProgressCompletionStatus(ALPROTO_HTTP, 1);
 
+#if 1
+    rec.AlertMilliseconds = (p->ts.tv_sec * 1000) + (p->ts.tv_usec / 1000);
+#else
     CreateTimeString(&p->ts, timebuf, sizeof(timebuf));
+#endif
 
+#if 0
     char srcip[46], dstip[46];
     Port sp, dp;
+#endif
     if ((PKT_IS_TOSERVER(p))) {
         switch (ipproto) {
             case AF_INET:
+#if 1
+                rec.sourceIPv4Address = ntohl(GET_IPV4_SRC_ADDR_U32(p));
+                rec.destinationIPv4Address = ntohl(GET_IPV4_DST_ADDR_U32(p));
+                tid = SURI_HTTP_BASE_TID | SURI_IP4;
+#else
                 PrintInet(AF_INET, (const void *)GET_IPV4_SRC_ADDR_PTR(p), srcip, sizeof(srcip));
                 PrintInet(AF_INET, (const void *)GET_IPV4_DST_ADDR_PTR(p), dstip, sizeof(dstip));
+#endif
                 break;
             case AF_INET6:
+#if 1
+                memcpy(rec.sourceIPv6Address, GET_IPV6_SRC_ADDR(p),
+                       sizeof(rec.sourceIPv6Address));
+                memcpy(rec.destinationIPv6Address, GET_IPV6_DST_ADDR(p),
+                       sizeof(rec.destinationIPv6Address));
+                tid = SURI_HTTP_BASE_TID | SURI_IP6;
+#else
                 PrintInet(AF_INET6, (const void *)GET_IPV6_SRC_ADDR(p), srcip, sizeof(srcip));
                 PrintInet(AF_INET6, (const void *)GET_IPV6_DST_ADDR(p), dstip, sizeof(dstip));
+#endif
                 break;
             default:
                 goto end;
         }
+#if 1
+        rec.sourceTransportPort = p->sp;
+        rec.destinationTransportPort = p->dp;
+#else
         sp = p->sp;
         dp = p->dp;
+#endif
     } else {
         switch (ipproto) {
             case AF_INET:
+#if 1
+                rec.sourceIPv4Address = ntohl(GET_IPV4_DST_ADDR_U32(p));
+                rec.destinationIPv4Address = ntohl(GET_IPV4_SRC_ADDR_U32(p));
+                tid = SURI_HTTP_BASE_TID | SURI_IP4;
+#else
                 PrintInet(AF_INET, (const void *)GET_IPV4_DST_ADDR_PTR(p), srcip, sizeof(srcip));
                 PrintInet(AF_INET, (const void *)GET_IPV4_SRC_ADDR_PTR(p), dstip, sizeof(dstip));
+#endif
                 break;
             case AF_INET6:
+#if 1
+                tid = SURI_HTTP_BASE_TID | SURI_IP6;
+#else
                 PrintInet(AF_INET6, (const void *)GET_IPV6_DST_ADDR(p), srcip, sizeof(srcip));
                 PrintInet(AF_INET6, (const void *)GET_IPV6_SRC_ADDR(p), dstip, sizeof(dstip));
+#endif
                 break;
             default:
                 goto end;
         }
+#if 1
+        rec.sourceTransportPort = p->dp;
+        rec.destinationTransportPort = p->sp;
+#else
         sp = p->dp;
         dp = p->sp;
+#endif
     }
+    rec.protocolIdentifier = IPV4_GET_IPPROTO(p);
+
+    //SCLogInfo("tx_id: %lu total_txs: %lu", tx_id, total_txs);
 
     for (; tx_id < total_txs; tx_id++)
     {
@@ -509,6 +738,8 @@ static TmEcode LogHttpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
 
         if (!(((AppLayerParserStateStore *)p->flow->alparser)->id_flags & APP_LAYER_TRANSACTION_EOF)) {
             tx_progress = AppLayerGetAlstateProgress(ALPROTO_HTTP, tx, 0);
+            //SCLogInfo("got a HTTP %d %d %d", tx_progress, tx_progress_done_value_ts, tx_progress_done_value_tc);
+
             if (tx_progress < tx_progress_done_value_ts)
                 break;
 
@@ -519,14 +750,125 @@ static TmEcode LogHttpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
 
         SCLogDebug("got a HTTP request and now logging !!");
 
+#if 1
+#if 1
+        /* hostname */
+        if (tx->request_hostname != NULL) {
+            rec.hostname.buf = (uint8_t *)bstr_ptr(tx->request_hostname);
+            rec.hostname.len = bstr_len(tx->request_hostname);
+        } else {
+            rec.hostname.buf = (uint8_t *)"<hostname unknown>";
+            rec.hostname.len = strlen("<hostname unknown>");
+        }
+
+        /* uri */
+        if (tx->request_uri != NULL) {
+            rec.uri.buf = (uint8_t *)bstr_ptr(tx->request_uri);
+            rec.uri.len = bstr_len(tx->request_uri);
+        } else {
+            rec.uri.len = 0;
+        }
+
+        /* user agent */
+        htp_header_t *h_user_agent = NULL;
+        if (tx->request_headers != NULL) {
+            h_user_agent = htp_table_get_c(tx->request_headers, "user-agent");
+        }
+        if (h_user_agent != NULL) {
+            rec.userAgent.buf = (uint8_t *)bstr_ptr(h_user_agent->value);
+            rec.userAgent.len = bstr_len(h_user_agent->value);
+        } else {
+            rec.userAgent.buf = (uint8_t *)"<useragent unknown>";
+            rec.userAgent.len = strlen("<useragent unknown>");
+        }
+
+        /* x-forwarded-for */
+        htp_header_t *h_x_forwarded_for = NULL;
+        if (tx->request_headers != NULL) {
+            h_x_forwarded_for = htp_table_get_c(tx->request_headers, "x-forwarded-for");
+        }
+        if (h_x_forwarded_for != NULL) {
+            rec.xff.buf = (uint8_t)bstr_ptr(h_x_forwarded_for->value);
+            rec.xff.len = bstr_len(h_x_forwarded_for->value);
+        } else {
+            rec.xff.len = 0;
+        }
+
+        /* content-type */
+        htp_header_t *h_content_type = NULL;
+        if(tx->response_headers != NULL) {
+            h_content_type = htp_table_get_c(tx->response_headers, "content-type");
+        }
+        if (h_content_type != NULL) {
+            rec.contentType.buf = (uint8_t *)bstr_ptr(h_content_type->value);
+            rec.contentType.len = bstr_len(h_content_type->value);
+        } else {
+            rec.contentType.len = 0;
+        }
+
+        /* referer */
+        htp_header_t *h_referer = NULL;
+        if (tx->request_headers != NULL) {
+            h_referer = htp_table_get_c(tx->request_headers, "referer");
+        }
+        if (h_referer != NULL) {
+            rec.referer.buf = (uint8_t *)bstr_ptr(tx->request_method);
+            rec.referer.len = bstr_len(tx->request_method);
+        } else {
+            rec.referer.len = 0;
+        }
+#else
+        /* Initialize SubTemplateMultiList with number of templates we are to add*/
+        fbSubTemplateMultiListInit(&(rec.subTemplateMultiList), 0, 1);
+        fbSubTemplateMultiListSetSemantic(&(rec.subTemplateMultiList), 0);
+
+        fbSubTemplateMultiListEntry_t *stml = NULL;
+
+        stml = fbSubTemplateMultiListGetNextEntry(&(rec.subTemplateMultiList), stml);
+        httprec = (HttpBasicLog_t *)fbSubTemplateMultiListEntryInit(stml,
+                                               SURI_HTTP_BASIC_TID ,
+                                               tmpl.HttpBasicTemplate, 1);
+        /* hostname */
+        if (tx->request_hostname != NULL) {
+            httprec->hostname.buf = bstr_ptr(tx->request_hostname);
+            httprec->hostname.len = bstr_len(tx->request_hostname);
+        } else {
+            httprec->hostname.buf = "<hostname unknown>";
+            httprec->hostname.len = strlen("<hostname unknown>");
+        }
+
+        /* uri */
+        if (tx->request_uri != NULL) {
+            httprec->uri.buf = bstr_ptr(tx->request_uri);
+            httprec->uri.len = bstr_len(tx->request_uri);
+        } else {
+            httprec->uri.len = 0;
+        }
+
+        /* user agent */
+        htp_header_t *h_user_agent = NULL;
+        if (tx->request_headers != NULL) {
+            h_user_agent = htp_table_get_c(tx->request_headers, "user-agent");
+        }
+        if (h_user_agent != NULL) {
+            httprec->userAgent.buf = bstr_ptr(h_user_agent->value);
+            httprec->userAgent.len = bstr_len(h_user_agent->value);
+        } else {
+            httprec->userAgent.buf = "<useragent unknown>";
+            httprec->userAgent.len = strlen("<useragent unknown>");
+        }
+#endif
+#else
         /* reset */
         MemBufferReset(aft->buffer);
 
         if (hlog->flags & LOG_HTTP_CUSTOM) {
             LogHttpLogCustom(aft, tx, &p->ts, srcip, sp, dstip, dp);
         } else {
+#if 0
             /* time */
             MemBufferWriteString(aft->buffer, "%s ", timebuf);
+#endif
 
             /* hostname */
             if (tx->request_hostname != NULL) {
@@ -567,34 +909,81 @@ static TmEcode LogHttpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
                                  " [**] %s:%" PRIu16 " -> %s:%" PRIu16 "\n",
                                  srcip, sp, dstip, dp);
         }
+#endif
 
         aft->uri_cnt ++;
 
+        //SCLogInfo("writing  http to IPFIX");
+#if 1
+        SCMutexLock(&hlog->ipfix_ctx->mutex);
+#else
         SCMutexLock(&hlog->file_ctx->fp_mutex);
+#endif
+#if 1
+        /* Try to set export template */
+        if (aft->httplog_ctx->ipfix_ctx->fbuf) {
+            if (!SetExportTemplate(aft->httplog_ctx->ipfix_ctx->fb_model, aft->httplog_ctx->ipfix_ctx->fbuf, tid, &err)) {
+                SCMutexUnlock(&aft->httplog_ctx->ipfix_ctx->mutex);
+                SCLogInfo("fBufSetExportTemplate failed");
+                return TM_ECODE_FAILED;
+            }
+        } else {
+                SCMutexUnlock(&aft->httplog_ctx->ipfix_ctx->mutex);
+                SCLogInfo("no fbuf");
+                return TM_ECODE_FAILED;
+        }
+
+        SCLogInfo("Appending IPFIX record to log");
+        /* Now append the record to the buffer */
+        if (!fBufAppend(aft->httplog_ctx->ipfix_ctx->fbuf, (uint8_t *)&rec, sizeof(rec), &err)) {
+            //SCMutexUnlock(&aft->httplog_ctx->mutex);
+            SCLogInfo("fBufAppend failed");
+            rc = TM_ECODE_FAILED;
+            goto error_out;
+        }
+
+#if 0
+        /* Clear MultiList */
+        fbSubTemplateMultiListClear(&(rec.subTemplateMultiList));
+#endif
+#if 0
+        if (!fBufEmit(aft->httplog_ctx->fbuf, &err)) {
+            SCMutexUnlock(&aft->httplog_ctx->mutex);
+            SCLogInfo("fBufEmit failed");
+            return TM_ECODE_FAILED;
+        }
+#endif
+#else
         (void)MemBufferPrintToFPAsString(aft->buffer, hlog->file_ctx->fp);
         fflush(hlog->file_ctx->fp);
+#endif
+#if 1
+error_out:
+        SCMutexUnlock(&hlog->ipfix_ctx->mutex);
+#else
         SCMutexUnlock(&hlog->file_ctx->fp_mutex);
+#endif
 
         AppLayerTransactionUpdateLogId(ALPROTO_HTTP, p->flow);
     }
 
 end:
     FLOWLOCK_UNLOCK(p->flow);
-    SCReturnInt(TM_ECODE_OK);
+    SCReturnInt(rc);
 
 }
 
-TmEcode LogHttpLogIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+TmEcode LogHttpLogIPFIXIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
-    return LogHttpLogIPWrapper(tv, p, data, pq, postpq, AF_INET);
+    return LogHttpLogIPFIXIPWrapper(tv, p, data, pq, postpq, AF_INET);
 }
 
-TmEcode LogHttpLogIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+TmEcode LogHttpLogIPFIXIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
-    return LogHttpLogIPWrapper(tv, p, data, pq, postpq, AF_INET6);
+    return LogHttpLogIPFIXIPWrapper(tv, p, data, pq, postpq, AF_INET6);
 }
 
-TmEcode LogHttpLog (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+TmEcode LogHttpLogIPFIX (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
     SCEnter();
 
@@ -608,15 +997,15 @@ TmEcode LogHttpLog (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, Pack
     }
 
     if (PKT_IS_IPV4(p)) {
-        SCReturnInt(LogHttpLogIPv4(tv, p, data, pq, postpq));
+        SCReturnInt(LogHttpLogIPFIXIPv4(tv, p, data, pq, postpq));
     } else if (PKT_IS_IPV6(p)) {
-        SCReturnInt(LogHttpLogIPv6(tv, p, data, pq, postpq));
+        SCReturnInt(LogHttpLogIPFIXIPv6(tv, p, data, pq, postpq));
     }
 
     SCReturnInt(TM_ECODE_OK);
 }
 
-TmEcode LogHttpLogThreadInit(ThreadVars *t, void *initdata, void **data)
+TmEcode LogHttpLogIPFIXThreadInit(ThreadVars *t, void *initdata, void **data)
 {
     LogHttpLogThread *aft = SCMalloc(sizeof(LogHttpLogThread));
     if (unlikely(aft == NULL))
@@ -643,22 +1032,36 @@ TmEcode LogHttpLogThreadInit(ThreadVars *t, void *initdata, void **data)
     return TM_ECODE_OK;
 }
 
-TmEcode LogHttpLogThreadDeinit(ThreadVars *t, void *data)
+TmEcode LogHttpLogIPFIXThreadDeinit(ThreadVars *t, void *data)
 {
     LogHttpLogThread *aft = (LogHttpLogThread *)data;
     if (aft == NULL) {
         return TM_ECODE_OK;
     }
-
+    LogHttpFileCtx *hlog = aft->httplog_ctx;
+#if 1
+#if 0
+    GError *err = NULL;
+        SCMutexLock(&hlog->mutex);
+        if (aft->httplog_ctx->fbuf) {
+            if (!fBufEmit(aft->httplog_ctx->fbuf, &err)) {
+                SCLogInfo("fBufEmit failed on exit %s", err);
+            }
+            /* should use API to free this thing */
+            aft->httplog_ctx->fbuf = NULL;
+        }
+        SCMutexUnlock(&hlog->mutex);
+#endif
+#else
     MemBufferFree(aft->buffer);
     /* clear memory */
     memset(aft, 0, sizeof(LogHttpLogThread));
-
+#endif
     SCFree(aft);
     return TM_ECODE_OK;
 }
 
-void LogHttpLogExitPrintStats(ThreadVars *tv, void *data) {
+void LogHttpLogIPFIXExitPrintStats(ThreadVars *tv, void *data) {
     LogHttpLogThread *aft = (LogHttpLogThread *)data;
     if (aft == NULL) {
         return;
@@ -667,12 +1070,123 @@ void LogHttpLogExitPrintStats(ThreadVars *tv, void *data) {
     SCLogInfo("HTTP logger logged %" PRIu32 " requests", aft->uri_cnt);
 }
 
+fbSession_t *InitExporterSession(fbInfoModel_t *fb_model, uint32_t domain,
+                                 GError **err)
+{
+    fbInfoModel_t   *model = fb_model;
+    fbTemplate_t    *int_tmpl = NULL;
+    fbTemplate_t    *ext_tmpl = NULL;
+    //fbTemplate_t    *basic_tmpl = NULL;
+    fbSession_t     *session = NULL;
+
+    /* Allocate the session */
+    session = fbSessionAlloc(model);
+
+    /* set observation domain */
+    fbSessionSetDomain(session, domain);
+
+    /* Create the full record template */
+    if ((int_tmpl = fbTemplateAlloc(model)) == NULL) {
+        SCLogInfo("fbTemplateAlloc failed");
+        return NULL;
+    }
+    SCLogInfo("int_tmpl: %p", int_tmpl);
+    if (!fbTemplateAppendSpecArray(int_tmpl, http_log_int_spec, SURI_HTTP_BASE_TID, err)) {
+        SCLogInfo("fbTemplateAppendSpecArray failed");
+        return NULL;
+    }
+    /* Add the full record template to the session */
+    if (!fbSessionAddTemplate(session, TRUE, SURI_HTTP_BASE_TID, int_tmpl, err)) {
+        SCLogInfo("fbSessionAddTemplate failed");
+        return NULL;
+    }
+
+    /* Create the full record template */
+    if ((ext_tmpl = fbTemplateAlloc(model)) == NULL) {
+        SCLogInfo("fbTemplateAlloc failed");
+        return NULL;
+    }
+    SCLogInfo("ext_tmpl: %p", ext_tmpl);
+    if (!fbTemplateAppendSpecArray(ext_tmpl, http_log_ext_spec, SURI_HTTP_BASE_TID, err)) {
+        SCLogInfo("fbTemplateAppendSpecArray failed");
+        return NULL;
+    }
+
+#if 0
+    tmpl.HttpBasicTemplate = fbTemplateAlloc(model);
+    SCLogInfo("basic_tmpl: %p", tmpl.HttpBasicTemplate);
+    if (!fbTemplateAppendSpecArray(tmpl.HttpBasicTemplate, http_log_basic_int_spec, 0, err)) {
+        SCLogInfo("fbTemplateAppendSpecArray failed");
+        return NULL;
+    }
+    if (!fbSessionAddTemplate(session, FALSE, SURI_HTTP_BASIC_TID, tmpl.HttpBasicTemplate, err)) {
+        SCLogInfo("fbSessionAddTemplate failed");
+        return NULL;
+    }
+#endif
+
+    return session; 
+}
+
 /** \brief Create a new http log LogFileCtx.
  *  \param conf Pointer to ConfNode containing this loggers configuration.
  *  \return NULL if failure, LogFileCtx* to the file_ctx if succesful
  * */
-OutputCtx *LogHttpLogInitCtx(ConfNode *conf)
+OutputCtx *LogHttpLogIPFIXInitCtx(ConfNode *conf)
 {
+    fbConnSpec_t spec;
+    char *log_dir;
+    GError *err = NULL;
+
+    memset(&spec, 0, sizeof(spec));
+
+    SCLogInfo("HTTP IPFIX logger initializing");
+
+    char *filename = (char *)ConfNodeLookupChildValue(conf, "filename");
+    if (filename == NULL) {
+        const char *transport = ConfNodeLookupChildValue(conf, "transport");
+        if (transport == NULL) {
+            transport = "udp";
+        }
+        if (strcmp(transport, "sctp") == 0) {
+            spec.transport = FB_SCTP;
+        } else if (strcmp(transport, "udp") == 0) {
+            spec.transport = FB_UDP;
+        } else if (strcmp(transport, "tcp") == 0) {
+            spec.transport = FB_TCP;
+        }
+        const char *host = ConfNodeLookupChildValue(conf, "host");
+        if (host == NULL) {
+        }
+        spec.host = (char *)host;
+        const char *ipfix_port = ConfNodeLookupChildValue(conf, "ipfix-port");
+        if (ipfix_port == NULL) {
+            ipfix_port = "4739";
+        }
+        spec.svc = (char *)ipfix_port;
+    } else {
+        /* create the filename to use */
+        if (ConfGet("default-log-dir", &log_dir) != 1)
+            log_dir = DEFAULT_LOG_DIR;
+        filename = SCMalloc(PATH_MAX);
+        if (filename == NULL)
+            return NULL;
+        snprintf(filename, PATH_MAX, "%s/%s", log_dir,
+                 ConfNodeLookupChildValue(conf, "filename"));
+    }
+
+    SCLogInfo("filename: %s", filename);
+#if 1
+    LogIPFIXCtx *ipfix_ctx = LogIPFIXNewCtx();
+    if(ipfix_ctx == NULL) {
+        SCLogError(SC_ERR_HTTP_LOG_GENERIC, "couldn't create new ipfix_ctx");
+        return NULL;
+    }
+    if (SCConfLogOpenIPFIX(conf, ipfix_ctx, DEFAULT_LOG_FILENAME) < 0) {
+        LogFileFreeCtx(ipfix_ctx);
+        return NULL;
+    }
+#else
     LogFileCtx* file_ctx = LogFileNewCtx();
     const char *p, *np;
     uint32_t n;
@@ -685,14 +1199,20 @@ OutputCtx *LogHttpLogInitCtx(ConfNode *conf)
         LogFileFreeCtx(file_ctx);
         return NULL;
     }
+#endif
 
     LogHttpFileCtx *httplog_ctx = SCMalloc(sizeof(LogHttpFileCtx));
     if (unlikely(httplog_ctx == NULL)) {
+#if 0
         LogFileFreeCtx(file_ctx);
+#endif
         return NULL;
     }
     memset(httplog_ctx, 0x00, sizeof(LogHttpFileCtx));
+    //SCMutexInit(&httplog_ctx->ipfix_ctx->mutex, NULL);
 
+    httplog_ctx->ipfix_ctx = ipfix_ctx;
+#if 0
     httplog_ctx->file_ctx = file_ctx;
     httplog_ctx->cf_n=0;
 
@@ -779,38 +1299,97 @@ OutputCtx *LogHttpLogInitCtx(ConfNode *conf)
             }
         }
     }
-
+#endif
     OutputCtx *output_ctx = SCCalloc(1, sizeof(OutputCtx));
     if (unlikely(output_ctx == NULL)) {
         goto parsererror;
     }
 
     output_ctx->data = httplog_ctx;
-    output_ctx->DeInit = LogHttpLogDeInitCtx;
+    output_ctx->DeInit = LogHttpLogIPFIXDeInitCtx;
 
-    SCLogDebug("HTTP log output initialized");
+#if 0
+    httplog_ctx->ipfix_ctx->fb_model = fbInfoModelAlloc();
+    SCLogInfo("fbInfoModelAlloc %p", httplog_ctx->ipfix_ctx->fb_model);
+    if (httplog_ctx->ipfix_ctx->fb_model) {
+        fbInfoModelAddElementArray(httplog_ctx->ipfix_ctx->fb_model, info_elements);
+    }
+
+    if (filename == NULL) {
+        /* Allocate an exporter with connection to the collector */
+        httplog_ctx->ipfix_ctx->exporter = fbExporterAllocNet(&spec);
+    } else {
+        /* Allocate an exporter for the file */
+        httplog_ctx->ipfix_ctx->exporter = fbExporterAllocFile(filename);
+    }
+    SCLogInfo("exporter: %p", httplog_ctx->ipfix_ctx->exporter);
+#endif
+    /* Create a new session */
+    uint32_t domain = 0xbeef; /* TBD??? */
+    httplog_ctx->ipfix_ctx->session = InitExporterSession(httplog_ctx->ipfix_ctx->fb_model, domain,
+                                               &err);
+    SCLogInfo("session: %p", httplog_ctx->ipfix_ctx->session);
+
+    httplog_ctx->ipfix_ctx->fbuf = fBufAllocForExport(httplog_ctx->ipfix_ctx->session, httplog_ctx->ipfix_ctx->exporter);
+    SCLogInfo("fBufAllocForExport: %p", httplog_ctx->ipfix_ctx->fbuf);
+
+    if (httplog_ctx->ipfix_ctx->session && httplog_ctx->ipfix_ctx->fbuf) {
+
+        /* write templates */
+        fbSessionExportTemplates(httplog_ctx->ipfix_ctx->session, &err);
+
+        /* set internal template */
+        if (!fBufSetInternalTemplate(httplog_ctx->ipfix_ctx->fbuf, SURI_HTTP_BASE_TID, &err)) {
+            SCLogInfo("fBufSetInternalTemplate failed");
+        }
+    }
+
+    SCLogDebug("HTTP log IPFIX output initialized");
+
+    //SCLogInfo("offset of hostname:  %d", offsetof(HttpLog_t, hostname));
 
     return output_ctx;
 
 parsererror:
+#if 0
     for (n = 0;n < httplog_ctx->cf_n;n++) {
         SCFree(httplog_ctx->cf_nodes[n]);
     }
     LogFileFreeCtx(file_ctx);
+#endif
     SCFree(httplog_ctx);
     SCLogError(SC_ERR_INVALID_ARGUMENT,"Syntax error in custom http log format string.");
     return NULL;
 
 }
 
-static void LogHttpLogDeInitCtx(OutputCtx *output_ctx)
+static void LogHttpLogIPFIXDeInitCtx(OutputCtx *output_ctx)
 {
     LogHttpFileCtx *httplog_ctx = (LogHttpFileCtx *)output_ctx->data;
     uint32_t i;
     for (i = 0; i < httplog_ctx->cf_n; i++) {
         SCFree(httplog_ctx->cf_nodes[i]);
     }
+#if 1
+    if (httplog_ctx->ipfix_ctx->fb_model) {
+        GError *err = NULL;
+        SCMutexLock(&httplog_ctx->ipfix_ctx->mutex);
+        if (httplog_ctx->ipfix_ctx->fbuf) {
+            if (!fBufEmit(httplog_ctx->ipfix_ctx->fbuf, &err)) {
+                SCLogInfo("fBufEmit failed on exit %s", err);
+            }
+            /* should use API to free this thing */
+            httplog_ctx->ipfix_ctx->fbuf = NULL;
+        }
+        SCMutexUnlock(&httplog_ctx->ipfix_ctx->mutex);
+
+        fbInfoModelFree(httplog_ctx->ipfix_ctx->fb_model);
+    }
+#else
     LogFileFreeCtx(httplog_ctx->file_ctx);
+#endif
     SCFree(httplog_ctx);
     SCFree(output_ctx);
 }
+
+#endif
