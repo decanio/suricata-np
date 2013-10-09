@@ -46,6 +46,7 @@
 #include "util-buffer.h"
 
 #include "util-logopenfile.h"
+#include "util-logipfix.h"
 #include "util-time.h"
 
 #define DEFAULT_LOG_FILENAME "dns.log"
@@ -75,7 +76,7 @@ void TmModuleLogDnsLogIPFIXRegister (void) {
     tmm_modules[TMM_LOGDNSLOGIPFIX].RegisterTests = NULL;
     tmm_modules[TMM_LOGDNSLOGIPFIX].cap_flags = 0;
 
-    OutputRegisterModule(MODULE_NAME, "dns-log", LogDnsLogIPFIXInitCtx);
+    OutputRegisterModule(MODULE_NAME, "dns-log-ipfix", LogDnsLogIPFIXInitCtx);
 
     /* enable the logger for the app layer */
     AppLayerRegisterLogger(ALPROTO_DNS_UDP);
@@ -85,7 +86,7 @@ void TmModuleLogDnsLogIPFIXRegister (void) {
 
 typedef struct LogDnsFileCtx_ {
 #if 1
-    SCMutex mutex;
+    LogIPFIXCtx *ipfix_ctx;
 #else
     LogFileCtx *file_ctx;
 #endif
@@ -99,6 +100,61 @@ typedef struct LogDnsLogThread_ {
 
     MemBuffer *buffer;
 } LogDnsLogThread;
+
+/* TBD: move these to util-logipfix.h */
+#define SURI_DNS_BASE_TID    0x3200
+
+/* Special dimensions */
+#define SURI_IP4		0x0001
+#define SURI_IP6		0x0002
+
+/* IPFIX definition of the DNS log record */
+static fbInfoElementSpec_t dns_log_int_spec[] = {
+    /* Alert Millisecond (epoch) (native time) */
+    { "alertMilliseconds",                  0, 0 },
+    /* dns info */
+    /* 5-tuple */
+    { "sourceIPv6Address",                  0, 0 },
+    { "destinationIPv6Address",             0, 0 },
+    { "sourceIPv4Address",                  0, 0 },
+    { "destinationIPv4Address",             0, 0 },
+    { "sourceTransportPort",                0, 0 },
+    { "destinationTransportPort",           0, 0 },
+    { "protocolIdentifier",                 0, 0 },
+    FB_IESPEC_NULL
+};
+
+static fbInfoElementSpec_t dns_log_ext_spec[] = {
+    /* Alert Millisecond (epoch) (native time) */
+    { "alertMilliseconds",                  0, 0 },
+    /* 5-tuple */
+    { "sourceIPv6Address",                  0, SURI_IP6 },
+    { "destinationIPv6Address",             0, SURI_IP6 },
+    { "sourceIPv4Address",                  0, SURI_IP4 },
+    { "destinationIPv4Address",             0, SURI_IP4 },
+    { "sourceTransportPort",                0, 0 },
+    { "destinationTransportPort",           0, 0 },
+    { "protocolIdentifier",                 0, 0 },
+    /* dns info */
+    FB_IESPEC_NULL
+};
+
+/* DNS Metadata Record */
+#pragma pack(push, 1)
+typedef struct DnsLog_st {
+    uint64_t	 AlertMilliseconds;
+
+    uint8_t      sourceIPv6Address[16];
+    uint8_t      destinationIPv6Address[16];
+
+    uint32_t     sourceIPv4Address;
+    uint32_t     destinationIPv4Address;
+
+    uint16_t     sourceTransportPort;
+    uint16_t     destinationTransportPort;
+    uint8_t      protocolIdentifier;
+} DnsLog_t;
+#pragma pack(pop)
 
 static void CreateTypeString(uint16_t type, char *str, size_t str_size) {
     if (type == DNS_RECORD_TYPE_A) {
@@ -153,13 +209,13 @@ static void LogQuery(LogDnsLogThread *aft, char *timebuf, char *srcip, char *dst
 
     aft->dns_cnt++;
 
-    SCMutexLock(&hlog->mutex);
+    SCMutexLock(&hlog->ipfix_ctx->mutex);
 #if 1
 #else
     (void)MemBufferPrintToFPAsString(aft->buffer, hlog->file_ctx->fp);
     fflush(hlog->file_ctx->fp);
 #endif
-    SCMutexUnlock(&hlog->mutex);
+    SCMutexUnlock(&hlog->ipfix_ctx->mutex);
 }
 
 static void LogAnswer(LogDnsLogThread *aft, char *timebuf, char *srcip, char *dstip, Port sp, Port dp, DNSTransaction *tx, DNSAnswerEntry *entry) {
@@ -216,13 +272,13 @@ static void LogAnswer(LogDnsLogThread *aft, char *timebuf, char *srcip, char *ds
 
     aft->dns_cnt++;
 
-    SCMutexLock(&hlog->mutex);
+    SCMutexLock(&hlog->ipfix_ctx->mutex);
 #if 1
 #else
     (void)MemBufferPrintToFPAsString(aft->buffer, hlog->file_ctx->fp);
     fflush(hlog->file_ctx->fp);
 #endif
-    SCMutexUnlock(&hlog->mutex);
+    SCMutexUnlock(&hlog->ipfix_ctx->mutex);
 }
 
 static TmEcode LogDnsLogIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq,
@@ -230,6 +286,9 @@ static TmEcode LogDnsLogIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQ
 {
     SCEnter();
 
+    DnsLog_t rec;
+    GError *err= NULL;
+    uint16_t tid;
     LogDnsLogThread *aft = (LogDnsLogThread *)data;
     char timebuf[64];
 
@@ -259,40 +318,82 @@ static TmEcode LogDnsLogIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQ
     //int tx_progress_done_value_tc = AppLayerGetAlstateProgressCompletionStatus(proto, 1);
 
     SCLogDebug("pcap_cnt %"PRIu64, p->pcap_cnt);
+#if 1
+    rec.AlertMilliseconds = (p->ts.tv_sec * 1000) + (p->ts.tv_usec / 1000);
+#else
     CreateTimeString(&p->ts, timebuf, sizeof(timebuf));
+#endif
 
     char srcip[46], dstip[46];
     Port sp, dp;
     if ((PKT_IS_TOCLIENT(p))) {
         switch (ipproto) {
             case AF_INET:
+#if 1
+                rec.sourceIPv4Address = ntohl(GET_IPV4_SRC_ADDR_U32(p));
+                rec.destinationIPv4Address = ntohl(GET_IPV4_DST_ADDR_U32(p));
+                tid = SURI_DNS_BASE_TID | SURI_IP4;
+#else
                 PrintInet(AF_INET, (const void *)GET_IPV4_SRC_ADDR_PTR(p), srcip, sizeof(srcip));
                 PrintInet(AF_INET, (const void *)GET_IPV4_DST_ADDR_PTR(p), dstip, sizeof(dstip));
+#endif
                 break;
             case AF_INET6:
+#if 1
+                memcpy(rec.sourceIPv6Address, GET_IPV6_SRC_ADDR(p),
+                       sizeof(rec.sourceIPv6Address));
+                memcpy(rec.destinationIPv6Address, GET_IPV6_DST_ADDR(p),
+                       sizeof(rec.destinationIPv6Address));
+                tid = SURI_DNS_BASE_TID | SURI_IP6;
+#else
                 PrintInet(AF_INET6, (const void *)GET_IPV6_SRC_ADDR(p), srcip, sizeof(srcip));
                 PrintInet(AF_INET6, (const void *)GET_IPV6_DST_ADDR(p), dstip, sizeof(dstip));
+#endif
                 break;
             default:
                 goto end;
         }
+#if 1
+        rec.sourceTransportPort = p->sp;
+        rec.destinationTransportPort = p->dp;
+#else
         sp = p->sp;
         dp = p->dp;
+#endif
     } else {
         switch (ipproto) {
             case AF_INET:
+#if 1
+                rec.sourceIPv4Address = ntohl(GET_IPV4_DST_ADDR_U32(p));
+                rec.destinationIPv4Address = ntohl(GET_IPV4_SRC_ADDR_U32(p));
+                tid = SURI_DNS_BASE_TID | SURI_IP4;
+#else
                 PrintInet(AF_INET, (const void *)GET_IPV4_DST_ADDR_PTR(p), srcip, sizeof(srcip));
                 PrintInet(AF_INET, (const void *)GET_IPV4_SRC_ADDR_PTR(p), dstip, sizeof(dstip));
+#endif
                 break;
             case AF_INET6:
+#if 1
+                memcpy(rec.sourceIPv6Address, GET_IPV6_DST_ADDR(p),
+                       sizeof(rec.sourceIPv6Address));
+                memcpy(rec.destinationIPv6Address, GET_IPV6_SRC_ADDR(p),
+                       sizeof(rec.destinationIPv6Address));
+                tid = SURI_DNS_BASE_TID | SURI_IP6;
+#else
                 PrintInet(AF_INET6, (const void *)GET_IPV6_DST_ADDR(p), srcip, sizeof(srcip));
                 PrintInet(AF_INET6, (const void *)GET_IPV6_SRC_ADDR(p), dstip, sizeof(dstip));
+#endif
                 break;
             default:
                 goto end;
         }
+#if 1
+        rec.sourceTransportPort = p->dp;
+        rec.destinationTransportPort = p->sp;
+#else
         sp = p->dp;
         dp = p->sp;
+#endif
     }
 #if QUERY
     if (PKT_IS_TOSERVER(p)) {
@@ -309,6 +410,7 @@ static TmEcode LogDnsLogIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQ
         DNSTransaction *tx = NULL;
         for (; tx_id < total_txs; tx_id++)
         {
+#if 0
             tx = AppLayerGetTx(proto, dns_state, tx_id);
             if (tx == NULL)
                 continue;
@@ -331,12 +433,12 @@ static TmEcode LogDnsLogIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQ
             TAILQ_FOREACH(entry, &tx->authority_list, next) {
                 LogAnswer(aft, timebuf, srcip, dstip, sp, dp, tx, entry);
             }
+#endif
 
             SCLogDebug("calling AppLayerTransactionUpdateLoggedId");
             AppLayerTransactionUpdateLogId(ALPROTO_DNS, p->flow);
         }
     }
-
 end:
     FLOWLOCK_UNLOCK(p->flow);
     SCReturnInt(TM_ECODE_OK);
@@ -428,13 +530,70 @@ void LogDnsLogIPFIXExitPrintStats(ThreadVars *tv, void *data) {
     SCLogInfo("DNS logger logged %" PRIu32 " requests", aft->dns_cnt);
 }
 
+static fbSession_t *
+InitExporterSession(fbInfoModel_t *fb_model, uint32_t domain, GError **err)
+{
+    fbInfoModel_t   *model = fb_model;
+    fbTemplate_t    *int_tmpl = NULL;
+    fbTemplate_t    *ext_tmpl = NULL;
+    fbSession_t     *session = NULL;
+
+    /* Allocate the session */
+    session = fbSessionAlloc(model);
+
+    /* set observation domain */
+    fbSessionSetDomain(session, domain);
+
+    /* Create the full record template */
+    if ((int_tmpl = fbTemplateAlloc(model)) == NULL) {
+        SCLogInfo("fbTemplateAlloc failed");
+        return NULL;
+    }
+    SCLogInfo("int_tmpl: %p", int_tmpl);
+    if (!fbTemplateAppendSpecArray(int_tmpl, dns_log_int_spec, SURI_DNS_BASE_TID, err)) {
+        SCLogInfo("fbTemplateAppendSpecArray failed");
+        return NULL;
+    }
+    /* Add the full record template to the session */
+    if (!fbSessionAddTemplate(session, TRUE, SURI_DNS_BASE_TID, int_tmpl, err)) {
+        SCLogInfo("fbSessionAddTemplate failed");
+        return NULL;
+    }
+
+    /* Create the full record template */
+    if ((ext_tmpl = fbTemplateAlloc(model)) == NULL) {
+        SCLogInfo("fbTemplateAlloc failed");
+        return NULL;
+    }
+    SCLogInfo("ext_tmpl: %p", ext_tmpl);
+    if (!fbTemplateAppendSpecArray(ext_tmpl, dns_log_ext_spec, SURI_DNS_BASE_TID, err)) {
+        SCLogInfo("fbTemplateAppendSpecArray failed");
+        return NULL;
+    }
+
+    return session; 
+}
+
 /** \brief Create a new dns log LogFileCtx.
  *  \param conf Pointer to ConfNode containing this loggers configuration.
  *  \return NULL if failure, LogFileCtx* to the file_ctx if succesful
  * */
 OutputCtx *LogDnsLogIPFIXInitCtx(ConfNode *conf)
 {
+    GError *err = NULL;
+
+    SCLogInfo("DNS IPFIX logger initializing");
+
 #if 1
+    LogIPFIXCtx *ipfix_ctx = LogIPFIXNewCtx();
+    if(ipfix_ctx == NULL) {
+        SCLogError(SC_ERR_HTTP_LOG_GENERIC, "couldn't create new ipfix_ctx");
+        return NULL;
+    }
+    if (SCConfLogOpenIPFIX(conf, ipfix_ctx, DEFAULT_LOG_FILENAME) < 0) {
+        //LogFileFreeCtx(ipfix_ctx);
+        return NULL;
+    }
 #else
     LogFileCtx* file_ctx = LogFileNewCtx();
 
@@ -458,7 +617,9 @@ OutputCtx *LogDnsLogIPFIXInitCtx(ConfNode *conf)
     }
     memset(dnslog_ctx, 0x00, sizeof(LogDnsFileCtx));
 
-#if 0
+#if 1
+    dnslog_ctx->ipfix_ctx = ipfix_ctx;
+#else
     dnslog_ctx->file_ctx = file_ctx;
 #endif
 
@@ -469,6 +630,26 @@ OutputCtx *LogDnsLogIPFIXInitCtx(ConfNode *conf)
 #endif
         SCFree(dnslog_ctx);
         return NULL;
+    }
+
+    /* Create a new session */
+    uint32_t domain = 0xbeef; /* TBD??? */
+    dnslog_ctx->ipfix_ctx->session = InitExporterSession(dnslog_ctx->ipfix_ctx->fb_model, domain,
+                                               &err);
+    SCLogInfo("session: %p", dnslog_ctx->ipfix_ctx->session);
+
+    dnslog_ctx->ipfix_ctx->fbuf = fBufAllocForExport(dnslog_ctx->ipfix_ctx->session, dnslog_ctx->ipfix_ctx->exporter);
+    SCLogInfo("fBufAllocForExport: %p", dnslog_ctx->ipfix_ctx->fbuf);
+
+    if (dnslog_ctx->ipfix_ctx->session && dnslog_ctx->ipfix_ctx->fbuf) {
+
+        /* write templates */
+        fbSessionExportTemplates(dnslog_ctx->ipfix_ctx->session, &err);
+
+        /* set internal template */
+        if (!fBufSetInternalTemplate(dnslog_ctx->ipfix_ctx->fbuf, SURI_DNS_BASE_TID, &err)) {
+            SCLogInfo("fBufSetInternalTemplate failed");
+        }
     }
 
     output_ctx->data = dnslog_ctx;

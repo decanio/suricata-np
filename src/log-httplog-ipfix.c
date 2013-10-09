@@ -135,15 +135,7 @@ typedef struct LogHttpCustomFormatNode_ {
 } LogHttpCustomFormatNode;
 
 typedef struct LogHttpFileCtx_ {
-#if 0
-    SCMutex mutex;
-    fbInfoModel_t *fb_model;
-    fbExporter_t *exporter;
-    fbSession_t *session;
-    fBuf_t *fbuf;
-#else
     LogIPFIXCtx *ipfix_ctx;
-#endif
 
     uint32_t flags; /** Store mode */
     uint32_t cf_n; /** Total number of custom string format nodes */
@@ -162,11 +154,7 @@ typedef struct LogHttpLogIPFIXThread_ {
     MemBuffer *buffer;
 } LogHttpLogThread;
 
-#if 0
-#define CERT_PEN        6871
-#define NPULSE_PEN	38885
-#endif
-
+/* TBD: move these to util-logipfix.h */
 #define SURI_HTTP_BASE_TID	0x3100
 #define SURI_HTTP_BASIC_TID	0x5001
 
@@ -218,33 +206,6 @@ static fbInfoElementSpec_t http_log_ext_spec[] = {
     FB_IESPEC_NULL
 };
 
-#if 0
-static fbInfoElement_t info_elements[] = {
-    FB_IE_INIT("alertMilliseconds", NPULSE_PEN, 40, 8, FB_IE_F_ENDIAN),
-    FB_IE_INIT("httpServerString", CERT_PEN, 110, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpUserAgent", CERT_PEN, 111, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpGet", CERT_PEN, 112, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpConnection", CERT_PEN, 113, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpVersion", CERT_PEN, 114, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpReferer", CERT_PEN, 115, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpLocation", CERT_PEN, 116, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpHost", CERT_PEN, 117, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpContentLength", CERT_PEN, 118, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpAge", CERT_PEN, 119, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpAccept", CERT_PEN, 120, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpAcceptLanguage", CERT_PEN, 121, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpContentType", CERT_PEN, 122, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpResponse", CERT_PEN, 123, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpCookie", CERT_PEN, 220, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpSetCookie", CERT_PEN, 221, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpAuthorization", CERT_PEN, 252, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpVia", CERT_PEN, 253, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpX-Forwarded-For", CERT_PEN, 254, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_INIT("httpRefresh", CERT_PEN, 256, FB_IE_VARLEN, FB_IE_F_NONE),
-    FB_IE_NULL
-};
-#endif
-
 /* HTTP Metadata Record */
 #pragma pack(push, 1)
 typedef struct HttpLog_st {
@@ -271,18 +232,6 @@ typedef struct HttpLog_st {
     uint8_t      protocolIdentifier;
 } HttpLog_t;
 #pragma pack(pop)
-
-typedef struct HttpBasicLog_st {
-    fbVarfield_t hostname;
-    fbVarfield_t uri;
-    fbVarfield_t userAgent;
-} HttpBasicLog_t;
-
-typedef struct Templates_st {
-    fbTemplate_t *HttpBasicTemplate;
-} Templates_t;
-
-static Templates_t tmpl;
 
 gboolean SetExportTemplate(
     fbInfoModel_t       *fb_model,
@@ -608,7 +557,6 @@ static TmEcode LogHttpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
     SCEnter();
 
     HttpLog_t rec;
-    HttpBasicLog_t *httprec;
     GError *err = NULL;
     uint16_t tid;
     uint64_t tx_id = 0;
@@ -621,9 +569,6 @@ static TmEcode LogHttpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
     LogHttpLogThread *aft = (LogHttpLogThread *)data;
     LogHttpFileCtx *hlog = aft->httplog_ctx;
     TmEcode rc = TM_ECODE_OK;
-#if 0
-    char timebuf[64];
-#endif
 
     /* no flow, no htp state */
     if (p->flow == NULL) {
@@ -636,8 +581,6 @@ static TmEcode LogHttpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
     if (proto != ALPROTO_HTTP)
         goto end;
 
-    //SCLogInfo("logging http to IPFIX");
-
     htp_state = (HtpState *)AppLayerGetProtoStateFromPacket(p);
     if (htp_state == NULL) {
         SCLogDebug("no http state, so no request logging");
@@ -649,84 +592,48 @@ static TmEcode LogHttpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
     tx_progress_done_value_ts = AppLayerGetAlstateProgressCompletionStatus(ALPROTO_HTTP, 0);
     tx_progress_done_value_tc = AppLayerGetAlstateProgressCompletionStatus(ALPROTO_HTTP, 1);
 
-#if 1
     rec.AlertMilliseconds = (p->ts.tv_sec * 1000) + (p->ts.tv_usec / 1000);
-#else
-    CreateTimeString(&p->ts, timebuf, sizeof(timebuf));
-#endif
 
-#if 0
-    char srcip[46], dstip[46];
-    Port sp, dp;
-#endif
     if ((PKT_IS_TOSERVER(p))) {
         switch (ipproto) {
             case AF_INET:
-#if 1
                 rec.sourceIPv4Address = ntohl(GET_IPV4_SRC_ADDR_U32(p));
                 rec.destinationIPv4Address = ntohl(GET_IPV4_DST_ADDR_U32(p));
                 tid = SURI_HTTP_BASE_TID | SURI_IP4;
-#else
-                PrintInet(AF_INET, (const void *)GET_IPV4_SRC_ADDR_PTR(p), srcip, sizeof(srcip));
-                PrintInet(AF_INET, (const void *)GET_IPV4_DST_ADDR_PTR(p), dstip, sizeof(dstip));
-#endif
                 break;
             case AF_INET6:
-#if 1
                 memcpy(rec.sourceIPv6Address, GET_IPV6_SRC_ADDR(p),
                        sizeof(rec.sourceIPv6Address));
                 memcpy(rec.destinationIPv6Address, GET_IPV6_DST_ADDR(p),
                        sizeof(rec.destinationIPv6Address));
                 tid = SURI_HTTP_BASE_TID | SURI_IP6;
-#else
-                PrintInet(AF_INET6, (const void *)GET_IPV6_SRC_ADDR(p), srcip, sizeof(srcip));
-                PrintInet(AF_INET6, (const void *)GET_IPV6_DST_ADDR(p), dstip, sizeof(dstip));
-#endif
                 break;
             default:
                 goto end;
         }
-#if 1
         rec.sourceTransportPort = p->sp;
         rec.destinationTransportPort = p->dp;
-#else
-        sp = p->sp;
-        dp = p->dp;
-#endif
     } else {
         switch (ipproto) {
             case AF_INET:
-#if 1
                 rec.sourceIPv4Address = ntohl(GET_IPV4_DST_ADDR_U32(p));
                 rec.destinationIPv4Address = ntohl(GET_IPV4_SRC_ADDR_U32(p));
                 tid = SURI_HTTP_BASE_TID | SURI_IP4;
-#else
-                PrintInet(AF_INET, (const void *)GET_IPV4_DST_ADDR_PTR(p), srcip, sizeof(srcip));
-                PrintInet(AF_INET, (const void *)GET_IPV4_SRC_ADDR_PTR(p), dstip, sizeof(dstip));
-#endif
                 break;
             case AF_INET6:
-#if 1
+                memcpy(rec.sourceIPv6Address, GET_IPV6_DST_ADDR(p),
+                       sizeof(rec.sourceIPv6Address));
+                memcpy(rec.destinationIPv6Address, GET_IPV6_SRC_ADDR(p),
+                       sizeof(rec.destinationIPv6Address));
                 tid = SURI_HTTP_BASE_TID | SURI_IP6;
-#else
-                PrintInet(AF_INET6, (const void *)GET_IPV6_DST_ADDR(p), srcip, sizeof(srcip));
-                PrintInet(AF_INET6, (const void *)GET_IPV6_SRC_ADDR(p), dstip, sizeof(dstip));
-#endif
                 break;
             default:
                 goto end;
         }
-#if 1
         rec.sourceTransportPort = p->dp;
         rec.destinationTransportPort = p->sp;
-#else
-        sp = p->dp;
-        dp = p->sp;
-#endif
     }
     rec.protocolIdentifier = IPV4_GET_IPPROTO(p);
-
-    //SCLogInfo("tx_id: %lu total_txs: %lu", tx_id, total_txs);
 
     for (; tx_id < total_txs; tx_id++)
     {
@@ -738,7 +645,6 @@ static TmEcode LogHttpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
 
         if (!(((AppLayerParserStateStore *)p->flow->alparser)->id_flags & APP_LAYER_TRANSACTION_EOF)) {
             tx_progress = AppLayerGetAlstateProgress(ALPROTO_HTTP, tx, 0);
-            //SCLogInfo("got a HTTP %d %d %d", tx_progress, tx_progress_done_value_ts, tx_progress_done_value_tc);
 
             if (tx_progress < tx_progress_done_value_ts)
                 break;
@@ -748,10 +654,6 @@ static TmEcode LogHttpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
                 break;
         }
 
-        SCLogDebug("got a HTTP request and now logging !!");
-
-#if 1
-#if 1
         /* hostname */
         if (tx->request_hostname != NULL) {
             rec.hostname.buf = (uint8_t *)bstr_ptr(tx->request_hostname);
@@ -817,109 +719,11 @@ static TmEcode LogHttpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
         } else {
             rec.referer.len = 0;
         }
-#else
-        /* Initialize SubTemplateMultiList with number of templates we are to add*/
-        fbSubTemplateMultiListInit(&(rec.subTemplateMultiList), 0, 1);
-        fbSubTemplateMultiListSetSemantic(&(rec.subTemplateMultiList), 0);
-
-        fbSubTemplateMultiListEntry_t *stml = NULL;
-
-        stml = fbSubTemplateMultiListGetNextEntry(&(rec.subTemplateMultiList), stml);
-        httprec = (HttpBasicLog_t *)fbSubTemplateMultiListEntryInit(stml,
-                                               SURI_HTTP_BASIC_TID ,
-                                               tmpl.HttpBasicTemplate, 1);
-        /* hostname */
-        if (tx->request_hostname != NULL) {
-            httprec->hostname.buf = bstr_ptr(tx->request_hostname);
-            httprec->hostname.len = bstr_len(tx->request_hostname);
-        } else {
-            httprec->hostname.buf = "<hostname unknown>";
-            httprec->hostname.len = strlen("<hostname unknown>");
-        }
-
-        /* uri */
-        if (tx->request_uri != NULL) {
-            httprec->uri.buf = bstr_ptr(tx->request_uri);
-            httprec->uri.len = bstr_len(tx->request_uri);
-        } else {
-            httprec->uri.len = 0;
-        }
-
-        /* user agent */
-        htp_header_t *h_user_agent = NULL;
-        if (tx->request_headers != NULL) {
-            h_user_agent = htp_table_get_c(tx->request_headers, "user-agent");
-        }
-        if (h_user_agent != NULL) {
-            httprec->userAgent.buf = bstr_ptr(h_user_agent->value);
-            httprec->userAgent.len = bstr_len(h_user_agent->value);
-        } else {
-            httprec->userAgent.buf = "<useragent unknown>";
-            httprec->userAgent.len = strlen("<useragent unknown>");
-        }
-#endif
-#else
-        /* reset */
-        MemBufferReset(aft->buffer);
-
-        if (hlog->flags & LOG_HTTP_CUSTOM) {
-            LogHttpLogCustom(aft, tx, &p->ts, srcip, sp, dstip, dp);
-        } else {
-#if 0
-            /* time */
-            MemBufferWriteString(aft->buffer, "%s ", timebuf);
-#endif
-
-            /* hostname */
-            if (tx->request_hostname != NULL) {
-                PrintRawUriBuf((char *)aft->buffer->buffer, &aft->buffer->offset, aft->buffer->size,
-                               (uint8_t *)bstr_ptr(tx->request_hostname),
-                               bstr_len(tx->request_hostname));
-            } else {
-                MemBufferWriteString(aft->buffer, "<hostname unknown>");
-            }
-            MemBufferWriteString(aft->buffer, " [**] ");
-
-            /* uri */
-            if (tx->request_uri != NULL) {
-                PrintRawUriBuf((char *)aft->buffer->buffer, &aft->buffer->offset, aft->buffer->size,
-                               (uint8_t *)bstr_ptr(tx->request_uri),
-                               bstr_len(tx->request_uri));
-            }
-            MemBufferWriteString(aft->buffer, " [**] ");
-
-            /* user agent */
-            htp_header_t *h_user_agent = NULL;
-            if (tx->request_headers != NULL) {
-                h_user_agent = htp_table_get_c(tx->request_headers, "user-agent");
-            }
-            if (h_user_agent != NULL) {
-                PrintRawUriBuf((char *)aft->buffer->buffer, &aft->buffer->offset, aft->buffer->size,
-                                (uint8_t *)bstr_ptr(h_user_agent->value),
-                                bstr_len(h_user_agent->value));
-            } else {
-                MemBufferWriteString(aft->buffer, "<useragent unknown>");
-            }
-            if (hlog->flags & LOG_HTTP_EXTENDED) {
-                LogHttpLogExtended(aft, tx);
-            }
-
-            /* ip/tcp header info */
-            MemBufferWriteString(aft->buffer,
-                                 " [**] %s:%" PRIu16 " -> %s:%" PRIu16 "\n",
-                                 srcip, sp, dstip, dp);
-        }
-#endif
 
         aft->uri_cnt ++;
 
-        //SCLogInfo("writing  http to IPFIX");
-#if 1
         SCMutexLock(&hlog->ipfix_ctx->mutex);
-#else
-        SCMutexLock(&hlog->file_ctx->fp_mutex);
-#endif
-#if 1
+
         /* Try to set export template */
         if (aft->httplog_ctx->ipfix_ctx->fbuf) {
             if (!SetExportTemplate(aft->httplog_ctx->ipfix_ctx->fb_model, aft->httplog_ctx->ipfix_ctx->fbuf, tid, &err)) {
@@ -942,27 +746,8 @@ static TmEcode LogHttpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
             goto error_out;
         }
 
-#if 0
-        /* Clear MultiList */
-        fbSubTemplateMultiListClear(&(rec.subTemplateMultiList));
-#endif
-#if 0
-        if (!fBufEmit(aft->httplog_ctx->fbuf, &err)) {
-            SCMutexUnlock(&aft->httplog_ctx->mutex);
-            SCLogInfo("fBufEmit failed");
-            return TM_ECODE_FAILED;
-        }
-#endif
-#else
-        (void)MemBufferPrintToFPAsString(aft->buffer, hlog->file_ctx->fp);
-        fflush(hlog->file_ctx->fp);
-#endif
-#if 1
 error_out:
         SCMutexUnlock(&hlog->ipfix_ctx->mutex);
-#else
-        SCMutexUnlock(&hlog->file_ctx->fp_mutex);
-#endif
 
         AppLayerTransactionUpdateLogId(ALPROTO_HTTP, p->flow);
     }
@@ -1038,9 +823,8 @@ TmEcode LogHttpLogIPFIXThreadDeinit(ThreadVars *t, void *data)
     if (aft == NULL) {
         return TM_ECODE_OK;
     }
-    LogHttpFileCtx *hlog = aft->httplog_ctx;
-#if 1
 #if 0
+    LogHttpFileCtx *hlog = aft->httplog_ctx;
     GError *err = NULL;
         SCMutexLock(&hlog->mutex);
         if (aft->httplog_ctx->fbuf) {
@@ -1051,11 +835,6 @@ TmEcode LogHttpLogIPFIXThreadDeinit(ThreadVars *t, void *data)
             aft->httplog_ctx->fbuf = NULL;
         }
         SCMutexUnlock(&hlog->mutex);
-#endif
-#else
-    MemBufferFree(aft->buffer);
-    /* clear memory */
-    memset(aft, 0, sizeof(LogHttpLogThread));
 #endif
     SCFree(aft);
     return TM_ECODE_OK;
@@ -1070,13 +849,12 @@ void LogHttpLogIPFIXExitPrintStats(ThreadVars *tv, void *data) {
     SCLogInfo("HTTP logger logged %" PRIu32 " requests", aft->uri_cnt);
 }
 
-fbSession_t *InitExporterSession(fbInfoModel_t *fb_model, uint32_t domain,
-                                 GError **err)
+static fbSession_t *
+InitExporterSession(fbInfoModel_t *fb_model, uint32_t domain, GError **err)
 {
     fbInfoModel_t   *model = fb_model;
     fbTemplate_t    *int_tmpl = NULL;
     fbTemplate_t    *ext_tmpl = NULL;
-    //fbTemplate_t    *basic_tmpl = NULL;
     fbSession_t     *session = NULL;
 
     /* Allocate the session */
@@ -1112,19 +890,6 @@ fbSession_t *InitExporterSession(fbInfoModel_t *fb_model, uint32_t domain,
         return NULL;
     }
 
-#if 0
-    tmpl.HttpBasicTemplate = fbTemplateAlloc(model);
-    SCLogInfo("basic_tmpl: %p", tmpl.HttpBasicTemplate);
-    if (!fbTemplateAppendSpecArray(tmpl.HttpBasicTemplate, http_log_basic_int_spec, 0, err)) {
-        SCLogInfo("fbTemplateAppendSpecArray failed");
-        return NULL;
-    }
-    if (!fbSessionAddTemplate(session, FALSE, SURI_HTTP_BASIC_TID, tmpl.HttpBasicTemplate, err)) {
-        SCLogInfo("fbSessionAddTemplate failed");
-        return NULL;
-    }
-#endif
-
     return session; 
 }
 
@@ -1134,14 +899,19 @@ fbSession_t *InitExporterSession(fbInfoModel_t *fb_model, uint32_t domain,
  * */
 OutputCtx *LogHttpLogIPFIXInitCtx(ConfNode *conf)
 {
+#if 0
     fbConnSpec_t spec;
+#endif
     char *log_dir;
     GError *err = NULL;
 
+#if 0
     memset(&spec, 0, sizeof(spec));
+#endif
 
     SCLogInfo("HTTP IPFIX logger initializing");
 
+#if 0
     char *filename = (char *)ConfNodeLookupChildValue(conf, "filename");
     if (filename == NULL) {
         const char *transport = ConfNodeLookupChildValue(conf, "transport");
@@ -1176,6 +946,7 @@ OutputCtx *LogHttpLogIPFIXInitCtx(ConfNode *conf)
     }
 
     SCLogInfo("filename: %s", filename);
+#endif
 #if 1
     LogIPFIXCtx *ipfix_ctx = LogIPFIXNewCtx();
     if(ipfix_ctx == NULL) {
@@ -1183,7 +954,7 @@ OutputCtx *LogHttpLogIPFIXInitCtx(ConfNode *conf)
         return NULL;
     }
     if (SCConfLogOpenIPFIX(conf, ipfix_ctx, DEFAULT_LOG_FILENAME) < 0) {
-        LogFileFreeCtx(ipfix_ctx);
+        //LogFileFreeCtx(ipfix_ctx);
         return NULL;
     }
 #else
@@ -1212,94 +983,6 @@ OutputCtx *LogHttpLogIPFIXInitCtx(ConfNode *conf)
     //SCMutexInit(&httplog_ctx->ipfix_ctx->mutex, NULL);
 
     httplog_ctx->ipfix_ctx = ipfix_ctx;
-#if 0
-    httplog_ctx->file_ctx = file_ctx;
-    httplog_ctx->cf_n=0;
-
-    const char *extended = ConfNodeLookupChildValue(conf, "extended");
-    const char *custom = ConfNodeLookupChildValue(conf, "custom");
-    const char *customformat = ConfNodeLookupChildValue(conf, "customformat");
-
-    /* If custom logging format is selected, lets parse it */
-    if (custom != NULL && customformat != NULL && ConfValIsTrue(custom)) {
-        p=customformat;
-        httplog_ctx->flags |= LOG_HTTP_CUSTOM;
-        for (httplog_ctx->cf_n = 0; httplog_ctx->cf_n < LOG_HTTP_MAXN_NODES-1 && p && *p != '\0';
-                                                    httplog_ctx->cf_n++){
-            httplog_ctx->cf_nodes[httplog_ctx->cf_n] = SCMalloc(sizeof(LogHttpCustomFormatNode));
-            httplog_ctx->cf_nodes[httplog_ctx->cf_n]->maxlen=0;
-            if (httplog_ctx->cf_nodes[httplog_ctx->cf_n] == NULL) {
-                for (n = 0; n < httplog_ctx->cf_n; n++) {
-                    SCFree(httplog_ctx->cf_nodes[n]);
-                }
-                LogFileFreeCtx(file_ctx);
-                SCFree(httplog_ctx);
-                return NULL;
-            }
-            if (*p != '%'){
-                /* Literal found in format string */
-                httplog_ctx->cf_nodes[httplog_ctx->cf_n]->type = LOG_HTTP_CF_LITERAL;
-                np = strchr(p, '%');
-                if (np == NULL){
-                    n = LOG_HTTP_NODE_STRLEN-2;
-                    np = NULL; /* End */
-                }else{
-                    n = np-p;
-                }
-                strlcpy(httplog_ctx->cf_nodes[httplog_ctx->cf_n]->data,p,n+1);
-                p = np;
-            } else {
-                /* Non Literal found in format string */
-                p++;
-                if (*p == '[') { /* Check if maxlength has been specified (ie: [25]) */
-                    p++;
-                    np = strchr(p, ']');
-                    if (np != NULL) {
-                        if (np-p > 0 && np-p < 10){
-                            long maxlen = strtol(p,NULL,10);
-                            if (maxlen > 0 && maxlen < LOG_HTTP_NODE_MAXOUTPUTLEN) {
-                                httplog_ctx->cf_nodes[httplog_ctx->cf_n]->maxlen = (uint32_t) maxlen;
-                            }
-                        } else {
-                            goto parsererror;
-                        }
-                        p = np + 1;
-                    } else {
-                        goto parsererror;
-                    }
-                }
-                if (*p == '{') { /* Simple format char */
-                    np = strchr(p, '}');
-                    if (np != NULL && np-p > 1 && np-p < LOG_HTTP_NODE_STRLEN-2) {
-                        p++;
-                        n = np-p;
-                        strlcpy(httplog_ctx->cf_nodes[httplog_ctx->cf_n]->data, p, n+1);
-                        p = np;
-                    } else {
-                        goto parsererror;
-                    }
-                    p++;
-                } else {
-                    httplog_ctx->cf_nodes[httplog_ctx->cf_n]->data[0] = '\0';
-                }
-                httplog_ctx->cf_nodes[httplog_ctx->cf_n]->type = *p;
-                if (*p == '%'){
-                    httplog_ctx->cf_nodes[httplog_ctx->cf_n]->type = LOG_HTTP_CF_LITERAL;
-                    strlcpy(httplog_ctx->cf_nodes[httplog_ctx->cf_n]->data, "%", 2);
-                }
-                p++;
-            }
-        }
-    } else {
-        if (extended == NULL) {
-            httplog_ctx->flags |= LOG_HTTP_DEFAULT;
-        } else {
-            if (ConfValIsTrue(extended)) {
-                httplog_ctx->flags |= LOG_HTTP_EXTENDED;
-            }
-        }
-    }
-#endif
     OutputCtx *output_ctx = SCCalloc(1, sizeof(OutputCtx));
     if (unlikely(output_ctx == NULL)) {
         goto parsererror;

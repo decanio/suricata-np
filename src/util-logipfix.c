@@ -1,5 +1,5 @@
 /* vi: set et ts=4: */
-/* Copyright (C) 2007-2011 Open Information Security Foundation
+/* Copyright (C) 2007-2013 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -62,69 +62,6 @@ static fbInfoElement_t info_elements[] = {
     FB_IE_NULL
 };
 
-#if 0
-/** \brief connect to the indicated local stream socket, logging any errors
- *  \param path filesystem path to connect to
- *  \retval FILE* on success (fdopen'd wrapper of underlying socket)
- *  \retval NULL on error
- */
-static FILE *
-SCLogOpenUnixSocketFp(const char *path, int sock_type)
-{
-    struct sockaddr_un sun;
-    int s = -1;
-    FILE * ret = NULL;
-
-    memset(&sun, 0x00, sizeof(sun));
-
-    s = socket(PF_UNIX, sock_type, 0);
-    if (s < 0) goto err;
-
-    sun.sun_family = AF_UNIX;
-    strlcpy(sun.sun_path, path, sizeof(sun.sun_path));
-
-    if (connect(s, (const struct sockaddr *)&sun, sizeof(sun)) < 0)
-        goto err;
-
-    ret = fdopen(s, "w");
-    if (ret == NULL)
-        goto err;
-
-    return ret;
-
-err:
-    SCLogError(SC_ERR_SOCKET, "Error connecting to socket \"%s\": %s",
-               path, strerror(errno));
-
-    if (s >= 0)
-        close(s);
-
-    return NULL;
-}
-
-/** \brief open the indicated file, logging any errors
- *  \param path filesystem path to open
- *  \param append_setting open file with O_APPEND: "yes" or "no"
- *  \retval FILE* on success
- *  \retval NULL on error
- */
-static FILE *
-SCLogOpenFileFp(const char *path, const char *append_setting)
-{
-    FILE *ret = NULL;
-
-    if (strcasecmp(append_setting, "yes") == 0) {
-        ret = fopen(path, "a");
-    } else {
-        ret = fopen(path, "w");
-    }
-
-    if (ret == NULL)
-        SCLogError(SC_ERR_FOPEN, "Error opening file: \"%s\": %s",
-                   path, strerror(errno));
-    return ret;
-}
-#endif
 
 /** \brief open a generic output "log file", which may be a regular file or a socket
  *  \param conf ConfNode structure for the output section in question
@@ -142,7 +79,6 @@ SCConfLogOpenIPFIX(ConfNode *conf,
     char *log_dir;
     const char *filename;
     fbConnSpec_t spec;
-    GError *err = NULL;
 
     memset(&spec, 0, sizeof(spec));
 
@@ -208,72 +144,6 @@ SCConfLogOpenIPFIX(ConfNode *conf,
         ipfix_ctx->exporter = fbExporterAllocFile(filename);
     }
     SCLogInfo("exporter: %p", ipfix_ctx->exporter);
-
-#if 0
-    /* Create a new session */
-    uint32_t domain = 0xbeef; /* TBD??? */
-    ipfix_ctx->session = InitExporterSession(ipfix_ctx->fb_model, domain,
-                                             &err);
-    SCLogInfo("session: %p", ipfix_ctx->session);
-
-    ipfix_ctx->fbuf = fBufAllocForExport(ipfix_ctx->session, ipfix_ctx->exporter);
-    SCLogInfo("fBufAllocForExport: %p", ipfix_ctx->fbuf);
-
-    if (ipfix_ctx->session && ipfix_ctx->fbuf) {
-
-        /* write templates */
-        fbSessionExportTemplates(ipfix_ctx->session, &err);
-
-        /* set internal template */
-        if (!fBufSetInternalTemplate(ipfix_ctx->fbuf, SURI_HTTP_BASE_TID, &err)) {
-            SCLogInfo("fBufSetInternalTemplate failed");
-        }
-    }
-#endif
-
-#if 0
-    if (filename == NULL)
-        filename = default_filename;
-
-    log_dir = ConfigGetLogDirectory();
-
-    if (PathIsAbsolute(filename)) {
-        snprintf(log_path, PATH_MAX, "%s", filename);
-    } else {
-        snprintf(log_path, PATH_MAX, "%s/%s", log_dir, filename);
-    }
-#endif
-
-#if 0
-    filetype = ConfNodeLookupChildValue(conf, "filetype");
-    if (filetype == NULL)
-        filetype = DEFAULT_LOG_FILETYPE;
-
-    // Now, what have we been asked to open?
-    if (strcasecmp(filetype, "unix_stream") == 0) {
-        log_ctx->fp = SCLogOpenUnixSocketFp(log_path, SOCK_STREAM);
-    } else if (strcasecmp(filetype, "unix_dgram") == 0) {
-        log_ctx->fp = SCLogOpenUnixSocketFp(log_path, SOCK_DGRAM);
-    } else if (strcasecmp(filetype, DEFAULT_LOG_FILETYPE) == 0) {
-        const char *append;
-
-        append = ConfNodeLookupChildValue(conf, "append");
-        if (append == NULL)
-            append = DEFAULT_LOG_MODE_APPEND;
-        log_ctx->fp = SCLogOpenFileFp(log_path, append);
-    } else {
-        SCLogError(SC_ERR_INVALID_YAML_CONF_ENTRY, "Invalid entry for "
-                   "%s.type.  Expected \"regular\" (default), \"unix_stream\" "
-                   "or \"unix_dgram\"",
-                   conf->name);
-    }
-
-    if (log_ctx->fp == NULL)
-        return -1; // Error already logged by Open...Fp routine
-
-    SCLogInfo("%s output device (%s) initialized: %s", conf->name, filetype,
-              filename);
-#endif
 
     return 0;
 }
