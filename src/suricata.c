@@ -1738,6 +1738,8 @@ static int LoadSignatures(DetectEngineCtx *de_ctx, SCInstance *suri)
         if (de_ctx->failure_fatal)
             return TM_ECODE_FAILED;
     }
+
+    SCThresholdConfInitContext(de_ctx, NULL);
     return TM_ECODE_OK;
 }
 
@@ -2071,7 +2073,6 @@ int main(int argc, char **argv)
     if (suri.sig_file == NULL && suri.rule_reload == 1)
         UtilSignalHandlerSetup(SIGUSR2, SignalHandlerSigusr2);
 
-    SCThresholdConfInitContext(de_ctx,NULL);
     SCAsn1LoadConfig();
 
     CoredumpLoadConfig();
