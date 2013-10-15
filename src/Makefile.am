@@ -204,12 +204,17 @@ host-queue.c host-queue.h \
 host-storage.c host-storage.h \
 host-timeout.c host-timeout.h \
 log-dnslog.c log-dnslog.h \
+log-dnslog-ipfix.c log-dnslog-ipfix.h \
 log-droplog.c log-droplog.h \
 log-file.c log-file.h \
 log-filestore.c log-filestore.h \
 log-httplog.c log-httplog.h \
+log-httplog-ipfix.c log-httplog-ipfix.h \
 log-pcap.c log-pcap.h \
+log-smtplog.c log-smtplog.h \
+log-smtplog-ipfix.c log-smtplog-ipfix.h \
 log-tlslog.c log-tlslog.h \
+log-tlslog-ipfix.c log-tlslog-ipfix.h \
 output.c output.h \
 packet-queue.c packet-queue.h \
 pkt-var.c pkt-var.h \
@@ -294,6 +299,7 @@ util-host-os-info.c util-host-os-info.h \
 util-ioctl.h util-ioctl.c \
 util-ip.h util-ip.c \
 util-logopenfile.h util-logopenfile.c \
+util-logipfix.h util-logipfix.c \
 util-magic.c util-magic.h \
 util-memcmp.c util-memcmp.h \
 util-mem.h \

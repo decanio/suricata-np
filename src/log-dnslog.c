@@ -323,7 +323,8 @@ static TmEcode LogDnsLogIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQ
             }
 
             SCLogDebug("calling AppLayerTransactionUpdateLoggedId");
-            AppLayerTransactionUpdateLogId(p->flow);
+            /* TODO: finish below */
+            AppLayerTransactionUpdateLogId(ALPROTO_DNS_UDP, p->flow);
         }
     }
 

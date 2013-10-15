@@ -18,8 +18,7 @@
 /**
  * \file
  *
- * \author Roliers Jean-Paul <popof.fpn@gmail.co>
- * \author Eric Leblond <eric@regit.org>
+ * \author Tom DeCanio <td@npulsetech.com>
  *
  * Implements tls logging portion of the engine.
  */
@@ -40,48 +39,50 @@
 #include "util-debug.h"
 
 #include "output.h"
-#include "log-tlslog.h"
+#include "log-tlslog-ipfix.h"
 #include "app-layer-ssl.h"
 #include "app-layer.h"
 #include "util-privs.h"
 #include "util-buffer.h"
 
-#include "util-logopenfile.h"
+#include "util-logipfix.h"
 #include "util-crypt.h"
 #include "util-time.h"
 
-#define DEFAULT_LOG_FILENAME "tls.log"
+#define DEFAULT_LOG_FILENAME "tls-ipfix.log"
 
 static char tls_logfile_base_dir[PATH_MAX] = "/tmp";
 SC_ATOMIC_DECLARE(unsigned int, cert_id);
 
-#define MODULE_NAME "LogTlsLog"
+#define MODULE_NAME "LogTlsLogIPFIX"
 
+#if 0
 #define OUTPUT_BUFFER_SIZE 65535
 #define CERT_ENC_BUFFER_SIZE 2048
 
 #define LOG_TLS_DEFAULT     0
 #define LOG_TLS_EXTENDED    1
+#endif
 
-TmEcode LogTlsLog(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogTlsLogIPv4(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogTlsLogIPv6(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogTlsLogThreadInit(ThreadVars *, void *, void **);
-TmEcode LogTlsLogThreadDeinit(ThreadVars *, void *);
-void LogTlsLogExitPrintStats(ThreadVars *, void *);
-static void LogTlsLogDeInitCtx(OutputCtx *);
+TmEcode LogTlsLogIPFIX(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+TmEcode LogTlsLogIPFIXIPv4(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+TmEcode LogTlsLogIPFIXIPv6(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+TmEcode LogTlsLogIPFIXThreadInit(ThreadVars *, void *, void **);
+TmEcode LogTlsLogIPFIXThreadDeinit(ThreadVars *, void *);
+void LogTlsLogIPFIXExitPrintStats(ThreadVars *, void *);
+static void LogTlsLogIPFIXDeInitCtx(OutputCtx *);
 
-void TmModuleLogTlsLogRegister(void)
+void TmModuleLogTlsLogIPFIXRegister(void)
 {
-    tmm_modules[TMM_LOGTLSLOG].name = MODULE_NAME;
-    tmm_modules[TMM_LOGTLSLOG].ThreadInit = LogTlsLogThreadInit;
-    tmm_modules[TMM_LOGTLSLOG].Func = LogTlsLog;
-    tmm_modules[TMM_LOGTLSLOG].ThreadExitPrintStats = LogTlsLogExitPrintStats;
-    tmm_modules[TMM_LOGTLSLOG].ThreadDeinit = LogTlsLogThreadDeinit;
-    tmm_modules[TMM_LOGTLSLOG].RegisterTests = NULL;
-    tmm_modules[TMM_LOGTLSLOG].cap_flags = 0;
+    tmm_modules[TMM_LOGTLSLOGIPFIX].name = MODULE_NAME;
+    tmm_modules[TMM_LOGTLSLOGIPFIX].ThreadInit = LogTlsLogIPFIXThreadInit;
+    tmm_modules[TMM_LOGTLSLOGIPFIX].Func = LogTlsLogIPFIX;
+    tmm_modules[TMM_LOGTLSLOGIPFIX].ThreadExitPrintStats = LogTlsLogIPFIXExitPrintStats;
+    tmm_modules[TMM_LOGTLSLOGIPFIX].ThreadDeinit = LogTlsLogIPFIXThreadDeinit;
+    tmm_modules[TMM_LOGTLSLOGIPFIX].RegisterTests = NULL;
+    tmm_modules[TMM_LOGTLSLOGIPFIX].cap_flags = 0;
 
-    OutputRegisterModule(MODULE_NAME, "tls-log", LogTlsLogInitCtx);
+    OutputRegisterModule(MODULE_NAME, "tls-log-ipfix", LogTlsLogIPFIXInitCtx);
 
     /* enable the logger for the app layer */
     AppLayerRegisterLogger(ALPROTO_TLS);
@@ -89,31 +90,141 @@ void TmModuleLogTlsLogRegister(void)
     SC_ATOMIC_INIT(cert_id);
 }
 
-void TmModuleLogTlsLogIPv4Register(void)
+void TmModuleLogTlsLogIPFIXIPv4Register(void)
 {
-    tmm_modules[TMM_LOGTLSLOG4].name = "LogTlsLogIPv4";
-    tmm_modules[TMM_LOGTLSLOG4].ThreadInit = LogTlsLogThreadInit;
-    tmm_modules[TMM_LOGTLSLOG4].Func = LogTlsLogIPv4;
-    tmm_modules[TMM_LOGTLSLOG4].ThreadExitPrintStats = LogTlsLogExitPrintStats;
-    tmm_modules[TMM_LOGTLSLOG4].ThreadDeinit = LogTlsLogThreadDeinit;
-    tmm_modules[TMM_LOGTLSLOG4].RegisterTests = NULL;
+    tmm_modules[TMM_LOGTLSLOGIPFIX4].name = "LogTlsLogIPFIXIPv4";
+    tmm_modules[TMM_LOGTLSLOGIPFIX4].ThreadInit = LogTlsLogIPFIXThreadInit;
+    tmm_modules[TMM_LOGTLSLOGIPFIX4].Func = LogTlsLogIPFIXIPv4;
+    tmm_modules[TMM_LOGTLSLOGIPFIX4].ThreadExitPrintStats = LogTlsLogIPFIXExitPrintStats;
+    tmm_modules[TMM_LOGTLSLOGIPFIX4].ThreadDeinit = LogTlsLogIPFIXThreadDeinit;
+    tmm_modules[TMM_LOGTLSLOGIPFIX4].RegisterTests = NULL;
 }
 
-void TmModuleLogTlsLogIPv6Register(void)
+void TmModuleLogTlsLogIPFIXIPv6Register(void)
 {
-    tmm_modules[TMM_LOGTLSLOG6].name = "LogTlsLogIPv6";
-    tmm_modules[TMM_LOGTLSLOG6].ThreadInit = LogTlsLogThreadInit;
-    tmm_modules[TMM_LOGTLSLOG6].Func = LogTlsLogIPv6;
-    tmm_modules[TMM_LOGTLSLOG6].ThreadExitPrintStats = LogTlsLogExitPrintStats;
-    tmm_modules[TMM_LOGTLSLOG6].ThreadDeinit = LogTlsLogThreadDeinit;
-    tmm_modules[TMM_LOGTLSLOG6].RegisterTests = NULL;
+    tmm_modules[TMM_LOGTLSLOGIPFIX6].name = "LogTlsLogIPFIXIPv6";
+    tmm_modules[TMM_LOGTLSLOGIPFIX6].ThreadInit = LogTlsLogIPFIXThreadInit;
+    tmm_modules[TMM_LOGTLSLOGIPFIX6].Func = LogTlsLogIPFIXIPv6;
+    tmm_modules[TMM_LOGTLSLOGIPFIX6].ThreadExitPrintStats = LogTlsLogIPFIXExitPrintStats;
+    tmm_modules[TMM_LOGTLSLOGIPFIX6].ThreadDeinit = LogTlsLogIPFIXThreadDeinit;
+    tmm_modules[TMM_LOGTLSLOGIPFIX6].RegisterTests = NULL;
 }
 
 typedef struct LogTlsFileCtx_ {
+#if 1
+    LogIPFIXCtx *ipfix_ctx;
+#else
     LogFileCtx *file_ctx;
+#endif
     uint32_t flags; /** Store mode */
 } LogTlsFileCtx;
 
+/* TBD: move these to util-logipfix.h */
+#define SURI_TLS_BASE_TID    0x3300
+
+/* Special dimensions */
+#define SURI_IP4		0x0001
+#define SURI_IP6		0x0002
+
+/* IPFIX definition of the TLS log record */
+static fbInfoElementSpec_t tls_log_int_spec[] = {
+    /* Alert Millisecond (epoch) (native time) */
+    { "alertMilliseconds",                  0, 0 },
+    { "tlsSubject",                         0, 0 },
+    { "tlsIssuerDn",                        0, 0 },
+    { "tlsFingerprint",                     0, 0 },
+    { "tlsVersion",                         0, 0 },
+    { "paddingOctets",                      6, 1 },
+    /* 5-tuple */
+    { "sourceIPv6Address",                  0, 0 },
+    { "destinationIPv6Address",             0, 0 },
+    { "sourceIPv4Address",                  0, 0 },
+    { "destinationIPv4Address",             0, 0 },
+    { "sourceTransportPort",                0, 0 },
+    { "destinationTransportPort",           0, 0 },
+    { "protocolIdentifier",                 0, 0 },
+    FB_IESPEC_NULL
+};
+static fbInfoElementSpec_t tls_log_ext_spec[] = {
+    /* Alert Millisecond (epoch) (native time) */
+    { "alertMilliseconds",                  0, 0 },
+    /* 5-tuple */
+    { "sourceIPv6Address",                  0, SURI_IP6 },
+    { "destinationIPv6Address",             0, SURI_IP6 },
+    { "sourceIPv4Address",                  0, SURI_IP4 },
+    { "destinationIPv4Address",             0, SURI_IP4 },
+    { "sourceTransportPort",                0, 0 },
+    { "destinationTransportPort",           0, 0 },
+    { "protocolIdentifier",                 0, 0 },
+    /* tls info */
+    { "tlsSubject",                         0, 0 },
+    { "tlsIssuerDn",                        0, 0 },
+    { "tlsFingerprint",                     0, 0 },
+    { "tlsVersion",                         0, 0 },
+    FB_IESPEC_NULL
+};
+
+/* TLS Metadata Record */
+#pragma pack(push, 1)
+typedef struct TlsLog_st {
+    uint64_t	 AlertMilliseconds;
+    fbVarfield_t tlsSubject;
+    fbVarfield_t tlsIssuerDn;
+    fbVarfield_t tlsFingerprint;
+    uint16_t     tlsVersion;
+    uint8_t      padding[6];
+
+    uint8_t      sourceIPv6Address[16];
+    uint8_t      destinationIPv6Address[16];
+
+    uint32_t     sourceIPv4Address;
+    uint32_t     destinationIPv4Address;
+
+    uint16_t     sourceTransportPort;
+    uint16_t     destinationTransportPort;
+    uint8_t      protocolIdentifier;
+} TlsLog_t;
+#pragma pack(pop)
+
+static gboolean
+SetExportTemplate(
+    fbInfoModel_t       *fb_model,
+    fBuf_t              *fbuf,
+    uint16_t            tid,
+    GError              **err)
+{
+    fbSession_t         *session = NULL;
+    fbTemplate_t        *tmpl = NULL;
+
+    /* Try to set export template */
+    if (fBufSetExportTemplate(fbuf, tid, err)) {
+        return TRUE;
+    }
+
+    /* Check for error other than missing template */
+    if (!g_error_matches(*err, FB_ERROR_DOMAIN, FB_ERROR_TMPL)) {
+        return FALSE;
+    }
+
+    /* Okay. We have a missing template. Clear the Teerror and try to load it. */
+    g_clear_error(err);
+    session = fBufGetSession(fbuf);
+    tmpl = fbTemplateAlloc(fb_model);
+
+    //SCLogInfo("tid: %x Appending tid: %x\n", tid, (tid & (~SURI_TLS_BASE_TID)));
+    if (!fbTemplateAppendSpecArray(tmpl, tls_log_ext_spec,
+                                   (tid & (~SURI_TLS_BASE_TID)), err))    {
+        return FALSE;
+    }
+
+    if (!fbSessionAddTemplate(session, FALSE, tid, tmpl, err)) {
+        SCLogInfo("failed to add external template");
+        return FALSE;
+    }
+
+    /* Template should be loaded. Try setting the template again. */
+    return fBufSetExportTemplate(fbuf, tid, err);
+}
 
 typedef struct LogTlsLogThread_ {
     LogTlsFileCtx *tlslog_ctx;
@@ -121,43 +232,119 @@ typedef struct LogTlsLogThread_ {
     /** LogTlsFileCtx has the pointer to the file and a mutex to allow multithreading */
     uint32_t tls_cnt;
 
+#if 0
     MemBuffer *buffer;
     uint8_t*   enc_buf;
     size_t     enc_buf_len;
+#endif
 } LogTlsLogThread;
 
-static void LogTlsLogExtended(LogTlsLogThread *aft, SSLState * state)
+#if 0
+static void LogTlsLogIPFIXExtended(LogTlsLogThread *aft, SSLState * state)
 {
     if (state->server_connp.cert0_fingerprint != NULL) {
+#if 1
+#else
         MemBufferWriteString(aft->buffer, " SHA1='%s'", state->server_connp.cert0_fingerprint);
+#endif
     }
     switch (state->server_connp.version) {
         case TLS_VERSION_UNKNOWN:
+#if 1
+#else
             MemBufferWriteString(aft->buffer, " VERSION='UNDETERMINED'");
+#endif
             break;
         case SSL_VERSION_2:
+#if 1
+#else
             MemBufferWriteString(aft->buffer, " VERSION='SSLv2'");
+#endif
             break;
         case SSL_VERSION_3:
+#if 1
+#else
             MemBufferWriteString(aft->buffer, " VERSION='SSLv3'");
+#endif
             break;
         case TLS_VERSION_10:
+#if 1
+#else
             MemBufferWriteString(aft->buffer, " VERSION='TLSv1'");
+#endif
             break;
         case TLS_VERSION_11:
+#if 1
+#else
             MemBufferWriteString(aft->buffer, " VERSION='TLS 1.1'");
+#endif
             break;
         case TLS_VERSION_12:
+#if 1
+#else
             MemBufferWriteString(aft->buffer, " VERSION='TLS 1.2'");
+#endif
             break;
         default:
+#if 1
+#else
             MemBufferWriteString(aft->buffer, " VERSION='0x%04x'",
                                  state->server_connp.version);
+#endif
             break;
     }
+#if 0
     MemBufferWriteString(aft->buffer, "\n");
+#endif
 }
+#endif
 
+#if 1
+static int GetIPInformation(Packet *p, TlsLog_t *rec, uint16_t *tid, int ipproto)
+{
+    if ((PKT_IS_TOSERVER(p))) {
+        switch (ipproto) {
+            case AF_INET:
+                rec->sourceIPv4Address = ntohl(GET_IPV4_SRC_ADDR_U32(p));
+                rec->destinationIPv4Address = ntohl(GET_IPV4_DST_ADDR_U32(p));
+                *tid = SURI_TLS_BASE_TID | SURI_IP4;
+                break;
+            case AF_INET6:
+                memcpy(rec->sourceIPv6Address, GET_IPV6_SRC_ADDR(p),
+                       sizeof(rec->sourceIPv6Address));
+                memcpy(rec->destinationIPv6Address, GET_IPV6_DST_ADDR(p),
+                       sizeof(rec->destinationIPv6Address));
+                *tid = SURI_TLS_BASE_TID | SURI_IP6;
+                break;
+            default:
+                return 0;
+        }
+        rec->sourceTransportPort = p->sp;
+        rec->destinationTransportPort = p->dp;
+    } else {
+        switch (ipproto) {
+            case AF_INET:
+                rec->sourceIPv4Address = ntohl(GET_IPV4_DST_ADDR_U32(p));
+                rec->destinationIPv4Address = ntohl(GET_IPV4_SRC_ADDR_U32(p));
+                *tid = SURI_TLS_BASE_TID | SURI_IP4;
+                break;
+            case AF_INET6:
+                memcpy(rec->sourceIPv6Address, GET_IPV6_DST_ADDR(p),
+                       sizeof(rec->sourceIPv6Address));
+                memcpy(rec->destinationIPv6Address, GET_IPV6_SRC_ADDR(p),
+                       sizeof(rec->destinationIPv6Address));
+                *tid = SURI_TLS_BASE_TID | SURI_IP6;
+                break;
+            default:
+                return 0;
+        }
+        rec->sourceTransportPort = p->dp;
+        rec->destinationTransportPort = p->sp;
+    }
+    rec->protocolIdentifier = IPV4_GET_IPPROTO(p);
+    return 1;
+}
+#else
 static int GetIPInformations(Packet *p, char* srcip, size_t srcip_len,
                              Port* sp, char* dstip, size_t dstip_len,
                              Port* dp, int ipproto)
@@ -195,7 +382,9 @@ static int GetIPInformations(Packet *p, char* srcip, size_t srcip_len,
     }
     return 1;
 }
+#endif
 
+#if 0
 static int CreateFileName(LogTlsFileCtx *log, Packet *p, SSLState *state, char *filename)
 {
 #define FILELEN 64  //filename len + extention + ending path / + some space
@@ -217,10 +406,12 @@ static int CreateFileName(LogTlsFileCtx *log, Packet *p, SSLState *state, char *
              file_id);
     return 1;
 }
+#endif
 
-
-static void LogTlsLogPem(LogTlsLogThread *aft, Packet *p, SSLState *state, LogTlsFileCtx *log, int ipproto)
+#if 0
+static void LogTlsLogIPFIXPem(LogTlsLogThread *aft, Packet *p, SSLState *state, LogTlsFileCtx *log, int ipproto)
 {
+    TlsLog_t rec;
 #define PEMHEADER "-----BEGIN CERTIFICATE-----\n"
 #define PEMFOOTER "-----END CERTIFICATE-----\n"
     //Logging pem certificate
@@ -291,6 +482,12 @@ static void LogTlsLogPem(LogTlsLogThread *aft, Packet *p, SSLState *state, LogTl
     memcpy(filename + (strlen(filename) - 3), "meta", 4);
     fpmeta = fopen(filename, "w");
     if (fpmeta != NULL) {
+#if 1
+        rec.AlertMilliseconds = (p->ts.tv_sec * 1000) + (p->ts.tv_usec / 1000);
+
+        if (!GetIPInformation(p, &rec))
+            goto end_fwrite_fpmeta;
+#else
         #define PRINT_BUF_LEN 46
         char srcip[PRINT_BUF_LEN], dstip[PRINT_BUF_LEN];
         char timebuf[64];
@@ -326,6 +523,7 @@ static void LogTlsLogPem(LogTlsLogThread *aft, Packet *p, SSLState *state, LogTl
             goto end_fwrite_fpmeta;
 
         fclose(fpmeta);
+#endif
     } else {
         SCLogWarning(SC_ERR_FOPEN, "Can't open meta file: %s",
                      filename); 
@@ -348,16 +546,21 @@ end_fwrite_fpmeta:
 end_fp:
     fclose(fp);
 }
+#endif
 
-
-static TmEcode LogTlsLogIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq, int ipproto)
+static TmEcode LogTlsLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq, int ipproto)
 {
 
     SCEnter();
+    TlsLog_t rec;
+    GError *err= NULL;
+    uint16_t tid;
     LogTlsLogThread *aft = (LogTlsLogThread *) data;
-    LogTlsFileCtx *hlog = aft->tlslog_ctx;
+    LogTlsFileCtx *tlog = aft->tlslog_ctx;
 
+#if 0
     char timebuf[64];
+#endif
 
     /* no flow, no tls state */
     if (p->flow == NULL) {
@@ -379,15 +582,43 @@ static TmEcode LogTlsLogIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQ
     if (ssl_state->server_connp.cert0_issuerdn == NULL || ssl_state->server_connp.cert0_subject == NULL)
         goto end;
 
+#if 0
     if (ssl_state->server_connp.cert_log_flag & SSL_TLS_LOG_PEM) {
-        LogTlsLogPem(aft, p, ssl_state, hlog, ipproto);
+        LogTlsLogIPFIXPem(aft, p, ssl_state, hlog, ipproto);
     }
+#endif
 
     if (AppLayerTransactionGetLogId(p->flow) != 0) {
         goto end;
     }
 
+#if 1
+    rec.AlertMilliseconds = (p->ts.tv_sec * 1000) + (p->ts.tv_usec / 1000);
+    if (!GetIPInformation(p, &rec, &tid, ipproto)) {
+        goto end;
+    }
+    rec.tlsVersion = ssl_state->server_connp.version;
+    if (ssl_state->server_connp.cert0_fingerprint != NULL) {
+        rec.tlsFingerprint.buf = (uint8_t *)ssl_state->server_connp.cert0_fingerprint;
+        rec.tlsFingerprint.len = strlen(ssl_state->server_connp.cert0_fingerprint);
+    } else {
+        rec.tlsFingerprint.len = 0;
+    }
+    if (ssl_state->server_connp.cert0_subject != NULL) {
+        rec.tlsSubject.buf = (uint8_t *)ssl_state->server_connp.cert0_subject;
+        rec.tlsSubject.len = strlen(ssl_state->server_connp.cert0_subject);
+    } else {
+        rec.tlsSubject.len = 0;
+    }
+    if (ssl_state->server_connp.cert0_issuerdn != NULL) {
+        rec.tlsIssuerDn.buf = (uint8_t *)ssl_state->server_connp.cert0_issuerdn;
+        rec.tlsIssuerDn.len = strlen(ssl_state->server_connp.cert0_issuerdn);
+    } else {
+        rec.tlsIssuerDn.len = 0;
+    }
+#else
     CreateTimeString(&p->ts, timebuf, sizeof(timebuf));
+
     #define PRINT_BUF_LEN 46
     char srcip[PRINT_BUF_LEN], dstip[PRINT_BUF_LEN];
     Port sp, dp;
@@ -395,29 +626,58 @@ static TmEcode LogTlsLogIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQ
                            &sp, dstip, PRINT_BUF_LEN, &dp, ipproto)) {
         goto end;
     }
+#endif
 
     /* reset */
+#if 0
     MemBufferReset(aft->buffer);
 
     MemBufferWriteString(aft->buffer,
                          "%s %s:%d -> %s:%d  TLS: Subject='%s' Issuerdn='%s'",
                          timebuf, srcip, sp, dstip, dp,
                          ssl_state->server_connp.cert0_subject, ssl_state->server_connp.cert0_issuerdn);
+#endif
 
     AppLayerTransactionUpdateLogId(ALPROTO_TLS, p->flow);
 
-    if (hlog->flags & LOG_TLS_EXTENDED) {
-        LogTlsLogExtended(aft, ssl_state);
+#if 0
+    if (tlog->flags & LOG_TLS_EXTENDED) {
+        LogTlsLogIPFIXExtended(aft, ssl_state);
     } else {
+#if 0
         MemBufferWriteString(aft->buffer, "\n");
+#endif
     }
+#endif
 
     aft->tls_cnt ++;
 
-    SCMutexLock(&hlog->file_ctx->fp_mutex);
+    SCMutexLock(&tlog->ipfix_ctx->mutex);
+#if 1
+    /* Try to set export template */
+    if (tlog->ipfix_ctx->fbuf) {
+        if (!SetExportTemplate(tlog->ipfix_ctx->fb_model, tlog->ipfix_ctx->fbuf, tid, &err)) {
+            SCMutexUnlock(&tlog->ipfix_ctx->mutex);
+            SCLogInfo("fBufSetExportTemplate failed");
+            goto end;
+        }
+    } else {
+        SCMutexUnlock(&tlog->ipfix_ctx->mutex);
+        goto end;
+    }
+
+    //SCLogInfo("Appending IPFIX record to log");
+    /* Now append the record to the buffer */
+    if (!fBufAppend(tlog->ipfix_ctx->fbuf, (uint8_t *)&rec, sizeof(rec), &err)) {
+        //SCMutexUnlock(&aft->httplog_ctx->mutex);
+        SCLogInfo("fBufAppend failed");
+    }
+
+#else
     MemBufferPrintToFPAsString(aft->buffer, hlog->file_ctx->fp);
     fflush(hlog->file_ctx->fp);
-    SCMutexUnlock(&hlog->file_ctx->fp_mutex);
+#endif
+    SCMutexUnlock(&tlog->ipfix_ctx->mutex);
 
 end:
     FLOWLOCK_UNLOCK(p->flow);
@@ -425,17 +685,17 @@ end:
 
 }
 
-TmEcode LogTlsLogIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+TmEcode LogTlsLogIPFIXIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
-    return LogTlsLogIPWrapper(tv, p, data, pq, postpq, AF_INET);
+    return LogTlsLogIPFIXIPWrapper(tv, p, data, pq, postpq, AF_INET);
 }
 
-TmEcode LogTlsLogIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+TmEcode LogTlsLogIPFIXIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
-    return LogTlsLogIPWrapper(tv, p, data, pq, postpq, AF_INET6);
+    return LogTlsLogIPFIXIPWrapper(tv, p, data, pq, postpq, AF_INET6);
 }
 
-TmEcode LogTlsLog(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+TmEcode LogTlsLogIPFIX(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
     SCEnter();
 
@@ -449,15 +709,15 @@ TmEcode LogTlsLog(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, Packet
     }
 
     if (PKT_IS_IPV4(p)) {
-        SCReturnInt(LogTlsLogIPv4(tv, p, data, pq, postpq));
+        SCReturnInt(LogTlsLogIPFIXIPv4(tv, p, data, pq, postpq));
     } else if (PKT_IS_IPV6(p)) {
-        SCReturnInt(LogTlsLogIPv6(tv, p, data, pq, postpq));
+        SCReturnInt(LogTlsLogIPFIXIPv6(tv, p, data, pq, postpq));
     }
 
     SCReturnInt(TM_ECODE_OK);
 }
 
-TmEcode LogTlsLogThreadInit(ThreadVars *t, void *initdata, void **data)
+TmEcode LogTlsLogIPFIXThreadInit(ThreadVars *t, void *initdata, void **data)
 {
     LogTlsLogThread *aft = SCMalloc(sizeof(LogTlsLogThread));
     if (unlikely(aft == NULL))
@@ -489,12 +749,15 @@ TmEcode LogTlsLogThreadInit(ThreadVars *t, void *initdata, void **data)
 
     }
 
+#if 0
     aft->buffer = MemBufferCreateNew(OUTPUT_BUFFER_SIZE);
     if (aft->buffer == NULL) {
         SCFree(aft);
         return TM_ECODE_FAILED;
     }
+#endif
 
+#if 0
     aft->enc_buf = SCMalloc(CERT_ENC_BUFFER_SIZE);
     if (aft->enc_buf == NULL) {
         SCFree(aft);
@@ -502,6 +765,7 @@ TmEcode LogTlsLogThreadInit(ThreadVars *t, void *initdata, void **data)
     }
     aft->enc_buf_len = CERT_ENC_BUFFER_SIZE;
     memset(aft->enc_buf, 0, aft->enc_buf_len);
+#endif
 
     /* Use the Ouptut Context (file pointer and mutex) */
     aft->tlslog_ctx = ((OutputCtx *) initdata)->data;
@@ -510,14 +774,16 @@ TmEcode LogTlsLogThreadInit(ThreadVars *t, void *initdata, void **data)
     return TM_ECODE_OK;
 }
 
-TmEcode LogTlsLogThreadDeinit(ThreadVars *t, void *data)
+TmEcode LogTlsLogIPFIXThreadDeinit(ThreadVars *t, void *data)
 {
     LogTlsLogThread *aft = (LogTlsLogThread *) data;
     if (aft == NULL) {
         return TM_ECODE_OK;
     }
 
+#if 0
     MemBufferFree(aft->buffer);
+#endif
     /* clear memory */
     memset(aft, 0, sizeof(LogTlsLogThread));
 
@@ -525,22 +791,80 @@ TmEcode LogTlsLogThreadDeinit(ThreadVars *t, void *data)
     return TM_ECODE_OK;
 }
 
-void LogTlsLogExitPrintStats(ThreadVars *tv, void *data)
+void LogTlsLogIPFIXExitPrintStats(ThreadVars *tv, void *data)
 {
     LogTlsLogThread *aft = (LogTlsLogThread *) data;
     if (aft == NULL) {
         return;
     }
 
-    SCLogInfo("TLS logger logged %" PRIu32 " requests", aft->tls_cnt);
+    SCLogInfo("TLS IPFIX logger logged %" PRIu32 " requests", aft->tls_cnt);
+}
+
+static fbSession_t *
+InitExporterSession(fbInfoModel_t *fb_model, uint32_t domain, GError **err)
+{
+    fbInfoModel_t   *model = fb_model;
+    fbTemplate_t    *int_tmpl = NULL;
+    fbTemplate_t    *ext_tmpl = NULL;
+    fbSession_t     *session = NULL;
+
+    /* Allocate the session */
+    session = fbSessionAlloc(model);
+
+    /* set observation domain */
+    fbSessionSetDomain(session, domain);
+
+    /* Create the full record template */
+    if ((int_tmpl = fbTemplateAlloc(model)) == NULL) {
+        SCLogInfo("fbTemplateAlloc failed");
+        return NULL;
+    }
+    SCLogInfo("int_tmpl: %p", int_tmpl);
+    if (!fbTemplateAppendSpecArray(int_tmpl, tls_log_int_spec, SURI_TLS_BASE_TID, err)) {
+        SCLogInfo("fbTemplateAppendSpecArray failed");
+        return NULL;
+    }
+    /* Add the full record template to the session */
+    if (!fbSessionAddTemplate(session, TRUE, SURI_TLS_BASE_TID, int_tmpl, err)) {
+        SCLogInfo("fbSessionAddTemplate failed");
+        return NULL;
+    }
+
+    /* Create the full record template */
+    if ((ext_tmpl = fbTemplateAlloc(model)) == NULL) {
+        SCLogInfo("fbTemplateAlloc failed");
+        return NULL;
+    }
+    SCLogInfo("ext_tmpl: %p", ext_tmpl);
+    if (!fbTemplateAppendSpecArray(ext_tmpl, tls_log_ext_spec, SURI_TLS_BASE_TID, err)) {
+        SCLogInfo("fbTemplateAppendSpecArray failed");
+        return NULL;
+    }
+
+    return session; 
 }
 
 /** \brief Create a new tls log LogFileCtx.
  *  \param conf Pointer to ConfNode containing this loggers configuration.
  *  \return NULL if failure, LogFileCtx* to the file_ctx if succesful
  * */
-OutputCtx *LogTlsLogInitCtx(ConfNode *conf)
+OutputCtx *LogTlsLogIPFIXInitCtx(ConfNode *conf)
 {
+    GError *err = NULL;
+
+    SCLogInfo("TLS IPFIX logger initializing");
+
+#if 1
+    LogIPFIXCtx *ipfix_ctx = LogIPFIXNewCtx();
+    if  (ipfix_ctx == NULL) {
+        SCLogError(SC_ERR_TLS_LOG_GENERIC, "couldn't create new ipfix_ctx");
+        return NULL;
+    }
+    if (SCConfLogOpenIPFIX(conf, ipfix_ctx, DEFAULT_LOG_FILENAME) < 0) {
+        return NULL;
+    }
+#else
     LogFileCtx* file_ctx = LogFileNewCtx();
 
     if (file_ctx == NULL) {
@@ -570,12 +894,20 @@ OutputCtx *LogTlsLogInitCtx(ConfNode *conf)
     if (SCConfLogOpenGeneric(conf, file_ctx, DEFAULT_LOG_FILENAME) < 0) {
         goto filectx_error;
     }
+#endif
 
     LogTlsFileCtx *tlslog_ctx = SCCalloc(1, sizeof(LogTlsFileCtx));
     if (unlikely(tlslog_ctx == NULL))
         goto filectx_error;
-    tlslog_ctx->file_ctx = file_ctx;
+    memset(tlslog_ctx, 0x00, sizeof(LogTlsFileCtx));
 
+#if 1
+    tlslog_ctx->ipfix_ctx = ipfix_ctx;
+#else
+    tlslog_ctx->file_ctx = file_ctx;
+#endif
+
+#if 0
     const char *extended = ConfNodeLookupChildValue(conf, "extended");
     if (extended == NULL) {
         tlslog_ctx->flags |= LOG_TLS_DEFAULT;
@@ -584,28 +916,54 @@ OutputCtx *LogTlsLogInitCtx(ConfNode *conf)
             tlslog_ctx->flags |= LOG_TLS_EXTENDED;
         }
     }
+#endif
 
     OutputCtx *output_ctx = SCCalloc(1, sizeof(OutputCtx));
     if (unlikely(output_ctx == NULL))
         goto tlslog_error;
-    output_ctx->data = tlslog_ctx;
-    output_ctx->DeInit = LogTlsLogDeInitCtx;
 
-    SCLogDebug("TLS log output initialized");
+    /* Create a new session */
+    uint32_t domain = 0xbeef; /* TBD??? */
+    tlslog_ctx->ipfix_ctx->session = InitExporterSession(tlslog_ctx->ipfix_ctx->fb_model, domain,
+                                               &err);
+    SCLogInfo("session: %p", tlslog_ctx->ipfix_ctx->session);
+
+    tlslog_ctx->ipfix_ctx->fbuf = fBufAllocForExport(tlslog_ctx->ipfix_ctx->session, tlslog_ctx->ipfix_ctx->exporter);
+    SCLogInfo("fBufAllocForExport: %p", tlslog_ctx->ipfix_ctx->fbuf);
+
+    if (tlslog_ctx->ipfix_ctx->session && tlslog_ctx->ipfix_ctx->fbuf) {
+
+        /* write templates */
+        fbSessionExportTemplates(tlslog_ctx->ipfix_ctx->session, &err);
+
+        /* set internal template */
+        if (!fBufSetInternalTemplate(tlslog_ctx->ipfix_ctx->fbuf, SURI_TLS_BASE_TID, &err)) {
+            SCLogInfo("fBufSetInternalTemplate failed");
+        }
+    }
+
+    output_ctx->data = tlslog_ctx;
+    output_ctx->DeInit = LogTlsLogIPFIXDeInitCtx;
+
+    SCLogDebug("TLS IPFIX log output initialized");
 
     return output_ctx;
 
 tlslog_error:
     SCFree(tlslog_ctx);
 filectx_error:
+#if 0
     LogFileFreeCtx(file_ctx);
+#endif
     return NULL;
 }
 
-static void LogTlsLogDeInitCtx(OutputCtx *output_ctx)
+static void LogTlsLogIPFIXDeInitCtx(OutputCtx *output_ctx)
 {
     LogTlsFileCtx *tlslog_ctx = (LogTlsFileCtx *) output_ctx->data;
+#if 0
     LogFileFreeCtx(tlslog_ctx->file_ctx);
+#endif
     SCFree(tlslog_ctx);
     SCFree(output_ctx);
 }

@@ -101,6 +101,32 @@ typedef struct OutputCtx_ {
     void (*DeInit)(struct OutputCtx_ *);
 } OutputCtx;
 
+#ifdef HAVE_IPFIX
+
+#include <fixbuf/public.h>
+#include <glib.h>
+
+/** Global structure for IPFIX Output Context */
+typedef struct LogIPFIXCtx_ {
+    /** It will be locked if the log/alert
+     * record cannot be written to the file in one call */
+    SCMutex mutex;
+
+    /* libfixbuf stuff */
+    fbInfoModel_t *fb_model;
+    fbExporter_t *exporter;
+    fbSession_t *session;
+    fBuf_t *fbuf;
+
+    /* Alerts on the module (not on the file) */
+    uint64_t alerts;
+    /* flag to avoid multiple threads printing the same stats */
+    uint8_t flags;
+} LogIPFIXCtx;
+
+LogIPFIXCtx *LogIPFIXNewCtx();
+#endif
+
 LogFileCtx *LogFileNewCtx();
 int LogFileFreeCtx(LogFileCtx *);
 

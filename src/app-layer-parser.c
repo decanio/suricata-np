@@ -855,6 +855,7 @@ void AppLayerRegisterHasEventsFunc(uint16_t proto,
  */
 void AppLayerRegisterLogger(uint16_t proto) {
     al_proto_table[proto].logger = TRUE;
+    al_proto_table[proto].logger_cnt += 1;
 }
 
 void AppLayerRegisterGetEventInfo(uint16_t alproto,
@@ -1217,10 +1218,14 @@ error:
     SCReturnInt(-1);
 }
 
-void AppLayerTransactionUpdateLogId(Flow *f)
+void AppLayerTransactionUpdateLogId(uint16_t proto, Flow *f)
 {
     DEBUG_ASSERT_FLOW_LOCKED(f);
-    ((AppLayerParserStateStore *)f->alparser)->log_id++;
+    uint16_t cnt = ++((AppLayerParserStateStore *)f->alparser)->log_cnt;
+    if (cnt >= al_proto_table[proto].logger_cnt) {
+        ((AppLayerParserStateStore *)f->alparser)->log_id++;
+        ((AppLayerParserStateStore *)f->alparser)->log_cnt = 0;
+    }
 
     return;
 }
