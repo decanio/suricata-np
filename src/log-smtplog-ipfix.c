@@ -20,7 +20,7 @@
  *
  * \author Tom DeCanio <td@npulsetech.com>
  *
- * Implements smtp logging portion of the engine.
+ * Implements smtp IPFIX logging portion of the engine.
  */
 
 #include "suricata-common.h"
@@ -39,7 +39,7 @@
 #include "util-debug.h"
 
 #include "output.h"
-#include "log-smtplog.h"
+#include "log-smtplog-ipfix.h"
 #include "app-layer-smtp.h"
 #include "app-layer.h"
 #include "util-privs.h"
@@ -47,21 +47,9 @@
 
 #include "util-logopenfile.h"
 
-#ifdef HAVE_LIBJANSSON
-#include <jansson.h>
+#define DEFAULT_LOG_FILENAME "smtp-ipfix.log"
 
-#define DEFAULT_SMTP_SYSLOG_FACILITY_STR       "local0"
-#define DEFAULT_SMTP_SYSLOG_FACILITY           LOG_LOCAL0
-#define DEFAULT_SMTP_SYSLOG_LEVEL              LOG_INFO
-
-#ifndef OS_WIN32
-static int smtp_syslog_level = DEFAULT_SMTP_SYSLOG_LEVEL;
-#endif
-#endif
-
-#define DEFAULT_LOG_FILENAME "smtp.log"
-
-#define MODULE_NAME "LogSmtpLog"
+#define MODULE_NAME "LogSmtpLogIpfix"
 
 #define OUTPUT_BUFFER_SIZE 65535
 
@@ -69,24 +57,24 @@ static int smtp_syslog_level = DEFAULT_SMTP_SYSLOG_LEVEL;
  * TX id handling doesn't expect it */
 #define QUERY 0
 
-TmEcode LogSmtpLog (ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogSmtpLogIPv4(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogSmtpLogIPv6(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogSmtpLogThreadInit(ThreadVars *, void *, void **);
-TmEcode LogSmtpLogThreadDeinit(ThreadVars *, void *);
-void LogSmtpLogExitPrintStats(ThreadVars *, void *);
-static void LogSmtpLogDeInitCtx(OutputCtx *);
+TmEcode LogSmtpLogIPFIX (ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+TmEcode LogSmtpLogIPFIXIPv4(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+TmEcode LogSmtpLogIPFIXIPv6(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+TmEcode LogSmtpLogIPFIXThreadInit(ThreadVars *, void *, void **);
+TmEcode LogSmtpLogIPFIXThreadDeinit(ThreadVars *, void *);
+void LogSmtpLogIPFIXExitPrintStats(ThreadVars *, void *);
+static void LogSmtpLogIPFIXDeInitCtx(OutputCtx *);
 
-void TmModuleLogSmtpLogRegister (void) {
-    tmm_modules[TMM_LOGSMTPLOG].name = MODULE_NAME;
-    tmm_modules[TMM_LOGSMTPLOG].ThreadInit = LogSmtpLogThreadInit;
-    tmm_modules[TMM_LOGSMTPLOG].Func = LogSmtpLog;
-    tmm_modules[TMM_LOGSMTPLOG].ThreadExitPrintStats = LogSmtpLogExitPrintStats;
-    tmm_modules[TMM_LOGSMTPLOG].ThreadDeinit = LogSmtpLogThreadDeinit;
-    tmm_modules[TMM_LOGSMTPLOG].RegisterTests = NULL;
-    tmm_modules[TMM_LOGSMTPLOG].cap_flags = 0;
+void TmModuleLogSmtpLogIPFIXRegister (void) {
+    tmm_modules[TMM_LOGSMTPLOGIPFIX].name = MODULE_NAME;
+    tmm_modules[TMM_LOGSMTPLOGIPFIX].ThreadInit = LogSmtpLogIPFIXThreadInit;
+    tmm_modules[TMM_LOGSMTPLOGIPFIX].Func = LogSmtpLogIPFIX;
+    tmm_modules[TMM_LOGSMTPLOGIPFIX].ThreadExitPrintStats = LogSmtpLogIPFIXExitPrintStats;
+    tmm_modules[TMM_LOGSMTPLOGIPFIX].ThreadDeinit = LogSmtpLogIPFIXThreadDeinit;
+    tmm_modules[TMM_LOGSMTPLOGIPFIX].RegisterTests = NULL;
+    tmm_modules[TMM_LOGSMTPLOGIPFIX].cap_flags = 0;
 
-    OutputRegisterModule(MODULE_NAME, "smtp-log", LogSmtpLogInitCtx);
+    OutputRegisterModule(MODULE_NAME, "smtp-log-ipfix", LogSmtpLogIPFIXInitCtx);
 
     /* enable the logger for the app layer */
     AppLayerRegisterLogger(ALPROTO_SMTP);
@@ -98,10 +86,6 @@ typedef struct LogSmtpFileCtx_ {
     uint32_t flags; /** Store mode */
 } LogSmtpFileCtx;
 
-#define LOG_SMTP_DEFAULT 0
-#define LOG_SMTP_JSON 1        /* JSON output */
-#define LOG_SMTP_JSON_SYSLOG 2 /* JSON output via syslog */
-
 typedef struct LogSmtpLogThread_ {
     LogSmtpFileCtx *smtplog_ctx;
     /** LogFileCtx has the pointer to the file and a mutex to allow multithreading */
@@ -110,18 +94,7 @@ typedef struct LogSmtpLogThread_ {
     MemBuffer *buffer;
 } LogSmtpLogThread;
 
-static void CreateTimeString (const struct timeval *ts, char *str, size_t size)
-{
-    time_t time = ts->tv_sec;
-    struct tm local_tm;
-    struct tm *t = (struct tm *)SCLocalTime(time, &local_tm);
-
-    snprintf(str, size, "%02d/%02d/%02d-%02d:%02d:%02d.%06u",
-        t->tm_mon + 1, t->tm_mday, t->tm_year + 1900, t->tm_hour,
-            t->tm_min, t->tm_sec, (uint32_t) ts->tv_usec);
-}
-
-static TmEcode LogSmtpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq,
+static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq,
                             PacketQueue *postpq, int ipproto)
 {
     SCEnter();
@@ -343,19 +316,8 @@ static TmEcode LogSmtpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
         aft->smtp_cnt++;
 
         SCMutexLock(&hlog->file_ctx->fp_mutex);
-#ifdef HAVE_LIBJANSSON
-        if (hlog->flags & LOG_SMTP_JSON_SYSLOG) {
-            syslog(smtp_syslog_level, "%s", (char *)aft->buffer->buffer);
-        } else {
-            if (hlog->flags & LOG_SMTP_JSON) {
-                MemBufferWriteString(aft->buffer, "\n");
-            }
-#endif
-            (void)MemBufferPrintToFPAsString(aft->buffer, hlog->file_ctx->fp);
-            fflush(hlog->file_ctx->fp);
-#ifdef HAVE_LIBJANSSON
-        }
-#endif
+        (void)MemBufferPrintToFPAsString(aft->buffer, hlog->file_ctx->fp);
+        fflush(hlog->file_ctx->fp);
         SCMutexUnlock(&hlog->file_ctx->fp_mutex);
 
     }
@@ -364,17 +326,17 @@ end:
     SCReturnInt(TM_ECODE_OK);
 }
 
-TmEcode LogSmtpLogIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+TmEcode LogSmtpLogIPFIXIPv4(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
-    return LogSmtpLogIPWrapper(tv, p, data, pq, postpq, AF_INET);
+    return LogSmtpLogIPFIXIPWrapper(tv, p, data, pq, postpq, AF_INET);
 }
 
-TmEcode LogSmtpLogIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+TmEcode LogSmtpLogIPFIXIPv6(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
-    return LogSmtpLogIPWrapper(tv, p, data, pq, postpq, AF_INET6);
+    return LogSmtpLogIPFIXIPWrapper(tv, p, data, pq, postpq, AF_INET6);
 }
 
-TmEcode LogSmtpLog (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+TmEcode LogSmtpLogIPFIX (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
     SCEnter();
 
@@ -389,17 +351,17 @@ TmEcode LogSmtpLog (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, Pack
     }
 
     if (PKT_IS_IPV4(p)) {
-        int r  = LogSmtpLogIPv4(tv, p, data, pq, postpq);
+        int r  = LogSmtpLogIPFIXIPv4(tv, p, data, pq, postpq);
         SCReturnInt(r);
     } else if (PKT_IS_IPV6(p)) {
-        int r  = LogSmtpLogIPv6(tv, p, data, pq, postpq);
+        int r  = LogSmtpLogIPFIXIPv6(tv, p, data, pq, postpq);
         SCReturnInt(r);
     }
 
     SCReturnInt(TM_ECODE_OK);
 }
 
-TmEcode LogSmtpLogThreadInit(ThreadVars *t, void *initdata, void **data)
+TmEcode LogSmtpLogIPFIXThreadInit(ThreadVars *t, void *initdata, void **data)
 {
     LogSmtpLogThread *aft = SCMalloc(sizeof(LogSmtpLogThread));
     if (unlikely(aft == NULL))
@@ -426,7 +388,7 @@ TmEcode LogSmtpLogThreadInit(ThreadVars *t, void *initdata, void **data)
     return TM_ECODE_OK;
 }
 
-TmEcode LogSmtpLogThreadDeinit(ThreadVars *t, void *data)
+TmEcode LogSmtpLogIPFIXThreadDeinit(ThreadVars *t, void *data)
 {
     LogSmtpLogThread *aft = (LogSmtpLogThread *)data;
     if (aft == NULL) {
@@ -441,7 +403,7 @@ TmEcode LogSmtpLogThreadDeinit(ThreadVars *t, void *data)
     return TM_ECODE_OK;
 }
 
-void LogSmtpLogExitPrintStats(ThreadVars *tv, void *data) {
+void LogSmtpLogIPFIXExitPrintStats(ThreadVars *tv, void *data) {
     LogSmtpLogThread *aft = (LogSmtpLogThread *)data;
     if (aft == NULL) {
         return;
@@ -454,7 +416,7 @@ void LogSmtpLogExitPrintStats(ThreadVars *tv, void *data) {
  *  \param conf Pointer to ConfNode containing this loggers configuration.
  *  \return NULL if failure, LogFileCtx* to the file_ctx if succesful
  * */
-OutputCtx *LogSmtpLogInitCtx(ConfNode *conf)
+OutputCtx *LogSmtpLogIPFIXInitCtx(ConfNode *conf)
 {
     LogFileCtx* file_ctx = LogFileNewCtx();
 
@@ -477,17 +439,6 @@ OutputCtx *LogSmtpLogInitCtx(ConfNode *conf)
 
     smtplog_ctx->file_ctx = file_ctx;
 
-#ifdef HAVE_LIBJANSSON
-    const char *json = ConfNodeLookupChildValue(conf, "json");
-    if (json) {
-        if (strcmp(json, "syslog") == 0) {
-            smtplog_ctx->flags |= (LOG_SMTP_JSON | LOG_SMTP_JSON_SYSLOG);
-        } else if (ConfValIsTrue(json)) {
-            smtplog_ctx->flags |= LOG_SMTP_JSON;
-        }
-    }
-#endif
-
     OutputCtx *output_ctx = SCCalloc(1, sizeof(OutputCtx));
     if (unlikely(output_ctx == NULL)) {
         LogFileFreeCtx(file_ctx);
@@ -496,14 +447,14 @@ OutputCtx *LogSmtpLogInitCtx(ConfNode *conf)
     }
 
     output_ctx->data = smtplog_ctx;
-    output_ctx->DeInit = LogSmtpLogDeInitCtx;
+    output_ctx->DeInit = LogSmtpLogIPFIXDeInitCtx;
 
     SCLogDebug("SMTP log output initialized");
 
     return output_ctx;
 }
 
-static void LogSmtpLogDeInitCtx(OutputCtx *output_ctx)
+static void LogSmtpLogIPFIXDeInitCtx(OutputCtx *output_ctx)
 {
     LogSmtpFileCtx *smtplog_ctx = (LogSmtpFileCtx *)output_ctx->data;
     LogFileFreeCtx(smtplog_ctx->file_ctx);

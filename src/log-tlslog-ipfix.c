@@ -133,8 +133,6 @@ static fbInfoElementSpec_t tls_log_int_spec[] = {
     { "tlsSubject",                         0, 0 },
     { "tlsIssuerDn",                        0, 0 },
     { "tlsFingerprint",                     0, 0 },
-    { "tlsVersion",                         0, 0 },
-    { "paddingOctets",                      6, 1 },
     /* 5-tuple */
     { "sourceIPv6Address",                  0, 0 },
     { "destinationIPv6Address",             0, 0 },
@@ -143,6 +141,7 @@ static fbInfoElementSpec_t tls_log_int_spec[] = {
     { "sourceTransportPort",                0, 0 },
     { "destinationTransportPort",           0, 0 },
     { "protocolIdentifier",                 0, 0 },
+    { "tlsVersion",                         0, 0 },
     FB_IESPEC_NULL
 };
 static fbInfoElementSpec_t tls_log_ext_spec[] = {
@@ -171,8 +170,6 @@ typedef struct TlsLog_st {
     fbVarfield_t tlsSubject;
     fbVarfield_t tlsIssuerDn;
     fbVarfield_t tlsFingerprint;
-    uint16_t     tlsVersion;
-    uint8_t      padding[6];
 
     uint8_t      sourceIPv6Address[16];
     uint8_t      destinationIPv6Address[16];
@@ -183,6 +180,7 @@ typedef struct TlsLog_st {
     uint16_t     sourceTransportPort;
     uint16_t     destinationTransportPort;
     uint8_t      protocolIdentifier;
+    uint16_t     tlsVersion;
 } TlsLog_t;
 #pragma pack(pop)
 

@@ -21,12 +21,12 @@
  * \author Tom DeCanio <td@npulsetech.com>
  */
 
-#ifndef __LOG_SMTPLOG_H__
-#define __LOG_SMTPLOG_H__
+#ifndef __LOG_SMTPLOG_IPFIX_H__
+#define __LOG_SMTPLOG_IPFIX_H__
 
-void TmModuleLogSmtpLogRegister (void);
-void TmModuleLogSmtpLogIPv4Register (void);
-void TmModuleLogSmtpLogIPv6Register (void);
-OutputCtx *LogSmtpLogInitCtx(ConfNode *);
+void TmModuleLogSmtpLogIPFIXRegister (void);
+void TmModuleLogSmtpLogIPFIXIPv4Register (void);
+void TmModuleLogSmtpLogIPFIXIPv6Register (void);
+OutputCtx *LogSmtpLogIPFIXInitCtx(ConfNode *);
 
-#endif /* __LOG_SMTPLOG_H__ */
+#endif /* __LOG_SMTPLOG_IPFIX_H__ */
