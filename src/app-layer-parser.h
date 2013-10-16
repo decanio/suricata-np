@@ -319,7 +319,7 @@ int AlpParseFieldByDelimiter(AppLayerParserResult *, AppLayerParserState *,
  *
  * \param f Flow.
  */
-void AppLayerTransactionUpdateLogId(uint16_t proto, Flow *f);
+int AppLayerTransactionUpdateLogId(uint16_t proto, Flow *f);
 
 /**
  * \brief Get the current log id.

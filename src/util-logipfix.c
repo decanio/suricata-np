@@ -109,6 +109,18 @@ static fbInfoElement_t info_elements[] = {
     FB_IE_INIT("dnsLabels", CERT_PEN, 239, 1, FB_IE_F_ENDIAN),
     FB_IE_INIT("dnsTypeCovered", CERT_PEN, 240, 2, FB_IE_F_ENDIAN),
     FB_IE_INIT("dnsFlags", CERT_PEN, 241, 2, FB_IE_F_ENDIAN),
+    /* smtp IEs */
+    FB_IE_INIT("smtpHello", CERT_PEN, 162, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("smtpFrom", CERT_PEN, 163, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("smtpTo", CERT_PEN, 164, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("smtpContentType", CERT_PEN, 165, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("smtpSubject", CERT_PEN, 166, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("smtpFilename", CERT_PEN, 167, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("smtpContentDisposition", CERT_PEN, 168, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("smtpResponse", CERT_PEN, 169, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("smtpEnhanced", CERT_PEN, 170, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("smtpSize", CERT_PEN, 222, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("smtpDate", CERT_PEN, 251, FB_IE_VARLEN, FB_IE_F_NONE),
     /* tls IEs */
     FB_IE_INIT("tlsVersion", NPULSE_PEN, 41, 2, FB_IE_F_ENDIAN),
     FB_IE_INIT("tlsSubject", NPULSE_PEN, 42, FB_IE_VARLEN, FB_IE_F_NONE),

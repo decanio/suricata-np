@@ -321,13 +321,24 @@ static TmEcode LogSmtpLogIPWrapper(ThreadVars *tv, Packet *p, void *data, Packet
         if (ajs) free(ajs);
         free(sjs);
         free(js);
+#if 0
         if (smtp_state->to_line != NULL) free(smtp_state->to_line);
         if (smtp_state->from_line != NULL) free(smtp_state->from_line);
         if (smtp_state->subject_line != NULL) free(smtp_state->subject_line);
         if (smtp_state->content_type_line != NULL) free(smtp_state->content_type_line);
         if (smtp_state->content_disp_line != NULL) free(smtp_state->content_disp_line);
+#endif
 
-        smtp_state->data_state = SMTP_DATA_UNKNOWN;
+        //smtp_state->data_state = SMTP_DATA_UNKNOWN;
+
+        if (AppLayerTransactionUpdateLogId(ALPROTO_SMTP, p->flow) == 1) {
+            if (smtp_state->to_line != NULL) free(smtp_state->to_line);
+            if (smtp_state->from_line != NULL) free(smtp_state->from_line);
+            if (smtp_state->subject_line != NULL) free(smtp_state->subject_line);
+            if (smtp_state->content_type_line != NULL) free(smtp_state->content_type_line);
+            if (smtp_state->content_disp_line != NULL) free(smtp_state->content_disp_line);
+            smtp_state->data_state = SMTP_DATA_UNKNOWN;
+        }
 
         aft->smtp_cnt++;
 

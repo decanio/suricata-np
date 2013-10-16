@@ -45,7 +45,7 @@
 #include "util-privs.h"
 #include "util-buffer.h"
 
-#include "util-logopenfile.h"
+#include "util-logipfix.h"
 
 #define DEFAULT_LOG_FILENAME "smtp-ipfix.log"
 
@@ -82,7 +82,7 @@ void TmModuleLogSmtpLogIPFIXRegister (void) {
 }
 
 typedef struct LogSmtpFileCtx_ {
-    LogFileCtx *file_ctx;
+    LogIPFIXCtx *ipfix_ctx;
     uint32_t flags; /** Store mode */
 } LogSmtpFileCtx;
 
@@ -91,17 +91,119 @@ typedef struct LogSmtpLogThread_ {
     /** LogFileCtx has the pointer to the file and a mutex to allow multithreading */
     uint32_t smtp_cnt;
 
-    MemBuffer *buffer;
 } LogSmtpLogThread;
+
+/* TBD: move these to util-logipfix.h */
+#define SURI_SMTP_BASE_TID      0x3400
+
+/* Special dimensions */
+#define SURI_IP4		0x0001
+#define SURI_IP6		0x0002
+
+/* IPFIX definition of the SMTP log record */
+static fbInfoElementSpec_t smtp_log_int_spec[] = {
+    /* Alert Millisecond (epoch) (native time) */
+    { "alertMilliseconds",                  0, 0 },
+    { "smtpFrom",                           0, 0 },
+    { "smtpSubject",                        0, 0 },
+    { "smtpTo",                        0, 0 },
+    /* 5-tuple */
+    { "sourceIPv6Address",                  0, 0 },
+    { "destinationIPv6Address",             0, 0 },
+    { "sourceIPv4Address",                  0, 0 },
+    { "destinationIPv4Address",             0, 0 },
+    { "sourceTransportPort",                0, 0 },
+    { "destinationTransportPort",           0, 0 },
+    { "protocolIdentifier",                 0, 0 },
+    FB_IESPEC_NULL
+};
+static fbInfoElementSpec_t smtp_log_ext_spec[] = {
+    /* Alert Millisecond (epoch) (native time) */
+    { "alertMilliseconds",                  0, 0 },
+    /* 5-tuple */
+    { "sourceIPv6Address",                  0, SURI_IP6 },
+    { "destinationIPv6Address",             0, SURI_IP6 },
+    { "sourceIPv4Address",                  0, SURI_IP4 },
+    { "destinationIPv4Address",             0, SURI_IP4 },
+    { "sourceTransportPort",                0, 0 },
+    { "destinationTransportPort",           0, 0 },
+    { "protocolIdentifier",                 0, 0 },
+    /* smtp info */
+    { "smtpFrom",                           0, 0 },
+    { "smtpSubject",                        0, 0 },
+    { "smtpTo",                        0, 0 },
+    FB_IESPEC_NULL
+};
+
+/* SMTP Metadata Record */
+#pragma pack(push, 1)
+typedef struct SmtpLog_st {
+    uint64_t	 AlertMilliseconds;
+    fbVarfield_t smtpFrom;
+    fbVarfield_t smtpSubject;
+    fbVarfield_t smtpTo;
+
+    uint8_t      sourceIPv6Address[16];
+    uint8_t      destinationIPv6Address[16];
+
+    uint32_t     sourceIPv4Address;
+    uint32_t     destinationIPv4Address;
+
+    uint16_t     sourceTransportPort;
+    uint16_t     destinationTransportPort;
+    uint8_t      protocolIdentifier;
+} SmtpLog_t;
+#pragma pack(pop)
+
+static gboolean
+SetExportTemplate(
+    fbInfoModel_t       *fb_model,
+    fBuf_t              *fbuf,
+    uint16_t            tid,
+    GError              **err)
+{
+    fbSession_t         *session = NULL;
+    fbTemplate_t        *tmpl = NULL;
+
+    /* Try to set export template */
+    if (fBufSetExportTemplate(fbuf, tid, err)) {
+        return TRUE;
+    }
+
+    /* Check for error other than missing template */
+    if (!g_error_matches(*err, FB_ERROR_DOMAIN, FB_ERROR_TMPL)) {
+        return FALSE;
+    }
+
+    /* Okay. We have a missing template. Clear the Teerror and try to load it. */
+    g_clear_error(err);
+    session = fBufGetSession(fbuf);
+    tmpl = fbTemplateAlloc(fb_model);
+
+    //SCLogInfo("tid: %x Appending tid: %x\n", tid, (tid & (~SURI_TLS_BASE_TID)));
+    if (!fbTemplateAppendSpecArray(tmpl, smtp_log_ext_spec,
+                                   (tid & (~SURI_SMTP_BASE_TID)), err))    {
+        return FALSE;
+    }
+
+    if (!fbSessionAddTemplate(session, FALSE, tid, tmpl, err)) {
+        SCLogInfo("failed to add external template");
+        return FALSE;
+    }
+
+    /* Template should be loaded. Try setting the template again. */
+    return fBufSetExportTemplate(fbuf, tid, err);
+}
 
 static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq,
                             PacketQueue *postpq, int ipproto)
 {
     SCEnter();
-
+    SmtpLog_t rec;
+    GError *err = NULL;
+    uint16_t tid;
     LogSmtpLogThread *aft = (LogSmtpLogThread *)data;
-    LogSmtpFileCtx *hlog = aft->smtplog_ctx;
-    char timebuf[64];
+    LogSmtpFileCtx *slog = aft->smtplog_ctx;
 
     /* no flow, no smtp state */
     if (p->flow == NULL) {
@@ -122,43 +224,51 @@ static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
         goto end;
     }
     SCLogDebug("pcap_cnt %"PRIu64, p->pcap_cnt);
-    CreateTimeString(&p->ts, timebuf, sizeof(timebuf));
+    rec.AlertMilliseconds = (p->ts.tv_sec * 1000) + (p->ts.tv_usec / 1000);
 
-    char srcip[46], dstip[46];
-    Port sp, dp;
     if ((PKT_IS_TOCLIENT(p))) {
         switch (ipproto) {
             case AF_INET:
-                PrintInet(AF_INET, (const void *)GET_IPV4_SRC_ADDR_PTR(p), srcip, sizeof(srcip));
-                PrintInet(AF_INET, (const void *)GET_IPV4_DST_ADDR_PTR(p), dstip, sizeof(dstip));
+                rec.sourceIPv4Address = ntohl(GET_IPV4_SRC_ADDR_U32(p));
+                rec.destinationIPv4Address = ntohl(GET_IPV4_DST_ADDR_U32(p));
+                tid = SURI_SMTP_BASE_TID | SURI_IP4;
                 break;
             case AF_INET6:
-                PrintInet(AF_INET6, (const void *)GET_IPV6_SRC_ADDR(p), srcip, sizeof(srcip));
-                PrintInet(AF_INET6, (const void *)GET_IPV6_DST_ADDR(p), dstip, sizeof(dstip));
+                memcpy(rec.sourceIPv6Address, GET_IPV6_SRC_ADDR(p),
+                       sizeof(rec.sourceIPv6Address));
+                memcpy(rec.destinationIPv6Address, GET_IPV6_DST_ADDR(p),
+                       sizeof(rec.destinationIPv6Address));
+                tid = SURI_SMTP_BASE_TID | SURI_IP6;
                 break;
             default:
                 goto end;
         }
-        sp = p->sp;
-        dp = p->dp;
+        rec.sourceTransportPort = p->sp;
+        rec.destinationTransportPort = p->dp;
     } else {
         switch (ipproto) {
             case AF_INET:
-                PrintInet(AF_INET, (const void *)GET_IPV4_DST_ADDR_PTR(p), srcip, sizeof(srcip));
-                PrintInet(AF_INET, (const void *)GET_IPV4_SRC_ADDR_PTR(p), dstip, sizeof(dstip));
+                rec.sourceIPv4Address = ntohl(GET_IPV4_DST_ADDR_U32(p));
+                rec.destinationIPv4Address = ntohl(GET_IPV4_SRC_ADDR_U32(p));
+                tid = SURI_SMTP_BASE_TID | SURI_IP4;
                 break;
             case AF_INET6:
-                PrintInet(AF_INET6, (const void *)GET_IPV6_DST_ADDR(p), srcip, sizeof(srcip));
-                PrintInet(AF_INET6, (const void *)GET_IPV6_SRC_ADDR(p), dstip, sizeof(dstip));
+                memcpy(rec.sourceIPv6Address, GET_IPV6_DST_ADDR(p),
+                       sizeof(rec.sourceIPv6Address));
+                memcpy(rec.destinationIPv6Address, GET_IPV6_SRC_ADDR(p),
+                       sizeof(rec.destinationIPv6Address));
+                tid = SURI_SMTP_BASE_TID | SURI_IP6;
                 break;
             default:
                 goto end;
         }
-        sp = p->dp;
-        dp = p->sp;
+        rec.sourceTransportPort = p->dp;
+        rec.destinationTransportPort = p->sp;
     }
+    rec.protocolIdentifier = IPV4_GET_IPPROTO(p);
+
     if (smtp_state->data_state == SMTP_DATA_END) {
-        /*
+        /* 
         SCLogInfo("SMTP LOG TO: \"%s\" FROM: \"%s\" SUBJECT \"%s\"",
                   (char *)((smtp_state->to_line != NULL) ? smtp_state->to_line : ""),
                   (char *)((smtp_state->from_line != NULL) ? smtp_state->from_line : ""),
@@ -173,152 +283,58 @@ static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
         }
         */
 
-        /* reset */
-        MemBufferReset(aft->buffer);
-
-        json_t *js = json_object();
-        if (js == NULL)
-            SCReturnInt(TM_ECODE_OK);
-
-        json_t *sjs = json_object();
-        if (sjs == NULL) {
-            free(js);
-            SCReturnInt(TM_ECODE_OK);
+        if (smtp_state->from_line != NULL) {
+            rec.smtpFrom.buf = (uint8_t *)smtp_state->from_line;
+            rec.smtpFrom.len = strlen(smtp_state->from_line);
+        } else {
+            rec.smtpFrom.len = 0;
         }
-
-        /* time & tx */
-        json_object_set_new(js, "time", json_string(timebuf));
-
-        /* tuple */
-        json_object_set_new(js, "srcip", json_string(srcip));
-        json_object_set_new(js, "sp", json_integer(sp));
-        json_object_set_new(js, "dstip", json_string(dstip));
-        json_object_set_new(js, "dp", json_integer(dp));
-
-        json_object_set_new(sjs, "from", json_string(
-                  (char *)((smtp_state->from_line != NULL) ? smtp_state->from_line : "")));
-#if 0
-        json_object_set_new(sjs, "to", json_string(
-                  (char *)((smtp_state->to_line != NULL) ? smtp_state->to_line : "")));
-#else
+        if (smtp_state->subject_line != NULL) {
+            rec.smtpSubject.buf = (uint8_t *)smtp_state->subject_line;
+            rec.smtpSubject.len = strlen(smtp_state->subject_line);
+        } else {
+            rec.smtpSubject.len = 0;
+        }
         if (smtp_state->to_line != NULL) {
-            json_t *tjs = json_array();
-            if (tjs != NULL) {
-                char *savep;
-                char *p;
-                json_t *njs[128];
-                int i = 0;
-                njs[i] = json_object();
-                p = strtok_r((char *)smtp_state->to_line, ",", &savep);
-                /*SCLogInfo("first token: \"%s\"", &p[strspn(p, " \t")]);*/
-                json_object_set_new(njs[i], "emailaddr", json_string(&p[strspn(p, " \t")]));
-                json_array_append(tjs, njs[i++]);
-                while ((p = strtok_r(NULL, ",", &savep)) != NULL) {
-                    /*SCLogInfo("next token: \"%s\"", &p[strspn(p, " \t")]);*/
-                    njs[i] = json_object();
-                    json_object_set(njs[i], "emailaddr", json_string(&p[strspn(p, " \t")]));
-                    json_array_append(tjs, njs[i++]);
-                }
-            }
-            json_object_set_new(sjs, "to", tjs);
+            rec.smtpTo.buf = (uint8_t *)smtp_state->to_line;
+            rec.smtpTo.len = strlen(smtp_state->to_line);
+        } else {
+            rec.smtpTo.len = 0;
         }
-#endif
-
-        if (smtp_state->cc_line != NULL) {
-            json_t *cjs = json_array();
-            if (cjs != NULL) {
-                char *savep;
-                char *p;
-                json_t *njs[128];
-                int i = 0;
-                njs[i] = json_object();
-                p = strtok_r((char *)smtp_state->cc_line, ",", &savep);
-                /*SCLogInfo("first token: \"%s\"", &p[strspn(p, " \t")]);*/
-                json_object_set_new(njs[i], "emailaddr", json_string(&p[strspn(p, " \t")]));
-                json_array_append(cjs, njs[i++]);
-                while ((p = strtok_r(NULL, ",", &savep)) != NULL) {
-                    /*SCLogInfo("next token: \"%s\"", &p[strspn(p, " \t")]);*/
-                    njs[i] = json_object();
-                    json_object_set(njs[i], "emailaddr", json_string(&p[strspn(p, " \t")]));
-                    json_array_append(cjs, njs[i++]);
-                }
-            }
-            json_object_set_new(sjs, "cc", cjs);
-        }
-
-        json_object_set_new(sjs, "subject", json_string(
-                  (char *)((smtp_state->subject_line != NULL) ? smtp_state->subject_line : "")));
-
-        json_t *ajs = NULL;
-        if (smtp_state->attachment_count > 0) {
-#if 0
-            if (smtp_state->attachment_count == 1) {
-                ajs = json_object();
-                if (ajs != NULL) {
-                    int i = 0;
-                    SCLogInfo("Adding \"%s\" into array", smtp_state->attachments[i].name);
-                    json_object_set_new(ajs, "name",
-                        json_string(smtp_state->attachments[i].name));
-                    SCFree(smtp_state->attachments[i].name);
-                    smtp_state->attachments[i].name = NULL;
-                    json_object_set_new(sjs, "attachment", ajs);
-                }
-
-            } else {
-#else
-            {
-#endif
-                ajs = json_array();
-                if (ajs != NULL) {
-                    unsigned i;
-                    json_t *njs = json_object();;
-                    for (i = 0; i < smtp_state->attachment_count; i++) {
-                        int r;
-                        /*SCLogInfo("Adding \"%s\" into array", smtp_state->attachments[i].name);*/
-                        r = json_object_set_new(njs, "name",
-                            json_string((char *)smtp_state->attachments[i].name));
-                        if (r!=0)
-                            /*SCLogInfo("json_object_set_new failed")*/;
-                        SCFree(smtp_state->attachments[i].name);
-                        smtp_state->attachments[i].name = NULL;
-                        /*
-                        json_dumpf(njs, stdout, JSON_PRESERVE_ORDER|JSON_COMPACT|JSON_ENSURE_ASCII);
-                        printf("\n");
-                        */
-                        json_array_append(ajs, njs);
-                    }
-                    /*
-                    json_dumpf(ajs, stdout, JSON_PRESERVE_ORDER|JSON_COMPACT|JSON_ENSURE_ASCII);
-                    printf("\n");
-                    */
-                    json_object_set_new(sjs, "attachment", ajs);
-                }
-            }
-            smtp_state->attachment_count = 0; 
-        }
-
-        /* smtp */
-        json_object_set_new(js, "smtp", sjs);
-        char *s = json_dumps(js, JSON_PRESERVE_ORDER|JSON_COMPACT|JSON_ENSURE_ASCII);
-        MemBufferWriteString(aft->buffer, "%s", s);
-        free(s);
-        if (ajs) free(ajs);
-        free(sjs);
-        free(js);
-        if (smtp_state->to_line != NULL) free(smtp_state->to_line);
-        if (smtp_state->from_line != NULL) free(smtp_state->from_line);
-        if (smtp_state->subject_line != NULL) free(smtp_state->subject_line);
-        if (smtp_state->content_type_line != NULL) free(smtp_state->content_type_line);
-        if (smtp_state->content_disp_line != NULL) free(smtp_state->content_disp_line);
-
-        smtp_state->data_state = SMTP_DATA_UNKNOWN;
 
         aft->smtp_cnt++;
 
-        SCMutexLock(&hlog->file_ctx->fp_mutex);
-        (void)MemBufferPrintToFPAsString(aft->buffer, hlog->file_ctx->fp);
-        fflush(hlog->file_ctx->fp);
-        SCMutexUnlock(&hlog->file_ctx->fp_mutex);
+        SCMutexLock(&slog->ipfix_ctx->mutex);
+
+        /* Try to set export template */
+        if (slog->ipfix_ctx->fbuf) {
+            if (!SetExportTemplate(slog->ipfix_ctx->fb_model, slog->ipfix_ctx->fbuf, tid, &err)) {
+                SCMutexUnlock(&slog->ipfix_ctx->mutex);
+                SCLogInfo("fBufSetExportTemplate failed");
+                goto end;
+            }
+        } else {
+            SCMutexUnlock(&slog->ipfix_ctx->mutex);
+            goto end;
+        }
+
+        //SCLogInfo("Appending IPFIX record to log");
+        /* Now append the record to the buffer */
+        if (!fBufAppend(slog->ipfix_ctx->fbuf, (uint8_t *)&rec, sizeof(rec), &err)) {
+            //SCMutexUnlock(&aft->httplog_ctx->mutex);
+            SCLogInfo("fBufAppend failed");
+        }
+
+        SCMutexUnlock(&slog->ipfix_ctx->mutex);
+
+        if (AppLayerTransactionUpdateLogId(ALPROTO_SMTP, p->flow) == 1) {
+            if (smtp_state->to_line != NULL) free(smtp_state->to_line);
+            if (smtp_state->from_line != NULL) free(smtp_state->from_line);
+            if (smtp_state->subject_line != NULL) free(smtp_state->subject_line);
+            if (smtp_state->content_type_line != NULL) free(smtp_state->content_type_line);
+            if (smtp_state->content_disp_line != NULL) free(smtp_state->content_disp_line);
+            smtp_state->data_state = SMTP_DATA_UNKNOWN;
+        }
 
     }
 end:
@@ -375,12 +391,6 @@ TmEcode LogSmtpLogIPFIXThreadInit(ThreadVars *t, void *initdata, void **data)
         return TM_ECODE_FAILED;
     }
 
-    aft->buffer = MemBufferCreateNew(OUTPUT_BUFFER_SIZE);
-    if (aft->buffer == NULL) {
-        SCFree(aft);
-        return TM_ECODE_FAILED;
-    }
-
     /* Use the Ouptut Context (file pointer and mutex) */
     aft->smtplog_ctx= ((OutputCtx *)initdata)->data;
 
@@ -395,7 +405,6 @@ TmEcode LogSmtpLogIPFIXThreadDeinit(ThreadVars *t, void *data)
         return TM_ECODE_OK;
     }
 
-    MemBufferFree(aft->buffer);
     /* clear memory */
     memset(aft, 0, sizeof(LogSmtpLogThread));
 
@@ -409,7 +418,51 @@ void LogSmtpLogIPFIXExitPrintStats(ThreadVars *tv, void *data) {
         return;
     }
 
-    SCLogInfo("SMTP logger logged %" PRIu32 " requests", aft->smtp_cnt);
+    SCLogInfo("SMTP IPFIX logger logged %" PRIu32 " requests", aft->smtp_cnt);
+}
+
+static fbSession_t *
+InitExporterSession(fbInfoModel_t *fb_model, uint32_t domain, GError **err)
+{
+    fbInfoModel_t   *model = fb_model;
+    fbTemplate_t    *int_tmpl = NULL;
+    fbTemplate_t    *ext_tmpl = NULL;
+    fbSession_t     *session = NULL;
+
+    /* Allocate the session */
+    session = fbSessionAlloc(model);
+
+    /* set observation domain */
+    fbSessionSetDomain(session, domain);
+
+    /* Create the full record template */
+    if ((int_tmpl = fbTemplateAlloc(model)) == NULL) {
+        SCLogInfo("fbTemplateAlloc failed");
+        return NULL;
+    }
+    SCLogInfo("int_tmpl: %p", int_tmpl);
+    if (!fbTemplateAppendSpecArray(int_tmpl, smtp_log_int_spec, SURI_SMTP_BASE_TID, err)) {
+        SCLogInfo("fbTemplateAppendSpecArray failed");
+        return NULL;
+    }
+    /* Add the full record template to the session */
+    if (!fbSessionAddTemplate(session, TRUE, SURI_SMTP_BASE_TID, int_tmpl, err)) {
+        SCLogInfo("fbSessionAddTemplate failed");
+        return NULL;
+    }
+
+    /* Create the full record template */
+    if ((ext_tmpl = fbTemplateAlloc(model)) == NULL) {
+        SCLogInfo("fbTemplateAlloc failed");
+        return NULL;
+    }
+    SCLogInfo("ext_tmpl: %p", ext_tmpl);
+    if (!fbTemplateAppendSpecArray(ext_tmpl, smtp_log_ext_spec, SURI_SMTP_BASE_TID, err)) {
+        SCLogInfo("fbTemplateAppendSpecArray failed");
+        return NULL;
+    }
+
+    return session; 
 }
 
 /** \brief Create a new dns log LogFileCtx.
@@ -418,38 +471,56 @@ void LogSmtpLogIPFIXExitPrintStats(ThreadVars *tv, void *data) {
  * */
 OutputCtx *LogSmtpLogIPFIXInitCtx(ConfNode *conf)
 {
-    LogFileCtx* file_ctx = LogFileNewCtx();
+    GError *err = NULL;
 
-    if(file_ctx == NULL) {
-        SCLogError(SC_ERR_SMTP_LOG_GENERIC, "couldn't create new file_ctx");
+    SCLogInfo("SMTP IPFIX logger initializing");
+
+    LogIPFIXCtx *ipfix_ctx = LogIPFIXNewCtx();
+    if  (ipfix_ctx == NULL) {
+        SCLogError(SC_ERR_TLS_LOG_GENERIC, "couldn't create new ipfix_ctx");
         return NULL;
     }
-
-    if (SCConfLogOpenGeneric(conf, file_ctx, DEFAULT_LOG_FILENAME) < 0) {
-        LogFileFreeCtx(file_ctx);
+    if (SCConfLogOpenIPFIX(conf, ipfix_ctx, DEFAULT_LOG_FILENAME) < 0) {
         return NULL;
     }
-
     LogSmtpFileCtx *smtplog_ctx = SCMalloc(sizeof(LogSmtpFileCtx));
     if (unlikely(smtplog_ctx == NULL)) {
-        LogFileFreeCtx(file_ctx);
         return NULL;
     }
     memset(smtplog_ctx, 0x00, sizeof(LogSmtpFileCtx));
 
-    smtplog_ctx->file_ctx = file_ctx;
+    smtplog_ctx->ipfix_ctx = ipfix_ctx;
 
     OutputCtx *output_ctx = SCCalloc(1, sizeof(OutputCtx));
     if (unlikely(output_ctx == NULL)) {
-        LogFileFreeCtx(file_ctx);
         SCFree(smtplog_ctx);
         return NULL;
+    }
+
+    /* Create a new session */
+    uint32_t domain = 0xbeef; /* TBD??? */
+    smtplog_ctx->ipfix_ctx->session = InitExporterSession(smtplog_ctx->ipfix_ctx->fb_model, domain,
+                                               &err);
+    SCLogInfo("session: %p", smtplog_ctx->ipfix_ctx->session);
+
+    smtplog_ctx->ipfix_ctx->fbuf = fBufAllocForExport(smtplog_ctx->ipfix_ctx->session, smtplog_ctx->ipfix_ctx->exporter);
+    SCLogInfo("fBufAllocForExport: %p", smtplog_ctx->ipfix_ctx->fbuf);
+
+    if (smtplog_ctx->ipfix_ctx->session && smtplog_ctx->ipfix_ctx->fbuf) {
+
+        /* write templates */
+        fbSessionExportTemplates(smtplog_ctx->ipfix_ctx->session, &err);
+
+        /* set internal template */
+        if (!fBufSetInternalTemplate(smtplog_ctx->ipfix_ctx->fbuf, SURI_SMTP_BASE_TID, &err)) {
+            SCLogInfo("fBufSetInternalTemplate failed");
+        }
     }
 
     output_ctx->data = smtplog_ctx;
     output_ctx->DeInit = LogSmtpLogIPFIXDeInitCtx;
 
-    SCLogDebug("SMTP log output initialized");
+    SCLogDebug("SMTP IPFIX log output initialized");
 
     return output_ctx;
 }
@@ -457,7 +528,6 @@ OutputCtx *LogSmtpLogIPFIXInitCtx(ConfNode *conf)
 static void LogSmtpLogIPFIXDeInitCtx(OutputCtx *output_ctx)
 {
     LogSmtpFileCtx *smtplog_ctx = (LogSmtpFileCtx *)output_ctx->data;
-    LogFileFreeCtx(smtplog_ctx->file_ctx);
     SCFree(smtplog_ctx);
     SCFree(output_ctx);
 }

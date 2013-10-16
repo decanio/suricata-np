@@ -1218,16 +1218,17 @@ error:
     SCReturnInt(-1);
 }
 
-void AppLayerTransactionUpdateLogId(uint16_t proto, Flow *f)
+int AppLayerTransactionUpdateLogId(uint16_t proto, Flow *f)
 {
     DEBUG_ASSERT_FLOW_LOCKED(f);
     uint16_t cnt = ++((AppLayerParserStateStore *)f->alparser)->log_cnt;
     if (cnt >= al_proto_table[proto].logger_cnt) {
         ((AppLayerParserStateStore *)f->alparser)->log_id++;
         ((AppLayerParserStateStore *)f->alparser)->log_cnt = 0;
+        return 1;
     }
 
-    return;
+    return 0;
 }
 
 uint64_t AppLayerTransactionGetLogId(Flow *f)

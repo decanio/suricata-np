@@ -83,6 +83,8 @@
 #include "log-httplog-ipfix.h"
 #include "log-dnslog.h"
 #include "log-dnslog-ipfix.h"
+#include "log-smtplog.h"
+#include "log-smtplog-ipfix.h"
 #include "log-tlslog.h"
 #include "log-tlslog-ipfix.h"
 #include "log-pcap.h"
@@ -768,6 +770,10 @@ void RegisterAllModules()
     TmModuleLogHttpLogIPFIXRegister();
     TmModuleLogHttpLogIPFIXIPv4Register();
     TmModuleLogHttpLogIPFIXIPv6Register();
+    /* smtp log */
+    TmModuleLogSmtpLogRegister();
+    /* smtp ipfix log */
+    TmModuleLogSmtpLogIPFIXRegister();
     /* tls log */
     TmModuleLogTlsLogRegister();
     TmModuleLogTlsLogIPv4Register();
