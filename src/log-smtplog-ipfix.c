@@ -106,7 +106,11 @@ static fbInfoElementSpec_t smtp_log_int_spec[] = {
     { "alertMilliseconds",                  0, 0 },
     { "smtpFrom",                           0, 0 },
     { "smtpSubject",                        0, 0 },
+#if 1
+    { "basicList",                        0, 0 },
+#else
     { "smtpTo",                        0, 0 },
+#endif
     /* 5-tuple */
     { "sourceIPv6Address",                  0, 0 },
     { "destinationIPv6Address",             0, 0 },
@@ -117,6 +121,12 @@ static fbInfoElementSpec_t smtp_log_int_spec[] = {
     { "protocolIdentifier",                 0, 0 },
     FB_IESPEC_NULL
 };
+
+static fbInfoElementSpec_t smtp_to_int_spec[] = {
+    { "smtpTo",                        0, 0 },
+    FB_IESPEC_NULL
+};
+
 static fbInfoElementSpec_t smtp_log_ext_spec[] = {
     /* Alert Millisecond (epoch) (native time) */
     { "alertMilliseconds",                  0, 0 },
@@ -131,7 +141,11 @@ static fbInfoElementSpec_t smtp_log_ext_spec[] = {
     /* smtp info */
     { "smtpFrom",                           0, 0 },
     { "smtpSubject",                        0, 0 },
+#if 1
+    { "basicList",                        0, 0 },
+#else
     { "smtpTo",                        0, 0 },
+#endif
     FB_IESPEC_NULL
 };
 
@@ -141,7 +155,11 @@ typedef struct SmtpLog_st {
     uint64_t	 AlertMilliseconds;
     fbVarfield_t smtpFrom;
     fbVarfield_t smtpSubject;
+#if 1
+    fbBasicList_t smtpTo;
+#else
     fbVarfield_t smtpTo;
+#endif
 
     uint8_t      sourceIPv6Address[16];
     uint8_t      destinationIPv6Address[16];
@@ -296,10 +314,35 @@ static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
             rec.smtpSubject.len = 0;
         }
         if (smtp_state->to_line != NULL) {
+#if 1
+            fbVarfield_t *myVarfield  = NULL;
+            char *savep;
+            char *p;
+            char *to_line = strdup(smtp_state->to_line);
+            int total = 1;
+            p = strtok_r(to_line, ",", &savep);
+            myVarfield = (fbVarfield_t*)fbBasicListInit(&(rec.smtpTo), 0, 
+                        fbInfoModelGetElementByName(slog->ipfix_ctx->fb_model, "smtpTo"), total);
+            myVarfield->buf = p;
+            myVarfield->len = strlen(p);
+            SCLogInfo("TO: \"%s\" (%d)", myVarfield->buf, myVarfield->len);
+            while ((p = strtok_r(NULL, ",", &savep)) != NULL) {
+                myVarfield = (fbVarfield_t*)fbBasicListAddNewElements(&(rec.smtpTo), 1);
+                myVarfield[total].buf = p;
+                myVarfield[total].len = strlen(p);
+                ++total;
+            }
+            SCLogInfo("SMTP TO: field count %d", total);
+            free(to_line);
+#else
             rec.smtpTo.buf = (uint8_t *)smtp_state->to_line;
             rec.smtpTo.len = strlen(smtp_state->to_line);
+#endif
         } else {
+#if 1
+#else
             rec.smtpTo.len = 0;
+#endif
         }
 
         aft->smtp_cnt++;
