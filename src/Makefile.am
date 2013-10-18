@@ -208,6 +208,8 @@ log-dnslog-ipfix.c log-dnslog-ipfix.h \
 log-droplog.c log-droplog.h \
 log-file.c log-file.h \
 log-filestore.c log-filestore.h \
+log-ftplog.c log-ftplog.h \
+log-ftplog-ipfix.c log-ftplog-ipfix.h \
 log-httplog.c log-httplog.h \
 log-httplog-ipfix.c log-httplog-ipfix.h \
 log-pcap.c log-pcap.h \

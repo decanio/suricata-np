@@ -98,6 +98,8 @@ typedef struct FtpState_ {
     FtpResponseCode response_code;
     uint32_t port_line_len;
     uint8_t *port_line;
+    uint8_t *line;
+    uint32_t line_len;
 } FtpState;
 
 void RegisterFTPParsers(void);

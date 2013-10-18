@@ -109,6 +109,14 @@ static fbInfoElement_t info_elements[] = {
     FB_IE_INIT("dnsLabels", CERT_PEN, 239, 1, FB_IE_F_ENDIAN),
     FB_IE_INIT("dnsTypeCovered", CERT_PEN, 240, 2, FB_IE_F_ENDIAN),
     FB_IE_INIT("dnsFlags", CERT_PEN, 241, 2, FB_IE_F_ENDIAN),
+    /* FTP IEs */
+    FB_IE_INIT("ftpReturn", CERT_PEN, 131, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("ftpUser", CERT_PEN, 132, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("ftpPass", CERT_PEN,133, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("ftpType", CERT_PEN,134, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("ftpRespCode", CERT_PEN,135, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("ftpCmd", NPULSE_PEN,45, FB_IE_VARLEN, FB_IE_F_NONE),
+    FB_IE_INIT("ftpFilename", NPULSE_PEN,46, FB_IE_VARLEN, FB_IE_F_NONE),
     /* smtp IEs */
     FB_IE_INIT("smtpHello", CERT_PEN, 162, FB_IE_VARLEN, FB_IE_F_NONE),
     FB_IE_INIT("smtpFrom", CERT_PEN, 163, FB_IE_VARLEN, FB_IE_F_NONE),

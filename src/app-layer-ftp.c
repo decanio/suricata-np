@@ -66,6 +66,10 @@ static int FTPParseRequestCommand(void *ftp_state, uint8_t *input,
     if (input_len >= 4) {
         if (SCMemcmpLowercase("port", input, 4) == 0) {
             fstate->command = FTP_COMMAND_PORT;
+        } else if (SCMemcmpLowercase("stor", input, 4) == 0) {
+            fstate->command = FTP_COMMAND_STOR;
+        } else if (SCMemcmpLowercase("retr", input, 4) == 0) {
+            fstate->command = FTP_COMMAND_RETR;
         }
 
         /* else {
@@ -132,6 +136,19 @@ static int FTPParseRequestCommandLine(Flow *f, void *ftp_state, AppLayerParserSt
                         fstate->port_line = memcpy(fstate->port_line, input,
                                                    input_len);
                         fstate->port_line_len = input_len;
+                    break;
+                    case FTP_COMMAND_RETR:
+                    case FTP_COMMAND_STOR:
+                        if (fstate->line != NULL)
+                            SCFree(fstate->line);
+                        if ((int)input_len - 5 < 0)
+                            return 0;
+                        fstate->line = SCMalloc(input_len - 5);
+                        if (fstate->line == NULL)
+                            return 0;
+                        fstate->line = memcpy(fstate->line, &input[5],
+                                              input_len - 5);
+                        fstate->line_len = input_len - 5;
                     break;
                     default:
                     break;

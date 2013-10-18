@@ -79,6 +79,8 @@
 #include "alert-pcapinfo.h"
 
 #include "log-droplog.h"
+#include "log-ftplog.h"
+#include "log-ftplog-ipfix.h"
 #include "log-httplog.h"
 #include "log-httplog-ipfix.h"
 #include "log-dnslog.h"
@@ -762,6 +764,10 @@ void RegisterAllModules()
     TmModuleAlertPcapInfoRegister();
     /* drop log */
     TmModuleLogDropLogRegister();
+    /* ftp log */
+    TmModuleLogFtpLogRegister();
+    /* ftp ipfix log */
+    TmModuleLogFtpLogIPFIXRegister();
     /* http log */
     TmModuleLogHttpLogRegister();
     TmModuleLogHttpLogIPv4Register();
