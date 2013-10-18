@@ -107,7 +107,7 @@ static fbInfoElementSpec_t smtp_log_int_spec[] = {
     { "smtpFrom",                           0, 0 },
     { "smtpSubject",                        0, 0 },
 #if 1
-    { "basicList",                        0, 0 },
+    { "basicList",                          0, 0 },
 #else
     { "smtpTo",                        0, 0 },
 #endif
@@ -313,12 +313,13 @@ static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
         } else {
             rec.smtpSubject.len = 0;
         }
+        char *to_line = NULL;
         if (smtp_state->to_line != NULL) {
 #if 1
             fbVarfield_t *myVarfield  = NULL;
             char *savep;
             char *p;
-            char *to_line = strdup(smtp_state->to_line);
+            to_line = strdup(smtp_state->to_line);
             int total = 1;
             p = strtok_r(to_line, ",", &savep);
             myVarfield = (fbVarfield_t*)fbBasicListInit(&(rec.smtpTo), 0, 
@@ -326,14 +327,16 @@ static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
             myVarfield->buf = p;
             myVarfield->len = strlen(p);
             SCLogInfo("TO: \"%s\" (%d)", myVarfield->buf, myVarfield->len);
+#if 1
             while ((p = strtok_r(NULL, ",", &savep)) != NULL) {
                 myVarfield = (fbVarfield_t*)fbBasicListAddNewElements(&(rec.smtpTo), 1);
                 myVarfield[total].buf = p;
                 myVarfield[total].len = strlen(p);
                 ++total;
             }
-            SCLogInfo("SMTP TO: field count %d", total);
-            free(to_line);
+#endif
+            //SCLogInfo("SMTP TO: field count %d", total);
+            //free(to_line);
 #else
             rec.smtpTo.buf = (uint8_t *)smtp_state->to_line;
             rec.smtpTo.len = strlen(smtp_state->to_line);
@@ -362,6 +365,8 @@ static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
         }
 
         //SCLogInfo("Appending IPFIX record to log");
+        fbVarfield_t *f = (fbVarfield_t*)fbBasicListGetDataPtr(&(rec.smtpTo));
+        SCLogInfo("Appending IPFIX to log \"%s\" (%d)", f->buf, f->len);
         /* Now append the record to the buffer */
         if (!fBufAppend(slog->ipfix_ctx->fbuf, (uint8_t *)&rec, sizeof(rec), &err)) {
             //SCMutexUnlock(&aft->httplog_ctx->mutex);
@@ -369,6 +374,7 @@ static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data, P
         }
 
         SCMutexUnlock(&slog->ipfix_ctx->mutex);
+        if (to_line) free(to_line);
 
         if (AppLayerTransactionUpdateLogId(ALPROTO_SMTP, p->flow) == 1) {
             if (smtp_state->to_line != NULL) free(smtp_state->to_line);
