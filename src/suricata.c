@@ -2018,8 +2018,6 @@ int main(int argc, char **argv)
     if (suri.rule_reload) {
         if (suri.sig_file != NULL)
             UtilSignalHandlerSetup(SIGUSR2, SignalHandlerSigusr2SigFileStartup);
-        else if (suri.delayed_detect)
-            UtilSignalHandlerSetup(SIGUSR2, SignalHandlerSigusr2DelayedDetect);
         else
             UtilSignalHandlerSetup(SIGUSR2, SignalHandlerSigusr2Idle);
     } else {
@@ -2081,7 +2079,7 @@ int main(int argc, char **argv)
 
     /* registering singal handlers we use.  We register usr2 here, so that one
      * can't call it during the first sig load phase */
-    if (suri.sig_file == NULL && suri.rule_reload == 1)
+    if (suri.sig_file == NULL && suri.rule_reload == 1 && suri.delayed_detect == 0)
         UtilSignalHandlerSetup(SIGUSR2, SignalHandlerSigusr2);
 
     SCAsn1LoadConfig();
@@ -2158,7 +2156,7 @@ int main(int argc, char **argv)
             if (suri.sig_file != NULL)
                 UtilSignalHandlerSetup(SIGUSR2, SignalHandlerSigusr2SigFileStartup);
             else
-                UtilSignalHandlerSetup(SIGUSR2, SignalHandlerSigusr2Idle);
+                UtilSignalHandlerSetup(SIGUSR2, SignalHandlerSigusr2);
         }
         SCLogNotice("Signature(s) loaded, Detect thread(s) activated.");
     }
