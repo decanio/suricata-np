@@ -701,13 +701,11 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
 
                 struct netmap_slot *slot = &ring->slot[cur];
 
-                uint8_t *pkt = NETMAP_BUF(ring, slot->buf_idx);
+                uint8_t *pkt = (uint8_t *)NETMAP_BUF(ring, slot->buf_idx);
                 int len = slot->len;
                 ptv->pkts++;
                 ptv->bytes += len;
-                SCLogDebug("Got a packet pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
-                           len, p, pkt);
-#define DEBUG_PACKET_DUMPER
+//#define DEBUG_PACKET_DUMPER
 #ifdef DEBUG_PACKET_DUMPER
                 printf("Got a packet %s pktlen: %" PRIu32 " (pkt %p, pkt data %p)\n",
                            ptv->iface, len, p, pkt);
