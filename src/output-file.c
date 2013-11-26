@@ -171,10 +171,17 @@ static void LogFileWriteJsonRecord(AlertJsonThread /*LogFileLogThread*/ *aft, Pa
         return;
     }
 
-    json_object_set_new(fjs, "http_uri", LogFileMetaGetUri(p, ff));
-    json_object_set_new(fjs, "http_host", LogFileMetaGetHost(p, ff));
-    json_object_set_new(fjs, "http_referer", LogFileMetaGetReferer(p, ff));
-    json_object_set_new(fjs, "http_user_agent", LogFileMetaGetUserAgent(p, ff));
+    json_t *hjs = json_object();
+    if (unlikely(hjs == NULL)) {
+        json_decref(fjs);
+        json_decref(js);
+        return;
+    }
+
+    json_object_set_new(hjs, "uri", LogFileMetaGetUri(p, ff));
+    json_object_set_new(hjs, "host", LogFileMetaGetHost(p, ff));
+    json_object_set_new(hjs, "referer", LogFileMetaGetReferer(p, ff));
+    json_object_set_new(hjs, "user_agent", LogFileMetaGetUserAgent(p, ff));
     char *s = SCStrndup((char *)ff->name, ff->name_len);
     json_object_set_new(fjs, "filename", json_string(s));
     if (s != NULL)
@@ -214,6 +221,7 @@ static void LogFileWriteJsonRecord(AlertJsonThread /*LogFileLogThread*/ *aft, Pa
     json_object_set_new(fjs, "stored",
                         (ff->flags & FILE_STORED) ? json_true() : json_false());
     json_object_set_new(fjs, "size", json_integer(ff->size));
+    json_object_set_new(fjs, "http", hjs);
 
     json_object_set_new(js, "file", fjs);
     OutputJSON(js, aft, &aft->files_cnt);

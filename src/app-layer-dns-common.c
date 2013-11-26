@@ -421,6 +421,34 @@ void DNSStoreAnswerInState(DNSState *dns_state, const int rtype, const uint8_t *
     dns_state->unreplied_cnt = 0;
 }
 
+void DNSCreateTypeString(uint16_t type, char *str, size_t str_size) {
+    if (type == DNS_RECORD_TYPE_A) {
+        snprintf(str, str_size, "A");
+    } else if (type == DNS_RECORD_TYPE_NS) {
+        snprintf(str, str_size, "NS");
+    } else if (type == DNS_RECORD_TYPE_AAAA) {
+        snprintf(str, str_size, "AAAA");
+    } else if (type == DNS_RECORD_TYPE_TXT) {
+        snprintf(str, str_size, "TXT");
+    } else if (type == DNS_RECORD_TYPE_CNAME) {
+        snprintf(str, str_size, "CNAME");
+    } else if (type == DNS_RECORD_TYPE_SOA) {
+        snprintf(str, str_size, "SOA");
+    } else if (type == DNS_RECORD_TYPE_MX) {
+        snprintf(str, str_size, "MX");
+    } else if (type == DNS_RECORD_TYPE_PTR) {
+        snprintf(str, str_size, "PTR");
+    } else if (type == DNS_RECORD_TYPE_ANY) {
+        snprintf(str, str_size, "ANY");
+    } else if (type == DNS_RECORD_TYPE_TKEY) {
+        snprintf(str, str_size, "TKEY");
+    } else if (type == DNS_RECORD_TYPE_TSIG) {
+        snprintf(str, str_size, "TSIG");
+    } else {
+        snprintf(str, str_size, "%04x/%u", type, type);
+    }
+}
+
 /** \internal
  *  \brief get domain name from dns packet
  *
