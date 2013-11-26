@@ -1,4 +1,4 @@
-/* Copyright (C) 2011,2012 Open Information Security Foundation
+/* Copyright (C) 2011,2013 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -201,7 +201,7 @@ void *ParseNetmapConfig(const char *iface)
                     aconf->out_iface);
             aconf->copy_mode = NETMAP_COPY_MODE_IPS;
         } else if (strcmp(copymodestr, "tap") == 0) {
-            SCLogInfo("AF_PACKET TAP mode activated %s->%s",
+            SCLogInfo("Netmap TAP mode activated %s->%s",
                     iface,
                     aconf->out_iface);
             aconf->copy_mode = NETMAP_COPY_MODE_TAP;

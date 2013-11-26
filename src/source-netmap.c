@@ -28,7 +28,7 @@
  *
  * Netmap acquisition support
  * 
- * Derrived in part from source code written by Luigi Rizzo.
+ * Derived in part from source code written by Luigi Rizzo.
  *
  */
 
@@ -124,7 +124,7 @@ void TmModuleDecodeNetmapRegister (void) {
  */
 TmEcode NoNetmapSupportExit(ThreadVars *tv, void *initdata, void **data)
 {
-    SCLogError(SC_ERR_NO_AF_PACKET,"Error creating thread %s: you do not have "
+    SCLogError(SC_ERR_NO_NETMAP,"Error creating thread %s: you do not have "
                "support for Netmap enabled, please recompile "
                "with --enable-netmap", tv->name);
     exit(EXIT_FAILURE);
@@ -141,23 +141,6 @@ TmEcode NoNetmapSupportExit(ThreadVars *tv, void *initdata, void **data)
 #define NETMAP_DOWN_COUNTER_INTERVAL 40
 
 #define POLL_TIMEOUT 100
-
-#ifndef TP_STATUS_USER_BUSY
-/* for new use latest bit available in tp_status */
-#define TP_STATUS_USER_BUSY (1 << 31)
-#endif
-
-enum {
-    NETMAP_READ_OK,
-    NETMAP_READ_FAILURE,
-    NETMAP_FAILURE,
-    NETMAP_KERNEL_DROP,
-};
-
-union thdr {
-    struct tpacket2_hdr *h2;
-    void *raw;
-};
 
 /**
  * \brief Structure to hold thread specific variables.
@@ -203,9 +186,6 @@ typedef struct NetmapThreadVars_
     int flags;
 
     int thread_no;
-
-    int cluster_id;
-    int cluster_type;
 
     int threads;
     int copy_mode;
@@ -641,10 +621,6 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
 
     fds.fd = ptv->rx_fd;
     fds.events = POLLIN;
-#ifdef NOTYET
-    if (ptv->copy_mode != NETMAP_COPY_MODE_NONE)
-        fds.events |= POLLOUT;
-#endif
 
     while (1) {
         /* Start by checking the state of our interface */
@@ -691,12 +667,7 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
                 SCLogDebug("ring[%d]->avail: %" PRIu32 "", i, ring->avail);
             }
             u_int cur = ring->cur;
-#if 0
-            int avail = ring->avail;
-            for (avail = ring->avail; avail > 0; avail--) {
-#else
             for ( ; ring->avail > 0 ; ring->avail-- ) {
-#endif
                 p = PacketGetFromQueueOrAlloc();
                 if (unlikely(p == NULL)) {
                     break;
@@ -723,10 +694,9 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
 
                 p->datalink = ptv->datalink;
                 if (likely(PacketSetData(p, pkt, len) != -1)) {
-                    /* TBD: need to do something more efficient than this */
-                    gettimeofday(&p->ts, NULL);
                     SCLogDebug("pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
                                GET_PKT_LEN(p), p, GET_PKT_DATA(p));
+                    p->ts = ring->ts;
                     p->netmap_v.rx = ring;
                     p->netmap_v.rx_ring = i;
                     p->netmap_v.rx_slot = cur;
