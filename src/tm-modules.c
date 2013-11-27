@@ -156,6 +156,26 @@ int LogFileFreeCtx(LogFileCtx *lf_ctx)
     SCReturnInt(1);
 }
 
+#ifdef HAVE_IPFIX
+
+/** \brief LogFileNewCtx() Get a new LogFileCtx
+ *  \retval LogFileCtx * pointer if succesful, NULL if error
+ *  */
+LogIPFIXCtx *LogIPFIXNewCtx()
+{
+    LogIPFIXCtx* ipfix_ctx;
+    ipfix_ctx=(LogIPFIXCtx*)SCMalloc(sizeof(LogIPFIXCtx));
+
+    if(ipfix_ctx == NULL)
+        return NULL;
+    memset(ipfix_ctx, 0, sizeof(LogIPFIXCtx));
+
+    SCMutexInit(&ipfix_ctx->mutex,NULL);
+
+    return ipfix_ctx;
+}
+#endif
+
 void TmModuleRunInit(void) {
     TmModule *t;
     uint16_t i;

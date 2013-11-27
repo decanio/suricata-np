@@ -213,9 +213,11 @@ log-pcap.c log-pcap.h \
 log-tlslog.c log-tlslog.h \
 output.c output.h \
 output-dnslog.c output-dnslog.h \
+output-dns-ipfix.c output-dns-ipfix.h \
 output-droplog.c output-droplog.h \
 output-file.c output-file.h \
 output-httplog.c output-httplog.h \
+output-ipfix.c output-ipfix.h \
 output-json.c output-json.h \
 output-tlslog.c output-tlslog.h \
 packet-queue.c packet-queue.h \
@@ -300,6 +302,7 @@ util-hash-lookup3.c util-hash-lookup3.h \
 util-host-os-info.c util-host-os-info.h \
 util-ioctl.h util-ioctl.c \
 util-ip.h util-ip.c \
+util-ipfix.h util-ipfix.c \
 util-logopenfile.h util-logopenfile.c \
 util-magic.c util-magic.h \
 util-memcmp.c util-memcmp.h \

@@ -89,6 +89,34 @@ typedef struct LogFileCtx_ {
 #define LOGFILE_HEADER_WRITTEN 0x01
 #define LOGFILE_ALERTS_PRINTED 0x02
 
+#ifdef HAVE_IPFIX
+
+#include <fixbuf/public.h>
+#include <glib.h>
+
+/** Global structure for IPFIX Output Context */
+typedef struct LogIPFIXCtx_ {
+    /** It will be locked if the log/alert
+     * record cannot be written to the file in one call */
+    SCMutex mutex;
+
+    /* libfixbuf stuff */
+    fbInfoModel_t *fb_model;
+    fbExporter_t *exporter;
+    fbTemplate_t *int_tmpl;
+    fbTemplate_t *ext_tmpl;
+    fbSession_t *session;
+    fBuf_t *fbuf;
+
+    /* Alerts on the module (not on the file) */
+    uint64_t alerts;
+    /* flag to avoid multiple threads printing the same stats */
+    uint8_t flags;
+} LogIPFIXCtx;
+
+LogIPFIXCtx *LogIPFIXNewCtx();
+#endif
+
 /**
  * Structure that output modules use to maintain private data.
  */

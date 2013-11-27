@@ -87,6 +87,7 @@
 #include "log-file.h"
 #include "log-filestore.h"
 
+#include "output-ipfix.h"
 #include "output-json.h"
 
 #include "stream-tcp.h"
@@ -786,6 +787,8 @@ void RegisterAllModules()
     TmModuleAlertPcapInfoRegister();
     /* drop log */
     TmModuleLogDropLogRegister();
+    /* IPFIX log */
+    TmModuleOutputIPFIXRegister();
     /* json log */
     TmModuleOutputJsonRegister();
     /* http log */

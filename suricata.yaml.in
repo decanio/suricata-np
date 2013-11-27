@@ -105,6 +105,23 @@ outputs:
         #- drop
         #- ssh
 
+  # "United" event log in IPFIX format
+  - ipfix-log:
+      enabled: no
+      type: collector #file|collector|unix_dgram|unix_stream
+      #filename: ipfix.log
+      transport: udp
+      host: 127.0.0.1
+      ipfix-port: 4739
+      types:
+        - dns
+        - http:
+            extended: yes     # enable this for extended logging information
+        - smtp
+        - tls:
+            extended: yes     # enable this for extended logging information
+        #- drop
+
   # alert output for use with Barnyard2
   - unified2-alert:
       enabled: yes
