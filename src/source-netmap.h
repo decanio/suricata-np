@@ -48,8 +48,8 @@ typedef struct NetmapIfaceConfig_
     /* promisc mode */
     int promisc;
     /* misc use flags including ring mode */
-    int flags;
-    int copy_mode;
+    uint16_t flags;
+    uint16_t copy_mode;
     ChecksumValidationMode checksum_mode;
     char *bpf_filter;
     char *out_iface;
@@ -84,7 +84,8 @@ typedef struct NetmapPacketVars_
     struct netmap_ring *tx;    /* ring packet to be txed to */
     int rx_ring;               /* ring packet rxed from */
     int rx_slot;               /* index packets rxed from */
-    int copy_mode;
+    uint16_t copy_mode;
+    uint16_t flags;
     NetmapPeer *peer; /**< Sending peer for IPS/TAP mode */
     /** Pointer to ::NetmapPeer used for capture. Field is used to be able
      * to do reference counting.

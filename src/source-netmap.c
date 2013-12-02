@@ -286,7 +286,7 @@ void NetmapPeerClean(NetmapPeer *peer)
     SCFree(peer);
 }
 
-NetmapPeersList peerslist;
+static NetmapPeersList peerslist;
 
 
 /**
@@ -446,21 +446,6 @@ void TmModuleDecodeNetmapRegister (void) {
 
 static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose);
 
-static inline void NetmapDumpCounters(NetmapThreadVars *ptv)
-{
-#ifdef PACKET_STATISTICS
-    struct tpacket_stats kstats;
-    socklen_t len = sizeof (struct tpacket_stats);
-    if (getsockopt(ptv->socket, SOL_PACKET, PACKET_STATISTICS,
-                &kstats, &len) > -1) {
-        SCLogDebug("(%s) Kernel: Packets %" PRIu32 ", dropped %" PRIu32 "",
-                ptv->tv->name,
-                kstats.tp_packets, kstats.tp_drops);
-        (void) SC_ATOMIC_ADD(ptv->livedev->drop, kstats.tp_drops);
-    }
-#endif
-}
-
 /* Atomic increment a 32 bit counter.
  * These operate on resources shared with the Netmap driver
  * so these couldn't use the usual primitives in util-atomic.h
@@ -535,14 +520,13 @@ void NetmapReleaseDataFromRing(Packet *p)
 {
     struct netmap_ring *rxring = p->netmap_v.rx;
 
-    /* Need to be in copy mode and need to detect early release
-       where Ethernet header could not be set (and pseudo packet) */
-    if ((p->netmap_v.copy_mode != NETMAP_COPY_MODE_NONE) && !PKT_IS_PSEUDOPKT(p)) {
+    if ((p->netmap_v.copy_mode != NETMAP_COPY_MODE_NONE) &&
+        !PKT_IS_PSEUDOPKT(p)) {
         NetmapWritePacket(p);
     }
-    /* TBD: need to make this work across threads */
-    //rxring->reserved--;
-    NetmapAtomicDecr(&rxring->reserved);
+    if ((p->netmap_v.flags & NETMAP_WORKERS_MODE) == 0) {
+        NetmapAtomicDecr(&rxring->reserved);
+    }
 }
 
 void NetmapReleasePacket(Packet *p)
@@ -561,31 +545,6 @@ void NetmapSwitchState(NetmapThreadVars *ptv, int state)
 }
 
 /**
- * \brief Try to reopen socket
- *
- * \retval 0 in case of success, negative if error occurs or a condition
- * is not met.
- */
-static int NetmapTryReopen(NetmapThreadVars *ptv)
-{
-    int netmap_activate_r;
-
-    ptv->down_count++;
-
-    netmap_activate_r = NetmapOpen(ptv, ptv->iface, 0);
-    if (netmap_activate_r != 0) {
-        if (ptv->down_count % NETMAP_DOWN_COUNTER_INTERVAL == 0) {
-            SCLogWarning(SC_ERR_NETMAP_CREATE, "Can not open iface '%s'",
-                         ptv->iface);
-        }
-        return netmap_activate_r;
-    }
-
-    SCLogInfo("Interface '%s' is back", ptv->iface);
-    return 0;
-}
-
-/**
  *  \brief Main Netmap packet reading Loop function
  */
 TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
@@ -599,6 +558,10 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
     int r;
     u_int i;
     TmSlot *s = (TmSlot *)slot;
+//#define DEBUG_PACKET_DUMPER
+#ifdef DEBUG_PACKET_DUMPER
+    uint64_t count = 0;
+#endif
 
     ptv->slot = s->slot_next;
 
@@ -623,22 +586,6 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
     fds.events = POLLIN;
 
     while (1) {
-        /* Start by checking the state of our interface */
-        if (unlikely(ptv->netmap_state == NETMAP_STATE_DOWN)) {
-            int dbreak = 0;
-
-            do {
-                usleep(NETMAP_RECONNECT_TIMEOUT);
-                if (suricata_ctl_flags != 0) {
-                    dbreak = 1;
-                    break;
-                }
-                r = NetmapTryReopen(ptv);
-                fds.fd = ptv->socket;
-            } while (r < 0);
-            if (dbreak == 1)
-                break;
-        }
 
         /* make sure we have at least one packet in the packet pool, to prevent
          * us from alloc'ing packets at line rate */
@@ -649,12 +596,11 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
             }
         } while (packet_q_len == 0);
 
-        r = poll(&fds, 1, POLL_TIMEOUT);
-
-        if (suricata_ctl_flags != 0) {
+        if (unlikely(suricata_ctl_flags != 0)) {
             break;
         }
 
+        r = poll(&fds, 1, POLL_TIMEOUT);
         if (unlikely(r <= 0)) {
             SCPerfSyncCountersIfSignalled(tv);
             continue;
@@ -663,27 +609,28 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
         for (i = ptv->begin; i < ptv->end; i++) {
 
             struct netmap_ring *ring = NETMAP_RXRING(ptv->nifp, i);
-            if (ring->avail > 0) {
-                SCLogDebug("ring[%d]->avail: %" PRIu32 "", i, ring->avail);
-            }
-            u_int cur = ring->cur;
-            for ( ; ring->avail > 0 ; ring->avail-- ) {
+
+            while ( ring->avail > 0 ) {
+                u_int cur = ring->cur;
+
                 p = PacketGetFromQueueOrAlloc();
                 if (unlikely(p == NULL)) {
-                    break;
+                    SCLogDebug("Could not alloc Packet");
+                    ptv->errs++;
+                    goto next;
                 }
-                PKT_SET_SRC(p, PKT_SRC_WIRE);
 
                 struct netmap_slot *slot = &ring->slot[cur];
-
                 uint8_t *pkt = (uint8_t *)NETMAP_BUF(ring, slot->buf_idx);
                 int len = slot->len;
+
+                PKT_SET_SRC(p, PKT_SRC_WIRE);
+
                 ptv->pkts++;
                 ptv->bytes += len;
-//#define DEBUG_PACKET_DUMPER
 #ifdef DEBUG_PACKET_DUMPER
-                SCLogInfo("Got a packet %s pktlen: %" PRIu32 " (pkt %p, pkt data %p)\n",
-                           ptv->iface, len, p, pkt);
+                SCLogInfo("Got a packet %s:%d pktlen: %" PRIu32 " (pkt %p, pkt data %p) count: %llu\n",
+                           ptv->iface, i, len, p, pkt, ++count);
                 int j;
                 for (j = 0; j < len; j++) {
                     printf("%02x ", pkt[j]);
@@ -693,22 +640,27 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
 #endif
 
                 p->datalink = ptv->datalink;
+                /*
+                 * Do "zero copy" with packet
+                 */
                 if (likely(PacketSetData(p, pkt, len) != -1)) {
                     SCLogDebug("pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
                                GET_PKT_LEN(p), p, GET_PKT_DATA(p));
-                    p->ts = ring->ts;
                     p->netmap_v.rx = ring;
                     p->netmap_v.rx_ring = i;
                     p->netmap_v.rx_slot = cur;
                     p->ReleasePacket = NetmapReleasePacket;
                     p->netmap_v.copy_mode = ptv->copy_mode;
+                    p->netmap_v.flags = ptv->flags;
                     if (ptv->copy_mode != NETMAP_COPY_MODE_NONE) {
                         p->netmap_v.tx = NETMAP_TXRING(ptv->tx_nifp, i);
                         p->netmap_v.peer = ptv->mpeer->peer;
-                        //ring->reserved++;
                     } else {
                         p->netmap_v.peer = NULL;
                     }
+
+                    /* Timestamp */
+                    p->ts = ring->ts;
 
                     /* We only check for checksum disable */
                     if (ptv->checksum_mode == CHECKSUM_VALIDATION_DISABLE) {
@@ -735,11 +687,12 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
                     TmqhOutputPacketpool(ptv->tv, p);
                 }
                 (void) SC_ATOMIC_ADD(ptv->livedev->pkts, 1);
+                if ((p->netmap_v.flags & NETMAP_WORKERS_MODE) == 0) {
+                    NetmapAtomicIncr(&ring->reserved);
+                }
+next:
                 ring->cur = NETMAP_RING_NEXT(ring, cur);        
-                //if (ptv->copy_mode != NETMAP_COPY_MODE_NONE) {
-                //    ring->avail -= 1;
-                //}
-                NetmapAtomicDecr(&ring->reserved);
+                ring->avail--;
             }
         }
         SCPerfSyncCountersIfSignalled(tv);
@@ -1040,17 +993,8 @@ void ReceiveNetmapThreadExitStats(ThreadVars *tv, void *data) {
     SCEnter();
     NetmapThreadVars *ptv = (NetmapThreadVars *)data;
 
-#ifdef NOTYET
-#ifdef PACKET_STATISTICS
-    NetmapDumpCounters(ptv);
-    SCLogInfo("(%s) Kernel: Packets %" PRIu64 ", dropped %" PRIu64 "",
-            tv->name,
-            (uint64_t) SCPerfGetLocalCounterValue(ptv->capture_kernel_packets, tv->sc_perf_pca),
-            (uint64_t) SCPerfGetLocalCounterValue(ptv->capture_kernel_drops, tv->sc_perf_pca));
-#endif
-#endif
-
-    SCLogInfo("(%s) Packets %" PRIu32 ", bytes %" PRIu64 "", tv->name, ptv->pkts, ptv->bytes);
+    SCLogInfo("(%s) Packets %" PRIu32 ", bytes %" PRIu64 ", drops %" PRIu32 "",
+              tv->name, ptv->pkts, ptv->bytes, ptv->errs);
 }
 
 /**
