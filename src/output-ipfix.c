@@ -50,6 +50,7 @@
 #include "output.h"
 #include "output-dns-ipfix.h"
 #include "output-http-ipfix.h"
+#include "output-tls-ipfix.h"
 #include "output-ipfix.h"
 
 #include "util-error.h"
@@ -188,9 +189,7 @@ TmEcode OutputIPFIX (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, Pac
     }
 
     if (output_flags & OUTPUT_TLS) {
-#ifdef NOTYET
-        OutputTlsLog(tv, p, data);
-#endif
+        OutputTlsIPFIXLog(tv, p, data);
     }
 
     return TM_ECODE_OK;
@@ -382,16 +381,12 @@ OutputCtx *OutputIPFIXInitCtx(ConfNode *conf)
                     output_flags |= OUTPUT_HTTP;
                     continue;
                 }
-#ifdef NOTYET
                 if (strcmp(output->val, "tls") == 0) {
                     SCLogDebug("Enabling TLS output");
-                    ConfNode *child = ConfNodeLookupChild(output, "tls"); 
-                    ofix_ctx->tls_ctx = OutputTlsLogInit(child);
                     AppLayerRegisterLogger(ALPROTO_TLS);
                     output_flags |= OUTPUT_TLS;
                     continue;
                 }
-#endif
             }
         }
 
@@ -436,9 +431,7 @@ OutputCtx *OutputIPFIXInitCtx(ConfNode *conf)
             }
 
             if (output_flags & OUTPUT_TLS) {
-#ifdef NOTYET
                 OutputTlsSetTemplates(ipfix_ctx);
-#endif
             }
         }
     }
