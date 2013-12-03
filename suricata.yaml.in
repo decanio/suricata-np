@@ -118,9 +118,7 @@ outputs:
         - http:
             extended: yes     # enable this for extended logging information
         - smtp
-        - tls:
-            extended: yes     # enable this for extended logging information
-        #- drop
+        - tls
 
   # alert output for use with Barnyard2
   - unified2-alert:
