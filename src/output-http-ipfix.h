@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2011 Open Information Security Foundation
+/* Copyright (C) 2007-2013 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -21,19 +21,12 @@
  * \author Tom DeCanio <td@npulsetech.com>
  */
 
-#ifndef __UTIL_IPFIX_H__
-#define __UTIL_IPFIX_H__
+#ifndef __OUTPUT_HTTP_IPFIX_H__
+#define __OUTPUT_HTTP_IPFIX_H__
 
-#include "conf.h"            /* ConfNode   */
-#include "tm-modules.h"      /* LogFileCtx */
+TmEcode OutputHttpIPFIXLog(ThreadVars *tv, Packet *p, void *data);
+OutputCtx *OutputHttpIPFIXLogInit(ConfNode *);
+void OutputHttpSetTemplates(LogIPFIXCtx *ipfix_ctx);
+OutputCtx *HttpIPFIXInitCtx(ConfNode *);
 
-#define SURI_DNS_BASE_TID     0x3200
-#define SURI_HTTP_BASE_TID    0x3300
-
-/* Special dimensions */
-#define SURI_IP4		0x0001
-#define SURI_IP6		0x0002
-
-int SCConfOpenIPFIX(ConfNode *conf, LogIPFIXCtx *, const char *);
-
-#endif /* __UTIL_IPFIX_H__ */
+#endif /* __OUTPUT_HTTP_IPFIX_H__ */
