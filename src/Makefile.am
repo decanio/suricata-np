@@ -217,6 +217,7 @@ output-dns-ipfix.c output-dns-ipfix.h \
 output-droplog.c output-droplog.h \
 output-file.c output-file.h \
 output-httplog.c output-httplog.h \
+output-http-ipfix.c output-http-ipfix.h \
 output-ipfix.c output-ipfix.h \
 output-json.c output-json.h \
 output-tlslog.c output-tlslog.h \

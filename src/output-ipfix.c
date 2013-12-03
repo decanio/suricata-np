@@ -49,10 +49,7 @@
 
 #include "output.h"
 #include "output-dns-ipfix.h"
-#include "output-droplog.h"
-#include "output-httplog.h"
-#include "output-tlslog.h"
-#include "output-file.h"
+#include "output-http-ipfix.h"
 #include "output-ipfix.h"
 
 #include "util-error.h"
@@ -187,9 +184,7 @@ TmEcode OutputIPFIX (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, Pac
     }
 
     if (output_flags & OUTPUT_HTTP) {
-#ifdef NOTYET
-        OutputHttpLog(tv, p, data);
-#endif
+        OutputHttpIPFIXLog(tv, p, data);
     }
 
     if (output_flags & OUTPUT_TLS) {
@@ -351,11 +346,13 @@ OutputCtx *OutputIPFIXInitCtx(ConfNode *conf)
              * registration capability
              */
             TAILQ_FOREACH(output, &outputs->head, next) {
+#ifdef NOTYET
                 if (strcmp(output->val, "alert") == 0) {
                     SCLogDebug("Enabling alert output");
                     output_flags |= OUTPUT_ALERTS;
                     continue;
                 }
+#endif
                 if (strcmp(output->val, "dns") == 0) {
                     SCLogDebug("Enabling DNS output");
                     AppLayerRegisterLogger(ALPROTO_DNS_UDP);
@@ -363,6 +360,7 @@ OutputCtx *OutputIPFIXInitCtx(ConfNode *conf)
                     output_flags |= OUTPUT_DNS;
                     continue;
                 }
+#ifdef NOTYET
                 if (strcmp(output->val, "drop") == 0) {
                     SCLogDebug("Enabling drop output");
                     output_flags |= OUTPUT_DROP;
@@ -375,14 +373,16 @@ OutputCtx *OutputIPFIXInitCtx(ConfNode *conf)
                     output_flags |= OUTPUT_FILES;
                     continue;
                 }
+#endif
                 if (strcmp(output->val, "http") == 0) {
                     SCLogDebug("Enabling HTTP output");
                     ConfNode *child = ConfNodeLookupChild(output, "http"); 
-                    ofix_ctx->http_ctx = OutputHttpLogInit(child);
+                    ofix_ctx->http_ctx = OutputHttpIPFIXLogInit(child);
                     AppLayerRegisterLogger(ALPROTO_HTTP);
                     output_flags |= OUTPUT_HTTP;
                     continue;
                 }
+#ifdef NOTYET
                 if (strcmp(output->val, "tls") == 0) {
                     SCLogDebug("Enabling TLS output");
                     ConfNode *child = ConfNodeLookupChild(output, "tls"); 
@@ -391,6 +391,7 @@ OutputCtx *OutputIPFIXInitCtx(ConfNode *conf)
                     output_flags |= OUTPUT_TLS;
                     continue;
                 }
+#endif
             }
         }
 
@@ -431,9 +432,7 @@ OutputCtx *OutputIPFIXInitCtx(ConfNode *conf)
             }
 #endif
             if (output_flags & OUTPUT_HTTP) {
-#ifdef NOTYET
                 OutputHttpSetTemplates(ipfix_ctx);
-#endif
             }
 
             if (output_flags & OUTPUT_TLS) {
