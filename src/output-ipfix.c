@@ -50,6 +50,7 @@
 #include "output.h"
 #include "output-dns-ipfix.h"
 #include "output-http-ipfix.h"
+#include "output-smtp-ipfix.h"
 #include "output-tls-ipfix.h"
 #include "output-ipfix.h"
 
@@ -152,7 +153,8 @@ static enum IpfixOutput json_out = ALERT_FILE;
 #define OUTPUT_DROP   (1<<2)
 #define OUTPUT_FILES  (1<<3)
 #define OUTPUT_HTTP   (1<<4)
-#define OUTPUT_TLS    (1<<5)
+#define OUTPUT_SMTP   (1<<5)
+#define OUTPUT_TLS    (1<<6)
 
 static uint32_t output_flags = 0;
 
@@ -186,6 +188,10 @@ TmEcode OutputIPFIX (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, Pac
 
     if (output_flags & OUTPUT_HTTP) {
         OutputHttpIPFIXLog(tv, p, data);
+    }
+
+    if (output_flags & OUTPUT_SMTP) {
+        OutputSmtpIPFIXLog(tv, p, data);
     }
 
     if (output_flags & OUTPUT_TLS) {
@@ -381,6 +387,12 @@ OutputCtx *OutputIPFIXInitCtx(ConfNode *conf)
                     output_flags |= OUTPUT_HTTP;
                     continue;
                 }
+                if (strcmp(output->val, "smtp") == 0) {
+                    SCLogDebug("Enabling SMTP output");
+                    AppLayerRegisterLogger(ALPROTO_SMTP);
+                    output_flags |= OUTPUT_SMTP;
+                    continue;
+                }
                 if (strcmp(output->val, "tls") == 0) {
                     SCLogDebug("Enabling TLS output");
                     AppLayerRegisterLogger(ALPROTO_TLS);
@@ -428,6 +440,10 @@ OutputCtx *OutputIPFIXInitCtx(ConfNode *conf)
 #endif
             if (output_flags & OUTPUT_HTTP) {
                 OutputHttpSetTemplates(ipfix_ctx);
+            }
+
+            if (output_flags & OUTPUT_SMTP) {
+                OutputSmtpSetTemplates(ipfix_ctx);
             }
 
             if (output_flags & OUTPUT_TLS) {

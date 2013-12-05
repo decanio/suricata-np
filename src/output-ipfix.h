@@ -34,17 +34,16 @@ OutputCtx *OutputIPFIXInitCtx(ConfNode *);
  * Global configuration context data
  */
 typedef struct OutputIPFIXCtx_ {
-    //LogFileCtx *file_ctx;
     LogIPFIXCtx *ipfix_ctx;
     OutputCtx *drop_ctx;
     OutputCtx *files_ctx;
     OutputCtx *http_ctx;
+    OutputCtx *smtp;
     OutputCtx *tls_ctx;
 } OutputIPFIXCtx;
 
 typedef struct AlertIPFIXThread_ {
-    /** LogFileCtx has the pointer to the file and a mutex to allow multithreading */
-    //LogFileCtx* file_ctx;
+    /** LogIPFIXCtx has the pointer to the output stream and a mutex to allow multithreading */
     LogIPFIXCtx* ipfix_ctx;
 
     uint64_t alert_cnt;
@@ -52,10 +51,12 @@ typedef struct AlertIPFIXThread_ {
     uint64_t drop_cnt;
     uint64_t files_cnt;
     uint64_t http_cnt;
+    uint64_t smtp_cnt;
     uint64_t tls_cnt;
     OutputCtx *drop_ctx;
     OutputCtx *files_ctx;
     OutputCtx *http_ctx;
+    OutputCtx *smtp_ctx;
     OutputCtx *tls_ctx;
 } AlertIPFIXThread;
 

@@ -38,6 +38,25 @@ enum {
     SMTP_DECODER_EVENT_DATA_COMMAND_REJECTED,
 };
 
+#define SMTP_DATA_UNKNOWN      0
+#define SMTP_DATA_TO           1
+#define SMTP_DATA_FROM         2
+#define SMTP_DATA_CC           3
+#define SMTP_DATA_SUBJECT      4
+#define SMTP_DATA_CONTENT_DISPOSITION 5
+#define SMTP_DATA_CONTENT_TYPE 6
+#define SMTP_DATA_BODY         7
+#define SMTP_DATA_END          8
+
+#define SMTP_DATA_MULTILINE    (1<<7)
+
+#define SMTP_MAX_ATTACHMENTS   16
+
+typedef struct SMTPAttachment_ {
+    uint8_t *name;
+    uint8_t *type;
+} SMTPAttachment;
+
 typedef struct SMTPState_ {
     /* current input that is being parsed */
     uint8_t *input;
@@ -76,6 +95,22 @@ typedef struct SMTPState_ {
     uint32_t bdat_chunk_len;
     /** bdat chunk idx */
     uint32_t bdat_chunk_idx;
+
+    /** var to indicate message data state */
+    uint8_t data_state;
+    uint8_t *from_line;
+    uint8_t *to_line;
+    uint32_t to_line_len;
+    uint8_t *cc_line;
+    uint32_t cc_line_len;
+    uint8_t *subject_line;
+    uint8_t *content_type_line;
+    uint32_t content_type_line_len;
+    uint8_t *content_disp_line;
+    uint32_t content_disp_line_len;
+
+    uint32_t attachment_count;
+    SMTPAttachment attachments[SMTP_MAX_ATTACHMENTS]; 
 
     /* the request commands are store here and the reply handler uses these
      * stored command in the buffer to match the reply(ies) with the command */

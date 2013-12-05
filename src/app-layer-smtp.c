@@ -454,10 +454,223 @@ static int SMTPProcessCommandBDAT(SMTPState *state, Flow *f,
     SCReturnInt(0);
 }
 
+static void SMTPProcessAttachment(SMTPState *state, Flow *f)
+{
+    char *p;
+    if (state->attachment_count < SMTP_MAX_ATTACHMENTS) {
+        if ((state->content_disp_line != NULL) &&
+            (p = strstr(state->content_disp_line, "attachment;")) != NULL) {
+            if ((p = strstr(p, "filename=\"")) != NULL) {
+                p = &p[10];
+                char *p1 = strchrnul(p, '"');
+                *p1 = '\0';
+                /*SCLogInfo("adding attachment \"%s\"", p);*/
+                state->attachments[state->attachment_count].name = SCStrdup(p);
+                state->attachment_count++;
+            }
+        }
+    }
+    if (state->content_type_line != NULL) free(state->content_type_line);
+    if (state->content_disp_line != NULL) free(state->content_disp_line);
+    state->content_type_line = NULL;
+    state->content_disp_line = NULL;
+    state->data_state = SMTP_DATA_UNKNOWN;
+}
+
 static int SMTPProcessCommandDATA(SMTPState *state, Flow *f,
                                   AppLayerParserState *pstate)
 {
     SCEnter();
+    /*
+    char *s = strndup((char *)state->current_line, state->current_line_len);
+    SCLogInfo("Data \"%s\"", s);
+    free(s);
+    */
+
+    /*
+     * Normalize multiline bits
+     */
+    if (state->data_state & SMTP_DATA_MULTILINE) {
+        /*SCLogInfo("continuation");*/
+        uint8_t *s;
+        switch (state->data_state & ~SMTP_DATA_MULTILINE) {
+            case SMTP_DATA_TO:
+                s = SCMalloc(state->current_line_len +
+                             state->to_line_len + 1);
+                memcpy(s, state->to_line, state->to_line_len);
+                memcpy(&s[state->to_line_len],
+                       state->current_line,
+                       state->current_line_len);
+                state->to_line_len += state->current_line_len;
+                s[state->to_line_len] = '\0';
+                free(state->to_line);
+                state->to_line = s;
+                /*
+                {
+                char *s = strndup(state->to_line, state->to_line_len);
+                SCLogInfo("New TO: \"%s\"", s);
+                free(s);
+                }
+                */
+                if ((state->current_line[state->current_line_len-1] == ',') ||
+                    ((state->current_line[state->current_line_len-1] == ',') &&
+                     (state->current_line[state->current_line_len-1] == ' '))) {
+                    /*SCLogInfo("line continues")*/;
+                } else {
+                    state->data_state &= ~SMTP_DATA_MULTILINE;
+                }
+                break;
+            case SMTP_DATA_CC:
+                s = SCMalloc(state->current_line_len +
+                             state->cc_line_len + 1);
+                memcpy(s, state->cc_line, state->cc_line_len);
+                memcpy(&s[state->cc_line_len],
+                       state->current_line,
+                       state->current_line_len);
+                state->cc_line_len += state->current_line_len;
+                s[state->cc_line_len] = '\0';
+                free(state->cc_line);
+                state->cc_line = s;
+                /*
+                {
+                char *s = strndup(state->cc_line, state->cc_line_len);
+                SCLogInfo("New CC: \"%s\"", s);
+                free(s);
+                }
+                */
+                if ((state->current_line[state->current_line_len-1] == ',') ||
+                    ((state->current_line[state->current_line_len-1] == ',') &&
+                     (state->current_line[state->current_line_len-1] == ' '))) {
+                    /*SCLogInfo("line continues")*/;
+                } else {
+                    state->data_state &= ~SMTP_DATA_MULTILINE;
+                }
+                break;
+            case SMTP_DATA_CONTENT_TYPE:
+                s = SCMalloc(state->current_line_len +
+                             state->content_type_line_len + 1);
+                memcpy(s,
+                       state->content_type_line,
+                       state->content_type_line_len);
+                memcpy(&s[state->content_type_line_len],
+                       state->current_line,
+                       state->current_line_len);
+                state->content_type_line_len += state->current_line_len;
+                s[state->content_type_line_len] = '\0';
+                free(state->content_type_line);
+                state->content_type_line = s;
+                /*
+                {
+                char *s = strndup(state->content_type_line, state->content_type_line_len);
+                SCLogInfo("New CONTENT-TYPE: \"%s\"", s);
+                free(s);
+                }
+                */
+	        if (state->current_line[state->current_line_len-1] == ';') {
+                    /*SCLogInfo("line continues")*/;
+                } else {
+                    state->data_state &= ~SMTP_DATA_MULTILINE;
+                }
+                break;
+            case SMTP_DATA_CONTENT_DISPOSITION:
+                s = SCMalloc(state->current_line_len +
+                             state->content_disp_line_len + 1);
+                memcpy(s,
+                       state->content_disp_line,
+                       state->content_disp_line_len);
+                memcpy(&s[state->content_disp_line_len],
+                       state->current_line,
+                       state->current_line_len);
+                state->content_disp_line_len += state->current_line_len;
+                s[state->content_disp_line_len] = '\0';
+                free(state->content_disp_line);
+                state->content_disp_line = s;
+                /*
+                {
+                char *s = strndup(state->content_disp_line, state->content_disp_line_len);
+                SCLogInfo("New CONTENT-DISPOSITION: \"%s\"", s);
+                free(s);
+                }
+                */
+	        if (state->current_line[state->current_line_len-1] == ';') {
+                    /*SCLogInfo("line continues")*/;
+                } else {
+                    state->data_state &= ~SMTP_DATA_MULTILINE;
+                    SMTPProcessAttachment(state, f);
+                }
+                break;
+        }
+    }
+
+    if (state->current_line_len >= 6 &&
+        SCMemcmpLowercase("from:", state->current_line, 5) == 0) {
+        /*
+        char *s = strndup((char *)&state->current_line[6], state->current_line_len-6);
+        SCLogInfo("FROM: \"%s\"", s);
+        free(s);
+        */
+        state->data_state = SMTP_DATA_FROM;
+    } else if (state->current_line_len >= 4 &&
+               SCMemcmpLowercase("to:", state->current_line, 3) == 0) {
+        /*
+        char *s = strndup((char *)&state->current_line[4], state->current_line_len-4);
+        SCLogInfo("TO: \"%s\"", s);
+        free(s);
+        */
+        state->data_state = SMTP_DATA_TO;
+	if ((state->current_line[state->current_line_len-1] == ',') ||
+	    ((state->current_line[state->current_line_len-2] == ',') &&
+	     (state->current_line[state->current_line_len-1] == ' '))) {
+            /*SCLogInfo("line continues")*/;
+            state->data_state |= SMTP_DATA_MULTILINE;
+        }
+    } else if (state->current_line_len >= 4 &&
+               SCMemcmpLowercase("cc:", state->current_line, 3) == 0) {
+        /*
+        char *s = strndup((char *)&state->current_line[4], state->current_line_len-4);
+        SCLogInfo("CC: \"%s\"", s);
+        free(s);
+        */
+        state->data_state = SMTP_DATA_TO;
+	if ((state->current_line[state->current_line_len-1] == ',') ||
+	    ((state->current_line[state->current_line_len-2] == ',') &&
+	     (state->current_line[state->current_line_len-1] == ' '))) {
+            /*SCLogInfo("line continues")*/;
+            state->data_state |= SMTP_DATA_MULTILINE;
+        }
+    } else if (state->current_line_len >= 9 &&
+               SCMemcmpLowercase("subject:", state->current_line, 8) == 0) {
+        /*
+        char *s = strndup((char *)&state->current_line[9], state->current_line_len-9);
+        SCLogInfo("SUBJECT: \"%s\"", s);
+        free(s);
+        */
+        state->data_state = SMTP_DATA_SUBJECT;
+    } else if (state->current_line_len >= 21 &&
+               SCMemcmpLowercase("content-disposition:", state->current_line, 20) == 0) {
+        /*
+        char *s = strndup((char *)&state->current_line[21], state->current_line_len-21);
+        SCLogInfo("CONTENT-DISPOSITION: \"%s\"", s);
+        free(s);
+        */
+        state->data_state = SMTP_DATA_CONTENT_DISPOSITION;
+	if (state->current_line[state->current_line_len-1] == ';') {
+            /*SCLogInfo("line continues")*/;
+            state->data_state |= SMTP_DATA_MULTILINE;
+        }
+    } else if (state->current_line_len >= 14 &&
+               SCMemcmpLowercase("content-type:", state->current_line, 13) == 0) {
+        /*
+        char *s = strndup((char *)&state->current_line[14], state->current_line_len-14);
+        SCLogInfo("CONTENT-TYPE: \"%s\"", s);
+        free(s);
+        */
+        state->data_state = SMTP_DATA_CONTENT_TYPE;
+	if (state->current_line[state->current_line_len-1] == ';') {
+            /*SCLogInfo("line continues")*/;
+            state->data_state |= SMTP_DATA_MULTILINE;
+        }
+    }
 
     if (!(state->parser_state & SMTP_PARSER_STATE_COMMAND_DATA_MODE)) {
         /* looks like are still waiting for a confirmination from the server */
@@ -466,11 +679,55 @@ static int SMTPProcessCommandDATA(SMTPState *state, Flow *f,
 
     if (state->current_line_len == 1 && state->current_line[0] == '.') {
         state->parser_state &= ~SMTP_PARSER_STATE_COMMAND_DATA_MODE;
+        state->data_state = SMTP_DATA_END;
         /* kinda like a hack.  The mail sent in DATA mode, would be
          * acknowledged with a reply.  We insert a dummy command to
          * the command buffer to be used by the reply handler to match
          * the reply received */
         SMTPInsertCommandIntoCommandBuffer(SMTP_COMMAND_DATA_MODE, state, f);
+    }
+
+    switch (state->data_state & ~SMTP_DATA_MULTILINE) {
+        case SMTP_DATA_TO:
+            if (!state->to_line) {
+                state->to_line = (uint8_t *)strndup((char *)&state->current_line[4], state->current_line_len-4);
+                state->to_line_len = state->current_line_len - 4;
+            }
+            break;
+        case SMTP_DATA_CC:
+            if (!state->cc_line) {
+                state->cc_line = (uint8_t *)strndup((char *)&state->current_line[4], state->current_line_len-4);
+                state->cc_line_len = state->current_line_len - 4;
+            }
+            break;
+        case SMTP_DATA_FROM:
+            if (!state->from_line) {
+                state->from_line = (uint8_t *)strndup((char *)&state->current_line[6], state->current_line_len-6);
+            }
+            break;
+        case SMTP_DATA_SUBJECT:
+            if (!state->subject_line) {
+                state->subject_line = (uint8_t *)strndup((char *)&state->current_line[9], state->current_line_len-9);
+            }
+            break;
+        case SMTP_DATA_CONTENT_TYPE:
+            if (!state->content_type_line) {
+                state->content_type_line = (uint8_t *)strndup((char *)&state->current_line[14], state->current_line_len-14);
+                state->content_type_line_len = state->current_line_len - 14;
+            }
+            break;
+        case SMTP_DATA_CONTENT_DISPOSITION:
+            if (!state->content_disp_line) {
+                state->content_disp_line = (uint8_t *)strndup((char *)&state->current_line[21], state->current_line_len-21);
+                state->content_disp_line_len = state->current_line_len - 21;
+            }
+            if ((state->data_state & SMTP_DATA_MULTILINE) == 0) {
+                SMTPProcessAttachment(state, f);
+            }
+            break;
+        case SMTP_DATA_UNKNOWN:
+        case SMTP_DATA_BODY:
+            break;
     }
 
     return 0;
@@ -623,6 +880,12 @@ static int SMTPProcessRequest(SMTPState *state, Flow *f,
 {
     SCEnter();
 
+    /*
+    char *s = strndup((char *)state->current_line, state->current_line_len);
+    SCLogInfo("Request \"%s\"", s);
+    free(s);
+    */
+
     if (!(state->parser_state & SMTP_PARSER_STATE_FIRST_REPLY_SEEN)) {
         AppLayerDecoderEventsSetEvent(f, SMTP_DECODER_EVENT_NO_SERVER_WELCOME_MESSAGE);
     }
@@ -638,6 +901,7 @@ static int SMTPProcessRequest(SMTPState *state, Flow *f,
         } else if (state->current_line_len >= 4 &&
                    SCMemcmpLowercase("data", state->current_line, 4) == 0) {
             state->current_command = SMTP_COMMAND_DATA;
+            state->data_state = SMTP_DATA_UNKNOWN;
         } else if (state->current_line_len >= 4 &&
                    SCMemcmpLowercase("bdat", state->current_line, 4) == 0) {
             r = SMTPParseCommandBDAT(state);
