@@ -220,6 +220,7 @@ output-httplog.c output-httplog.h \
 output-http-ipfix.c output-http-ipfix.h \
 output-ipfix.c output-ipfix.h \
 output-json.c output-json.h \
+output-smtp-ipfix.c output-smtp-ipfix.h \
 output-tlslog.c output-tlslog.h \
 output-tls-ipfix.c output-tls-ipfix.h \
 packet-queue.c packet-queue.h \
