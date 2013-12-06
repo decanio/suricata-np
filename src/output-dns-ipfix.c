@@ -236,7 +236,7 @@ static void LogAnswer(AlertIPFIXThread *aft, DnsLog_t *rec, uint16_t tid,
         }
         rec->dnsQRType = entry->type;
         if (entry->type == DNS_RECORD_TYPE_A) {
-            rec->dnsIPv4Address = htonl(((uint8_t *)entry + sizeof(DNSAnswerEntry) + entry->fqdn_len));
+            rec->dnsIPv4Address = htonl(*(uint32_t *)((uint8_t *)entry + sizeof(DNSAnswerEntry) + entry->fqdn_len));
         }
     }
 
@@ -271,11 +271,8 @@ static TmEcode LogDnsLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
     SCEnter();
 
     DnsLog_t rec;
-    GError *err= NULL;
     uint16_t tid;
     AlertIPFIXThread *aft = (AlertIPFIXThread *)data;
-    LogIPFIXCtx *ipfix_ctx = aft->ipfix_ctx;
-    TmEcode rc = TM_ECODE_OK;
 
     /* no flow, no htp state */
     if (p->flow == NULL) {
@@ -344,7 +341,7 @@ static TmEcode LogDnsLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
         rec.sourceTransportPort = p->dp;
         rec.destinationTransportPort = p->sp;
     }
-    rec.protocolIdentifier = IPV4_GET_IPPROTO(p);
+    rec.protocolIdentifier = IP_GET_IPPROTO(p);
 
 #if QUERY
     if (PKT_IS_TOSERVER(p)) {
