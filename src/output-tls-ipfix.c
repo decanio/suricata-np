@@ -67,6 +67,7 @@ static fbInfoElementSpec_t tls_log_int_spec[] = {
     { "sourceTransportPort",                0, 0 },
     { "destinationTransportPort",           0, 0 },
     { "protocolIdentifier",                 0, 0 },
+    { "npulseAppLabel",                     0, 0 },
     { "tlsVersion",                         0, 0 },
     FB_IESPEC_NULL
 };
@@ -81,6 +82,7 @@ static fbInfoElementSpec_t tls_log_ext_spec[] = {
     { "sourceTransportPort",                0, 0 },
     { "destinationTransportPort",           0, 0 },
     { "protocolIdentifier",                 0, 0 },
+    { "npulseAppLabel",                     0, 0 },
     /* tls info */
     { "tlsSubject",                         0, 0 },
     { "tlsIssuerDn",                        0, 0 },
@@ -106,6 +108,7 @@ typedef struct TlsLog_st {
     uint16_t     sourceTransportPort;
     uint16_t     destinationTransportPort;
     uint8_t      protocolIdentifier;
+    uint16_t     npulseAppLabel;
     uint16_t     tlsVersion;
 } TlsLog_t;
 #pragma pack(pop)
@@ -191,6 +194,7 @@ static int GetIPInformation(Packet *p, TlsLog_t *rec, uint16_t *tid, int ipproto
         rec->destinationTransportPort = p->sp;
     }
     rec->protocolIdentifier = IPV4_GET_IPPROTO(p);
+    rec->npulseAppLabel = 443;
     return 1;
 }
 

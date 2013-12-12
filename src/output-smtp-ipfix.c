@@ -59,7 +59,7 @@ static fbInfoElementSpec_t smtp_log_int_spec[] = {
 #if 1
     { "basicList",                          0, 0 },
 #else
-    { "smtpTo",                        0, 0 },
+    { "smtpTo",                             0, 0 },
 #endif
     /* 5-tuple */
     { "sourceIPv6Address",                  0, 0 },
@@ -69,6 +69,7 @@ static fbInfoElementSpec_t smtp_log_int_spec[] = {
     { "sourceTransportPort",                0, 0 },
     { "destinationTransportPort",           0, 0 },
     { "protocolIdentifier",                 0, 0 },
+    { "npulseAppLabel",                     0, 0 },
     FB_IESPEC_NULL
 };
 
@@ -88,13 +89,14 @@ static fbInfoElementSpec_t smtp_log_ext_spec[] = {
     { "sourceTransportPort",                0, 0 },
     { "destinationTransportPort",           0, 0 },
     { "protocolIdentifier",                 0, 0 },
+    { "npulseAppLabel",                     0, 0 },
     /* smtp info */
     { "smtpFrom",                           0, 0 },
     { "smtpSubject",                        0, 0 },
 #if 1
-    { "basicList",                        0, 0 },
+    { "basicList",                          0, 0 },
 #else
-    { "smtpTo",                        0, 0 },
+    { "smtpTo",                             0, 0 },
 #endif
     FB_IESPEC_NULL
 };
@@ -120,6 +122,7 @@ typedef struct SmtpLog_st {
     uint16_t     sourceTransportPort;
     uint16_t     destinationTransportPort;
     uint8_t      protocolIdentifier;
+    uint16_t     npulseAppLabel;
 } SmtpLog_t;
 #pragma pack(pop)
 
@@ -233,6 +236,7 @@ static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
         rec.destinationTransportPort = p->sp;
     }
     rec.protocolIdentifier = IPV4_GET_IPPROTO(p);
+    rec.npulseAppLabel = 25;
 
     if (smtp_state->data_state == SMTP_DATA_END) {
         /* 

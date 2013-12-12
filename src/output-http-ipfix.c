@@ -82,6 +82,7 @@ static fbInfoElementSpec_t http_log_int_spec[] = {
     { "sourceTransportPort",                0, 0 },
     { "destinationTransportPort",           0, 0 },
     { "protocolIdentifier",                 0, 0 },
+    { "npulseAppLabel",                     0, 0 },
     { "paddingOctets",                      7, 1 },
     FB_IESPEC_NULL
 };
@@ -97,6 +98,7 @@ static fbInfoElementSpec_t http_log_ext_spec[] = {
     { "sourceTransportPort",                0, 0 },
     { "destinationTransportPort",           0, 0 },
     { "protocolIdentifier",                 0, 0 },
+    { "npulseAppLabel",                     0, 0 },
     /* http info */
     { "httpHost",                           0, 0 },
     { "httpGet",                            0, 0 },
@@ -131,6 +133,7 @@ typedef struct HttpLog_st {
     uint16_t     sourceTransportPort;
     uint16_t     destinationTransportPort;
     uint8_t      protocolIdentifier;
+    uint16_t     npulseAppLabel;
 } HttpLog_t;
 #pragma pack(pop)
 
@@ -543,6 +546,7 @@ static TmEcode LogHttpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
         rec.destinationTransportPort = p->sp;
     }
     rec.protocolIdentifier = IPV4_GET_IPPROTO(p);
+    rec.npulseAppLabel = 80;
 
     for (; tx_id < total_txs; tx_id++)
     {
@@ -624,8 +628,10 @@ static TmEcode LogHttpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
             h_referer = htp_table_get_c(tx->request_headers, "referer");
         }
         if (h_referer != NULL) {
-            rec.referer.buf = (uint8_t *)bstr_ptr(tx->request_method);
-            rec.referer.len = bstr_len(tx->request_method);
+            //rec.referer.buf = (uint8_t *)bstr_ptr(tx->request_method);
+            //rec.referer.len = bstr_len(tx->request_method);
+            rec.referer.buf = (uint8_t *)bstr_ptr(h_referer->value);
+            rec.referer.len = bstr_len(h_referer->value);
         } else {
             rec.referer.len = 0;
         }
