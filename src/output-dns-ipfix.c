@@ -76,6 +76,7 @@ static fbInfoElementSpec_t dns_log_int_spec[] = {
     { "sourceTransportPort",                0, 0 },
     { "destinationTransportPort",           0, 0 },
     { "protocolIdentifier",                 0, 0 },
+    { "npulseAppLabel",                     0, 0 },
     { "paddingOctets",                      7, 1 },
     /* dns info */
     FB_IESPEC_NULL
@@ -92,6 +93,7 @@ static fbInfoElementSpec_t dns_log_ext_spec[] = {
     { "sourceTransportPort",                0, 0 },
     { "destinationTransportPort",           0, 0 },
     { "protocolIdentifier",                 0, 0 },
+    { "npulseAppLabel",                     0, 0 },
     /* dns info */
     { "dnsQName",                           0, 0 },
     { "dnsQRType",                          0, 0 },
@@ -120,6 +122,7 @@ typedef struct DnsLog_st {
     uint16_t     sourceTransportPort;
     uint16_t     destinationTransportPort;
     uint8_t      protocolIdentifier;
+    uint16_t     npulseAppLabel;
 } DnsLog_t;
 #pragma pack(pop)
 
@@ -342,6 +345,7 @@ static TmEcode LogDnsLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
         rec.destinationTransportPort = p->sp;
     }
     rec.protocolIdentifier = IP_GET_IPPROTO(p);
+    rec.npulseAppLabel = 53;
 
 #if QUERY
     if (PKT_IS_TOSERVER(p)) {

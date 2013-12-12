@@ -34,12 +34,17 @@
 
 #include <fixbuf/public.h>
 
-#define CERT_PEN        6871
 #define NPULSE_PEN	38885
+#if 1
+#define CERT_PEN	NPULSE_PEN /* override CERT_PEN with NPULSE_PEN */
+#else
+#define CERT_PEN        6871
+#endif
 
 static fbInfoElement_t info_elements[] = {
     /* nPulse defined IEs */
     FB_IE_INIT("alertMilliseconds", NPULSE_PEN, 40, 8, FB_IE_F_ENDIAN),
+    FB_IE_INIT("npulseAppLabel", NPULSE_PEN, 32, 2, FB_IE_F_ENDIAN),
 #if 1
     FB_IE_INIT("dnsIPv4Address", CERT_PEN, 8, 4, FB_IE_F_ENDIAN),
 #else
