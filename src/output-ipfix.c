@@ -261,6 +261,7 @@ InitExporterSession(LogIPFIXCtx *ipfix_ctx, uint32_t domain, GError **err)
     /* set observation domain */
     fbSessionSetDomain(session, domain);
 
+#if 0
     /* Create the full record template */
     if ((ipfix_ctx->int_tmpl = fbTemplateAlloc(model)) == NULL) {
         SCLogInfo("fbTemplateAlloc failed");
@@ -273,6 +274,7 @@ InitExporterSession(LogIPFIXCtx *ipfix_ctx, uint32_t domain, GError **err)
         return NULL;
     }
     SCLogInfo("ext_tmpl: %p", ipfix_ctx->ext_tmpl);
+#endif
     return session; 
 }
 
@@ -410,8 +412,10 @@ OutputCtx *OutputIPFIXInitCtx(ConfNode *conf)
             ipfix_ctx->session = InitExporterSession(ipfix_ctx, domain, &err);
             SCLogInfo("session: %p", ipfix_ctx->session);
 
+#if 0
             ipfix_ctx->fbuf = fBufAllocForExport(ipfix_ctx->session, ipfix_ctx->exporter);
             SCLogInfo("fBufAllocForExport: %p", ipfix_ctx->fbuf);
+#endif
 
 #ifdef NOTYET
             if (output_flags & OUTPUT_ALERTS) {
@@ -448,6 +452,14 @@ OutputCtx *OutputIPFIXInitCtx(ConfNode *conf)
 
             if (output_flags & OUTPUT_TLS) {
                 OutputTlsSetTemplates(ipfix_ctx);
+            }
+
+            ipfix_ctx->fbuf = fBufAllocForExport(ipfix_ctx->session, ipfix_ctx->exporter);
+            SCLogInfo("fBufAllocForExport: %p", ipfix_ctx->fbuf);
+
+            /* write templates */
+            if (!fbSessionExportTemplates(ipfix_ctx->session, &err)) {
+                SCLogInfo("fbSessionExportTemplates failed");
             }
         }
     }

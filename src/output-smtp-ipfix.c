@@ -235,7 +235,7 @@ static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
         rec.sourceTransportPort = p->dp;
         rec.destinationTransportPort = p->sp;
     }
-    rec.protocolIdentifier = IPV4_GET_IPPROTO(p);
+    rec.protocolIdentifier = IP_GET_IPPROTO(p);
     rec.npulseAppLabel = 25;
 
     if (smtp_state->data_state == SMTP_DATA_END) {
@@ -272,7 +272,7 @@ static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
             fbVarfield_t *myVarfield  = NULL;
             char *savep;
             char *p;
-            to_line = strdup(smtp_state->to_line);
+            to_line = SCStrdup(smtp_state->to_line);
             int total = 1;
             p = strtok_r(to_line, ",", &savep);
             myVarfield = (fbVarfield_t*)fbBasicListInit(&(rec.smtpTo), 0, 
@@ -304,6 +304,10 @@ static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
         aft->smtp_cnt++;
 
         SCMutexLock(&ipfix_ctx->mutex);
+        /* set internal template */
+        if (!fBufSetInternalTemplate(ipfix_ctx->fbuf, SURI_SMTP_BASE_TID, &err)) {
+            SCLogInfo("fBufSetInternalTemplate failed");
+        }
 
         /* Try to set export template */
         if (ipfix_ctx->fbuf) {
@@ -327,14 +331,29 @@ static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
         }
 
         SCMutexUnlock(&ipfix_ctx->mutex);
-        if (to_line) free(to_line);
+        if (to_line) SCFree(to_line);
 
         if (AppLayerTransactionUpdateLogId(ALPROTO_SMTP, p->flow) == 1) {
-            if (smtp_state->to_line != NULL) free(smtp_state->to_line);
-            if (smtp_state->from_line != NULL) free(smtp_state->from_line);
-            if (smtp_state->subject_line != NULL) free(smtp_state->subject_line);
-            if (smtp_state->content_type_line != NULL) free(smtp_state->content_type_line);
-            if (smtp_state->content_disp_line != NULL) free(smtp_state->content_disp_line);
+            if (smtp_state->to_line != NULL) {
+                SCFree(smtp_state->to_line);
+                smtp_state->to_line = NULL;
+            }
+            if (smtp_state->from_line != NULL) {
+                SCFree(smtp_state->from_line);
+                smtp_state->from_line = NULL;
+            }
+            if (smtp_state->subject_line != NULL) {
+                SCFree(smtp_state->subject_line);
+                smtp_state->subject_line = NULL;
+            }
+            if (smtp_state->content_type_line != NULL) {
+                SCFree(smtp_state->content_type_line);
+                smtp_state->content_type_line = NULL;
+            }
+            if (smtp_state->content_disp_line != NULL) {
+                SCFree(smtp_state->content_disp_line);
+                smtp_state->content_disp_line = NULL;
+            }
             smtp_state->data_state = SMTP_DATA_UNKNOWN;
         }
 
@@ -382,29 +401,39 @@ TmEcode OutputSmtpIPFIXLog (ThreadVars *tv, Packet *p, void *data)
 void OutputSmtpSetTemplates(LogIPFIXCtx *ipfix_ctx)
 {
     GError *err = NULL;
+    uint16_t tid;
 
-    if (ipfix_ctx->session && ipfix_ctx->fbuf) {
+    //if (ipfix_ctx->session && ipfix_ctx->fbuf) {
+    if (ipfix_ctx->session && ipfix_ctx->fb_model) {
+        fbInfoModel_t *model = ipfix_ctx->fb_model;
 
-        if (!fbTemplateAppendSpecArray(ipfix_ctx->int_tmpl, smtp_log_int_spec, SURI_SMTP_BASE_TID, &err)) {
+        /* Create the full record template */
+        if ((ipfix_ctx->int_smtp_tmpl = fbTemplateAlloc(model)) == NULL) {
+            SCLogInfo("fbTemplateAlloc failed");
+            return;
+        }
+        SCLogInfo("int_smtp_tmpl: %p", ipfix_ctx->int_smtp_tmpl);
+        /* Create the full record template */
+        if ((ipfix_ctx->ext_smtp_tmpl = fbTemplateAlloc(model)) == NULL) {
+            SCLogInfo("fbTemplateAlloc failed");
+            return;
+        }
+        SCLogInfo("ext_smtp_tmpl: %p", ipfix_ctx->ext_smtp_tmpl);
+
+        if (!fbTemplateAppendSpecArray(ipfix_ctx->int_smtp_tmpl, smtp_log_int_spec, SURI_SMTP_BASE_TID, &err)) {
             SCLogInfo("fbTemplateAppendSpecArray failed");
             return;
         }
         /* Add the full record template to the session */
-        if (!fbSessionAddTemplate(ipfix_ctx->session, TRUE, SURI_SMTP_BASE_TID, ipfix_ctx->int_tmpl, &err)) {
+        tid = fbSessionAddTemplate(ipfix_ctx->session, TRUE, SURI_SMTP_BASE_TID,
+                                   ipfix_ctx->int_smtp_tmpl, &err);
+        if (tid == 0) {
             SCLogInfo("fbSessionAddTemplate failed");
             return;
         }
-        if (!fbTemplateAppendSpecArray(ipfix_ctx->ext_tmpl, smtp_log_ext_spec, SURI_SMTP_BASE_TID, &err)) {
+        if (!fbTemplateAppendSpecArray(ipfix_ctx->ext_smtp_tmpl, smtp_log_ext_spec, SURI_SMTP_BASE_TID, &err)) {
             SCLogInfo("fbTemplateAppendSpecArray failed");
             return;
-        }
-
-        /* write templates */
-        fbSessionExportTemplates(ipfix_ctx->session, &err);
-
-        /* set internal template */
-        if (!fBufSetInternalTemplate(ipfix_ctx->fbuf, SURI_SMTP_BASE_TID, &err)) {
-            SCLogInfo("fBufSetInternalTemplate failed");
         }
     }
 }
