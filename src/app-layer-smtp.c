@@ -503,7 +503,7 @@ static int SMTPProcessCommandDATA(SMTPState *state, Flow *f,
                        state->current_line_len);
                 state->to_line_len += state->current_line_len;
                 s[state->to_line_len] = '\0';
-                free(state->to_line);
+                SCFree(state->to_line);
                 state->to_line = s;
                 /*
                 {
@@ -690,7 +690,7 @@ static int SMTPProcessCommandDATA(SMTPState *state, Flow *f,
     switch (state->data_state & ~SMTP_DATA_MULTILINE) {
         case SMTP_DATA_TO:
             if (!state->to_line) {
-                state->to_line = (uint8_t *)strndup((char *)&state->current_line[4], state->current_line_len-4);
+                state->to_line = (uint8_t *)SCStrndup((char *)&state->current_line[4], state->current_line_len-4);
                 state->to_line_len = state->current_line_len - 4;
             }
             break;

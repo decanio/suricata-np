@@ -163,7 +163,8 @@ gboolean SetExportTemplate(
 
     SCLogInfo("tid: %x Appending tid: %x\n", tid, (tid & (~SURI_HTTP_BASE_TID)));
     if (!fbTemplateAppendSpecArray(tmpl, http_log_ext_spec,
-                                   (tid & (~SURI_HTTP_BASE_TID)), err))    {
+                                   //(tid & (~SURI_HTTP_BASE_TID)), err))    {
+                                   (tid & (~SURI_BASE_TID)), err))    {
         return FALSE;
     }
 
@@ -643,6 +644,11 @@ static TmEcode LogHttpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
         //SCMutexLock(&hlog->ipfix_ctx->mutex);
         SCMutexLock(&ipfix_ctx->mutex);
 
+        /* set internal template */
+        if (!fBufSetInternalTemplate(ipfix_ctx->fbuf, SURI_HTTP_BASE_TID, &err)) {
+            SCLogInfo("fBufSetInternalTemplate failed");
+        }
+
         /* Try to set export template */
         if (ipfix_ctx->fbuf) {
             if (!SetExportTemplate(ipfix_ctx->fb_model, ipfix_ctx->fbuf, tid, &err)) {
@@ -666,6 +672,7 @@ static TmEcode LogHttpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
         }
 
 error_out:
+        ipfix_ctx->last_logger = 80;
         SCMutexUnlock(&ipfix_ctx->mutex);
 
         AppLayerTransactionUpdateLogId(ALPROTO_HTTP, p->flow);
@@ -712,29 +719,39 @@ TmEcode OutputHttpIPFIXLog(ThreadVars *tv, Packet *p, void *data)
 void OutputHttpSetTemplates(LogIPFIXCtx *ipfix_ctx)
 {
     GError *err = NULL;
+    uint16_t tid;
 
-    if (ipfix_ctx->session && ipfix_ctx->fbuf) {
+    //if (ipfix_ctx->session && ipfix_ctx->fbuf) {
+    if (ipfix_ctx->session) {
+        fbInfoModel_t *model = ipfix_ctx->fb_model;
 
-        if (!fbTemplateAppendSpecArray(ipfix_ctx->int_tmpl, http_log_int_spec, SURI_HTTP_BASE_TID, &err)) {
+        /* Create the full record template */
+        if ((ipfix_ctx->int_http_tmpl = fbTemplateAlloc(model)) == NULL) {
+            SCLogInfo("fbTemplateAlloc failed");
+            return NULL;
+        }
+        SCLogInfo("int_http_tmpl: %p", ipfix_ctx->int_http_tmpl);
+        /* Create the full record template */
+        if ((ipfix_ctx->ext_http_tmpl = fbTemplateAlloc(model)) == NULL) {
+            SCLogInfo("fbTemplateAlloc failed");
+            return NULL;
+        }
+        SCLogInfo("ext_http_tmpl: %p", ipfix_ctx->ext_http_tmpl);
+
+        if (!fbTemplateAppendSpecArray(ipfix_ctx->int_http_tmpl, http_log_int_spec, SURI_HTTP_BASE_TID, &err)) {
             SCLogInfo("fbTemplateAppendSpecArray failed");
             return;
         }
         /* Add the full record template to the session */
-        if (!fbSessionAddTemplate(ipfix_ctx->session, TRUE, SURI_HTTP_BASE_TID, ipfix_ctx->int_tmpl, &err)) {
+        tid = fbSessionAddTemplate(ipfix_ctx->session, TRUE, SURI_HTTP_BASE_TID,
+                                   ipfix_ctx->int_http_tmpl, &err);
+        if (tid == 0) {
             SCLogInfo("fbSessionAddTemplate failed");
             return;
         }
-        if (!fbTemplateAppendSpecArray(ipfix_ctx->ext_tmpl, http_log_ext_spec, SURI_HTTP_BASE_TID, &err)) {
+        if (!fbTemplateAppendSpecArray(ipfix_ctx->ext_http_tmpl, http_log_ext_spec, SURI_HTTP_BASE_TID, &err)) {
             SCLogInfo("fbTemplateAppendSpecArray failed");
             return;
-        }
-
-        /* write templates */
-        fbSessionExportTemplates(ipfix_ctx->session, &err);
-
-        /* set internal template */
-        if (!fBufSetInternalTemplate(ipfix_ctx->fbuf, SURI_HTTP_BASE_TID, &err)) {
-            SCLogInfo("fBufSetInternalTemplate failed");
         }
     }
 }

@@ -139,7 +139,8 @@ SetExportTemplate(
     tmpl = fbTemplateAlloc(fb_model);
 
     if (!fbTemplateAppendSpecArray(tmpl, tls_log_ext_spec,
-                                   (tid & (~SURI_TLS_BASE_TID)), err))    {
+                                   //(tid & (~SURI_TLS_BASE_TID)), err))    {
+                                   (tid & (~SURI_BASE_TID)), err))    {
         return FALSE;
     }
 
@@ -263,6 +264,11 @@ static TmEcode LogTlsLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
 
     SCMutexLock(&ipfix_ctx->mutex);
 
+    /* set internal template */
+    if (!fBufSetInternalTemplate(ipfix_ctx->fbuf, SURI_TLS_BASE_TID, &err)) {
+        SCLogInfo("fBufSetInternalTemplate failed");
+    }
+
     /* Try to set export template */
     if (ipfix_ctx->fbuf) {
         if (!SetExportTemplate(ipfix_ctx->fb_model, ipfix_ctx->fbuf, tid, &err)) {
@@ -323,29 +329,40 @@ TmEcode OutputTlsIPFIXLog(ThreadVars *tv, Packet *p, void *data)
 void OutputTlsSetTemplates(LogIPFIXCtx *ipfix_ctx)
 {
     GError *err = NULL;
+    uint16_t tid;
 
-    if (ipfix_ctx->session && ipfix_ctx->fbuf) {
+    //if (ipfix_ctx->session && ipfix_ctx->fbuf) {
+    if (ipfix_ctx->session && ipfix_ctx->fb_model) {
+        fbInfoModel_t *model = ipfix_ctx->fb_model;
 
-        if (!fbTemplateAppendSpecArray(ipfix_ctx->int_tmpl, tls_log_int_spec, SURI_TLS_BASE_TID, &err)) {
+        /* Create the full record template */
+        if ((ipfix_ctx->int_tls_tmpl = fbTemplateAlloc(model)) == NULL) {
+            SCLogInfo("fbTemplateAlloc failed");
+            return NULL;
+        }
+        SCLogInfo("int_tls_tmpl: %p", ipfix_ctx->int_tls_tmpl);
+        /* Create the full record template */
+        if ((ipfix_ctx->ext_tls_tmpl = fbTemplateAlloc(model)) == NULL) {
+            SCLogInfo("fbTemplateAlloc failed");
+            return NULL;
+        }
+        SCLogInfo("ext_tls_tmpl: %p", ipfix_ctx->ext_tls_tmpl);
+
+        if (!fbTemplateAppendSpecArray(ipfix_ctx->int_tls_tmpl, tls_log_int_spec, SURI_TLS_BASE_TID, &err)) {
             SCLogInfo("fbTemplateAppendSpecArray failed");
             return;
         }
+
         /* Add the full record template to the session */
-        if (!fbSessionAddTemplate(ipfix_ctx->session, TRUE, SURI_TLS_BASE_TID, ipfix_ctx->int_tmpl, &err)) {
+        tid = fbSessionAddTemplate(ipfix_ctx->session, TRUE, SURI_TLS_BASE_TID,
+                                   ipfix_ctx->int_tls_tmpl, &err);
+        if (tid == 0) {
             SCLogInfo("fbSessionAddTemplate failed");
             return;
         }
-        if (!fbTemplateAppendSpecArray(ipfix_ctx->ext_tmpl, tls_log_ext_spec, SURI_TLS_BASE_TID, &err)) {
+        if (!fbTemplateAppendSpecArray(ipfix_ctx->ext_tls_tmpl, tls_log_ext_spec, SURI_TLS_BASE_TID, &err)) {
             SCLogInfo("fbTemplateAppendSpecArray failed");
             return;
-        }
-
-        /* write templates */
-        fbSessionExportTemplates(ipfix_ctx->session, &err);
-
-        /* set internal template */
-        if (!fBufSetInternalTemplate(ipfix_ctx->fbuf, SURI_TLS_BASE_TID, &err)) {
-            SCLogInfo("fBufSetInternalTemplate failed");
         }
     }
 }

@@ -27,10 +27,18 @@
 #include "conf.h"            /* ConfNode   */
 #include "tm-modules.h"      /* LogFileCtx */
 
+#define SURI_BASE_TID         0x3000
+#if 1
+#define SURI_DNS_BASE_TID     0x3100
+#define SURI_HTTP_BASE_TID    0x3200
+#define SURI_SMTP_BASE_TID    0x3400
+#define SURI_TLS_BASE_TID     0x3800
+#else
 #define SURI_DNS_BASE_TID     0x3200
 #define SURI_HTTP_BASE_TID    0x3300
 #define SURI_SMTP_BASE_TID    0x3400
 #define SURI_TLS_BASE_TID     0x3500
+#endif
 
 /* Special dimensions */
 #define SURI_IP4		0x0001

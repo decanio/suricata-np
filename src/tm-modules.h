@@ -103,10 +103,17 @@ typedef struct LogIPFIXCtx_ {
     /* libfixbuf stuff */
     fbInfoModel_t *fb_model;
     fbExporter_t *exporter;
-    fbTemplate_t *int_tmpl;
-    fbTemplate_t *ext_tmpl;
+    fbTemplate_t *int_dns_tmpl; /* if this works move these into individual modules */
+    fbTemplate_t *ext_dns_tmpl;
+    fbTemplate_t *int_http_tmpl;
+    fbTemplate_t *ext_http_tmpl;
+    fbTemplate_t *int_smtp_tmpl;
+    fbTemplate_t *ext_smtp_tmpl;
+    fbTemplate_t *int_tls_tmpl;
+    fbTemplate_t *ext_tls_tmpl;
     fbSession_t *session;
     fBuf_t *fbuf;
+    uint16_t last_logger;
 
     /* Alerts on the module (not on the file) */
     uint64_t alerts;

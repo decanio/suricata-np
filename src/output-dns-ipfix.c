@@ -152,7 +152,8 @@ SetExportTemplate(
     tmpl = fbTemplateAlloc(fb_model);
 
     if (!fbTemplateAppendSpecArray(tmpl, dns_log_ext_spec,
-                                   (tid & (~SURI_DNS_BASE_TID)), err))    {
+//                                   (tid & (~SURI_DNS_BASE_TID)), err))    {
+                                   (tid & (~SURI_BASE_TID)), err))    {
         return FALSE;
     }
 
@@ -188,6 +189,11 @@ static void LogQuery(AlertIPFIXThread *aft, DnsLog_t *rec, uint16_t tid,
     rec->dnsQName.len = entry->len;
     SCMutexLock(&ipfix_ctx->mutex);
 
+    /* set internal template */
+    if (!fBufSetInternalTemplate(ipfix_ctx->fbuf, SURI_DNS_BASE_TID, &err)) {
+        SCLogInfo("fBufSetInternalTemplate failed");
+    }
+
     /* Try to set export template */
     if (ipfix_ctx->fbuf) {
         if (!SetExportTemplate(ipfix_ctx->fb_model, ipfix_ctx->fbuf, tid, &err)) {
@@ -205,6 +211,7 @@ static void LogQuery(AlertIPFIXThread *aft, DnsLog_t *rec, uint16_t tid,
     if (!fBufAppend(ipfix_ctx->fbuf, (uint8_t *)rec, sizeof(*rec), &err)) {
         SCLogInfo("fBufAppend failed");
     }
+    ipfix_ctx->last_logger = 53;
 
     SCMutexUnlock(&ipfix_ctx->mutex);
 
@@ -245,6 +252,10 @@ static void LogAnswer(AlertIPFIXThread *aft, DnsLog_t *rec, uint16_t tid,
 
     SCMutexLock(&ipfix_ctx->mutex);
 
+    /* set internal template */
+    if (!fBufSetInternalTemplate(ipfix_ctx->fbuf, SURI_DNS_BASE_TID, &err)) {
+        SCLogInfo("fBufSetInternalTemplate failed");
+    }
     /* Try to set export template */
     if (ipfix_ctx->fbuf) {
         if (!SetExportTemplate(ipfix_ctx->fb_model, ipfix_ctx->fbuf, tid, &err)) {
@@ -262,6 +273,7 @@ static void LogAnswer(AlertIPFIXThread *aft, DnsLog_t *rec, uint16_t tid,
     if (!fBufAppend(ipfix_ctx->fbuf, (uint8_t *)rec, sizeof(*rec), &err)) {
         SCLogInfo("fBufAppend failed");
     }
+    ipfix_ctx->last_logger = 53;
 
     SCMutexUnlock(&ipfix_ctx->mutex);
 
@@ -432,29 +444,39 @@ TmEcode OutputDnsIPFIXLog(ThreadVars *tv, Packet *p, void *data)
 void OutputDnsSetTemplates(LogIPFIXCtx *ipfix_ctx)
 {
     GError *err = NULL;
+    uint16_t tid;
 
-    if (ipfix_ctx->session && ipfix_ctx->fbuf) {
+    //if (ipfix_ctx->session && ipfix_ctx->fbuf) {
+    if (ipfix_ctx->session) {
+        fbInfoModel_t *model = ipfix_ctx->fb_model;
 
-        if (!fbTemplateAppendSpecArray(ipfix_ctx->int_tmpl, dns_log_int_spec, SURI_DNS_BASE_TID, &err)) {
+        /* Create the full record template */
+        if ((ipfix_ctx->int_dns_tmpl = fbTemplateAlloc(model)) == NULL) {
+            SCLogInfo("fbTemplateAlloc failed");
+            return NULL;
+        }
+        SCLogInfo("int_dns_tmpl: %p", ipfix_ctx->int_dns_tmpl);
+        /* Create the full record template */
+        if ((ipfix_ctx->ext_dns_tmpl = fbTemplateAlloc(model)) == NULL) {
+            SCLogInfo("fbTemplateAlloc failed");
+            return NULL;
+        }
+        SCLogInfo("ext_dns_tmpl: %p", ipfix_ctx->ext_dns_tmpl);
+
+        if (!fbTemplateAppendSpecArray(ipfix_ctx->int_dns_tmpl, dns_log_int_spec, SURI_DNS_BASE_TID, &err)) {
             SCLogInfo("fbTemplateAppendSpecArray failed");
             return;
         }
         /* Add the full record template to the session */
-        if (!fbSessionAddTemplate(ipfix_ctx->session, TRUE, SURI_DNS_BASE_TID, ipfix_ctx->int_tmpl, &err)) {
+        tid = fbSessionAddTemplate(ipfix_ctx->session, TRUE, SURI_DNS_BASE_TID,
+                                   ipfix_ctx->int_dns_tmpl, &err);
+        if (tid == 0) {
             SCLogInfo("fbSessionAddTemplate failed");
             return;
         }
-        if (!fbTemplateAppendSpecArray(ipfix_ctx->ext_tmpl, dns_log_ext_spec, SURI_DNS_BASE_TID, &err)) {
+        if (!fbTemplateAppendSpecArray(ipfix_ctx->ext_dns_tmpl, dns_log_ext_spec, SURI_DNS_BASE_TID, &err)) {
             SCLogInfo("fbTemplateAppendSpecArray failed");
             return;
-        }
-
-        /* write templates */
-        fbSessionExportTemplates(ipfix_ctx->session, &err);
-
-        /* set internal template */
-        if (!fBufSetInternalTemplate(ipfix_ctx->fbuf, SURI_DNS_BASE_TID, &err)) {
-            SCLogInfo("fBufSetInternalTemplate failed");
         }
     }
 }
