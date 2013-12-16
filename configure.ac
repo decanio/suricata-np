@@ -1455,7 +1455,8 @@
         if test "$with_ipfix_libraries" != "no"; then
             LDFLAGS="${LDFLAGS} -L${with_ipfix_libraries}"
         fi
-        LDFLAGS="${LDFLAGS} -lfixbuf"
+        #LDFLAGS="${LDFLAGS} -lfixbuf"
+        LIBS="${LIBS} -lfixbuf -lglib-2.0"
 
         # glib (required by libfixbuf)
         AC_ARG_WITH(libglib_includes,
