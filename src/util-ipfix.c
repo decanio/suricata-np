@@ -221,7 +221,7 @@ SCConfOpenIPFIX(ConfNode *conf,
         ipfix_ctx->exporter = fbExporterAllocNet(&spec);
     } else {
         /* Allocate an exporter for the file */
-        ipfix_ctx->exporter = fbExporterAllocFile(filename);
+        ipfix_ctx->exporter = fbExporterAllocFile(log_path);
     }
     SCLogInfo("exporter: %p", ipfix_ctx->exporter);
 
