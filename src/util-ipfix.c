@@ -157,6 +157,7 @@ SCConfOpenIPFIX(ConfNode *conf,
 {
     char log_path[PATH_MAX];
     char *log_dir;
+    const char *log_type;
     const char *filename;
     fbConnSpec_t spec;
 
@@ -178,8 +179,20 @@ SCConfOpenIPFIX(ConfNode *conf,
     }
 
     // Resolve the given config
-    filename = ConfNodeLookupChildValue(conf, "filename");
-    if (filename == NULL) {
+    log_type = ConfNodeLookupChildValue(conf, "type");
+    if (strcmp(log_type, "file") == 0) {
+        filename = ConfNodeLookupChildValue(conf, "filename");
+        if (filename == NULL) {
+            filename = "ipfix.log";
+        }
+        log_dir = ConfigGetLogDirectory();
+
+        if (PathIsAbsolute(filename)) {
+            snprintf(log_path, PATH_MAX, "%s", filename);
+        } else {
+            snprintf(log_path, PATH_MAX, "%s/%s", log_dir, filename);
+        }
+    } else if (strcmp(log_type, "collector") == 0) {
         const char *transport = ConfNodeLookupChildValue(conf, "transport");
         if (transport == NULL) {
             transport = "udp";
@@ -201,13 +214,8 @@ SCConfOpenIPFIX(ConfNode *conf,
         }
         spec.svc = (char *)ipfix_port;
     } else {
-        log_dir = ConfigGetLogDirectory();
-
-        if (PathIsAbsolute(filename)) {
-            snprintf(log_path, PATH_MAX, "%s", filename);
-        } else {
-            snprintf(log_path, PATH_MAX, "%s/%s", log_dir, filename);
-        }
+        SCLogError(SC_ERR_IPFIX_LOG_GENERIC, "Illegal IPFIX log type \"%s\"",
+                   log_type);
     }
 
     ipfix_ctx->fb_model = fbInfoModelAlloc();
