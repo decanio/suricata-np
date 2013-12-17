@@ -55,6 +55,15 @@
 
 #ifdef HAVE_IPFIX
 
+/** Default XFF header name */
+#define IPFIX_XFF_DEFAULT "X-Forwarded-For"
+/** Single XFF IP maximum length */
+#define IPFIX_XFF_MAXLEN 46
+/** XFF header value minimal length */
+#define IPFIX_XFF_CHAIN_MINLEN 7
+/** XFF header value maximum length */
+#define IPFIX_XFF_CHAIN_MAXLEN 256
+
 typedef struct OutputHttpCtx_ {
     uint32_t flags; /** Store mode */
 } OutputHttpCtx;
@@ -208,7 +217,7 @@ static void LogHttpLogCustom(AlertIPFIXThread *aft, htp_tx_t *tx,
                              char *srcip, Port sp, char *dstip, Port dp)
 {
     //LogHttpFileCtx *httplog_ctx = aft->httplog_ctx;
-    LogIPFIXCtx *ipfix_ctx = aft->ipfix_ctx;
+    //LogIPFIXCtx *ipfix_ctx = aft->ipfix_ctx;
 #if 0
     uint32_t i;
     uint32_t datalen;
@@ -602,10 +611,14 @@ static TmEcode LogHttpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
         /* x-forwarded-for */
         htp_header_t *h_x_forwarded_for = NULL;
         if (tx->request_headers != NULL) {
-            h_x_forwarded_for = htp_table_get_c(tx->request_headers, "x-forwarded-for");
+            h_x_forwarded_for = htp_table_get_c(tx->request_headers,
+                                                IPFIX_XFF_DEFAULT);
         }
-        if (h_x_forwarded_for != NULL) {
-            rec.xff.buf = (uint8_t)bstr_ptr(h_x_forwarded_for->value);
+
+        if (h_x_forwarded_for != NULL &&
+            bstr_len(h_x_forwarded_for->value) >= IPFIX_XFF_CHAIN_MINLEN &&
+            bstr_len(h_x_forwarded_for->value) < IPFIX_XFF_CHAIN_MAXLEN) {
+            rec.xff.buf = (uint8_t *)bstr_ptr(h_x_forwarded_for->value);
             rec.xff.len = bstr_len(h_x_forwarded_for->value);
         } else {
             rec.xff.len = 0;
@@ -728,13 +741,13 @@ void OutputHttpSetTemplates(LogIPFIXCtx *ipfix_ctx)
         /* Create the full record template */
         if ((ipfix_ctx->int_http_tmpl = fbTemplateAlloc(model)) == NULL) {
             SCLogInfo("fbTemplateAlloc failed");
-            return NULL;
+            return;
         }
         SCLogInfo("int_http_tmpl: %p", ipfix_ctx->int_http_tmpl);
         /* Create the full record template */
         if ((ipfix_ctx->ext_http_tmpl = fbTemplateAlloc(model)) == NULL) {
             SCLogInfo("fbTemplateAlloc failed");
-            return NULL;
+            return;
         }
         SCLogInfo("ext_http_tmpl: %p", ipfix_ctx->ext_http_tmpl);
 
