@@ -273,6 +273,7 @@ static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
             char *savep;
             char *p;
             to_line = SCStrdup(smtp_state->to_line);
+            //printf("to_line:: TO: \"%s\" (%d)\n", to_line, strlen(to_line));
             int total = 1;
             p = strtok_r(to_line, ",", &savep);
             myVarfield = (fbVarfield_t*)fbBasicListInit(&(rec.smtpTo), 0, 
@@ -280,25 +281,30 @@ static TmEcode LogSmtpLogIPFIXIPWrapper(ThreadVars *tv, Packet *p, void *data,
             myVarfield->buf = p;
             myVarfield->len = strlen(p);
             SCLogInfo("TO: \"%s\" (%d)", myVarfield->buf, myVarfield->len);
+            //printf("TO: \"%s\" (%d)\n", myVarfield->buf, myVarfield->len);
 #if 1
             while ((p = strtok_r(NULL, ",", &savep)) != NULL) {
+//printf("got another addr\n");
                 myVarfield = (fbVarfield_t*)fbBasicListAddNewElements(&(rec.smtpTo), 1);
-                myVarfield[total].buf = p;
-                myVarfield[total].len = strlen(p);
+//printf("buf[0]: \"%s\"\n", myVarfield[0].buf);
+                //myVarfield[total].buf = p;
+                //myVarfield[total].len = strlen(p);
+//printf("p: \"%s\" offset: %d\n", p, strspn(p, " \t"));
+                myVarfield->buf = &p[strspn(p, " \t")];
+                myVarfield->len = strlen(myVarfield->buf);
+//printf("TO: \"%s\" (%d)\n", myVarfield->buf, myVarfield->len);
                 ++total;
             }
 #endif
             //SCLogInfo("SMTP TO: field count %d", total);
-            //free(to_line);
 #else
             rec.smtpTo.buf = (uint8_t *)smtp_state->to_line;
             rec.smtpTo.len = strlen(smtp_state->to_line);
 #endif
         } else {
-#if 1
-#else
-            rec.smtpTo.len = 0;
-#endif
+            fbBasicListInit(&(rec.smtpTo), 0, 
+                            fbInfoModelGetElementByName(ipfix_ctx->fb_model, "smtpTo"),
+                            0);
         }
 
         aft->smtp_cnt++;

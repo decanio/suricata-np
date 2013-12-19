@@ -158,7 +158,7 @@ SCConfOpenIPFIX(ConfNode *conf,
     char log_path[PATH_MAX];
     char *log_dir;
     const char *log_type;
-    const char *filename;
+    const char *filename = NULL;
     fbConnSpec_t spec;
 
     memset(&spec, 0, sizeof(spec));
