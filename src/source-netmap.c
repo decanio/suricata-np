@@ -430,34 +430,6 @@ void TmModuleDecodeNetmapRegister (void) {
 
 static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose);
 
-/* Atomic increment a 32 bit counter.
- * These operate on resources shared with the Netmap driver
- * so these couldn't use the usual primitives in util-atomic.h
- */
-static inline uint32_t NetmapAtomicIncr(uint32_t *x)
-{
-#ifdef SCAtomicAddAndFetch
-    return SCAtomicAddAndFetch(x, 1);
-#else
-#error not implemented yet
-    /* this is going to be ugly and suboptimal */
-#endif
-}
-
-/* Atomic decrement a 32 bit counter.
- * These operate on resources shared with the Netmap driver
- * so these couldn't use the usual primitives in util-atomic.h
- */
-static inline uint32_t NetmapAtomicDecr(uint32_t *x)
-{
-#ifdef SCAtomicSubAndFetch
-    return SCAtomicSubAndFetch(x, 1);
-#else
-#error not implemented yet
-    /* this is going to be ugly and suboptimal */
-#endif
-}
-
 TmEcode NetmapWritePacket(Packet *p)
 {
     struct netmap_ring *rxring, *txring;
@@ -494,7 +466,7 @@ TmEcode NetmapWritePacket(Packet *p)
     /* report the buffer change. */
     ts->flags |= NS_BUF_CHANGED;
     rs->flags |= NS_BUF_CHANGED;
-    k = NETMAP_RING_NEXT(txring, k);
+    k = nm_ring_next(txring, k);
     txring->cur = k;
 
     return TM_ECODE_OK;
@@ -509,7 +481,7 @@ void NetmapReleaseDataFromRing(Packet *p)
         NetmapWritePacket(p);
     }
     if ((p->netmap_v.flags & NETMAP_WORKERS_MODE) == 0) {
-        NetmapAtomicDecr(&rxring->reserved);
+        rxring->head = nm_ring_next(rxring, rxring->head);
     }
 }
 
@@ -541,6 +513,7 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
     struct pollfd fds;
     int r;
     u_int i;
+    const u_int limit = 64;
     TmSlot *s = (TmSlot *)slot;
 //#define DEBUG_PACKET_DUMPER
 #ifdef DEBUG_PACKET_DUMPER
@@ -594,8 +567,12 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
 
             struct netmap_ring *ring = NETMAP_RXRING(ptv->nifp, i);
 
-            while ( ring->avail > 0 ) {
-                u_int cur = ring->cur;
+            u_int cur = ring->cur;
+            u_int n = nm_ring_space(ring);
+            u_int rx;
+            if (n > limit)
+                n = limit;
+            for (rx = 0; rx < n; rx++) {
 
                 p = PacketGetFromQueueOrAlloc();
                 if (unlikely(p == NULL)) {
@@ -671,12 +648,13 @@ TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
                     TmqhOutputPacketpool(ptv->tv, p);
                 }
                 (void) SC_ATOMIC_ADD(ptv->livedev->pkts, 1);
-                if ((p->netmap_v.flags & NETMAP_WORKERS_MODE) == 0) {
-                    NetmapAtomicIncr(&ring->reserved);
-                }
 next:
-                ring->cur = NETMAP_RING_NEXT(ring, cur);
-                ring->avail--;
+                cur = nm_ring_next(ring, cur);
+            }
+            if ((p->netmap_v.flags & NETMAP_WORKERS_MODE) == 0) {
+                ring->cur = cur;
+            } else {
+                ring->head = ring->cur = cur;
             }
         }
         SCPerfSyncCountersIfSignalled(tv);
@@ -773,7 +751,7 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
     }
 
     /* Set the operating mode. */
-    if (req.nr_ringid != NETMAP_SW_RING) {
+    if (req.nr_ringid & NETMAP_HW_RING) {
         int fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (fd >= 0) {
             int ret;
@@ -782,7 +760,7 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
             strncpy(ifr.ifr_name, devname, sizeof(ifr.ifr_name));
             ret = ioctl(fd, SIOCGIFFLAGS, &ifr);
             if (ret == -1) {
-                SCLogError(SC_ERR_NETMAP_CREATE, "Failed ioctl: %s", strerror(errno)); 
+                SCLogError(SC_ERR_NETMAP_CREATE, "Failed ioctl(%s): %s", devname, strerror(errno)); 
 	    }
 
             if (ptv->promisc) {
@@ -808,7 +786,7 @@ static int NetmapOpen(NetmapThreadVars *ptv, char *devname, int verbose)
             }
             ret = ioctl(fd, SIOCSIFFLAGS, &ifr);
             if (ret == -1) {
-                SCLogError(SC_ERR_NETMAP_CREATE, "Failed ioctl: %s", strerror(errno)); 
+                SCLogError(SC_ERR_NETMAP_CREATE, "Failed ioctl(%s): %s", devname, strerror(errno)); 
 	    } else
 		SCLogInfo("Success setting promiscuous mode.");
             close(fd);
@@ -1093,7 +1071,7 @@ TmEcode DecodeNetmapThreadInit(ThreadVars *tv, void *initdata, void **data)
     SCEnter();
     DecodeThreadVars *dtv = NULL;
 
-    dtv = DecodeThreadVarsAlloc();
+    dtv = DecodeThreadVarsAlloc(tv);
 
     if (dtv == NULL)
         SCReturnInt(TM_ECODE_FAILED);
