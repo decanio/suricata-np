@@ -219,6 +219,7 @@ output-file.c output-file.h \
 output-filedata.c output-filedata.h \
 output-flow.c output-flow.h \
 output-json-alert.c output-json-alert.h \
+output-json-counters.c output-json-counters.h \
 output-json-dns.c output-json-dns.h \
 output-json-drop.c output-json-drop.h \
 output-json-email-common.c output-json-email-common.h \

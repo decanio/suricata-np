@@ -78,6 +78,7 @@
 #include "alert-prelude.h"
 #include "alert-syslog.h"
 #include "output-json-alert.h"
+#include "output-json-counters.h"
 
 #include "output-json-flow.h"
 #include "output-json-netflow.h"
@@ -897,6 +898,8 @@ void RegisterAllModules()
     /* flow/netflow */
     TmModuleJsonFlowLogRegister();
     TmModuleJsonNetFlowLogRegister();
+    /* stats */
+    TmModuleJsonStatsLogRegister();
 
     /* log api */
     TmModulePacketLoggerRegister();
