@@ -1,4 +1,4 @@
-/* Copyright (C) 2011-2013 Open Information Security Foundation
+/* Copyright (C) 2011-2014 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -103,7 +103,8 @@ extern int max_pending_packets;
 
 TmEcode NoAFPSupportExit(ThreadVars *, void *, void **);
 
-void TmModuleReceiveAFPRegister (void) {
+void TmModuleReceiveAFPRegister (void)
+{
     tmm_modules[TMM_RECEIVEAFP].name = "ReceiveAFP";
     tmm_modules[TMM_RECEIVEAFP].ThreadInit = NoAFPSupportExit;
     tmm_modules[TMM_RECEIVEAFP].Func = NULL;
@@ -118,7 +119,8 @@ void TmModuleReceiveAFPRegister (void) {
  * \brief Registration Function for DecodeAFP.
  * \todo Unit tests are needed for this module.
  */
-void TmModuleDecodeAFPRegister (void) {
+void TmModuleDecodeAFPRegister (void)
+{
     tmm_modules[TMM_DECODEAFP].name = "DecodeAFP";
     tmm_modules[TMM_DECODEAFP].ThreadInit = NoAFPSupportExit;
     tmm_modules[TMM_DECODEAFP].Func = NULL;
@@ -264,7 +266,8 @@ static int AFPRefSocket(AFPPeer* peer);
  * \brief Registration Function for RecieveAFP.
  * \todo Unit tests are needed for this module.
  */
-void TmModuleReceiveAFPRegister (void) {
+void TmModuleReceiveAFPRegister (void)
+{
     tmm_modules[TMM_RECEIVEAFP].name = "ReceiveAFP";
     tmm_modules[TMM_RECEIVEAFP].ThreadInit = ReceiveAFPThreadInit;
     tmm_modules[TMM_RECEIVEAFP].Func = NULL;
@@ -484,7 +487,8 @@ void AFPPeersListClean()
  * \brief Registration Function for DecodeAFP.
  * \todo Unit tests are needed for this module.
  */
-void TmModuleDecodeAFPRegister (void) {
+void TmModuleDecodeAFPRegister (void)
+{
     tmm_modules[TMM_DECODEAFP].name = "DecodeAFP";
     tmm_modules[TMM_DECODEAFP].ThreadInit = DecodeAFPThreadInit;
     tmm_modules[TMM_DECODEAFP].Func = DecodeAFP;
@@ -1118,7 +1122,6 @@ TmEcode ReceiveAFPLoop(ThreadVars *tv, void *data, void *slot)
 {
     SCEnter();
 
-    uint16_t packet_q_len = 0;
     AFPThreadVars *ptv = (AFPThreadVars *)data;
     struct pollfd fds;
     int r;
@@ -1179,12 +1182,7 @@ TmEcode ReceiveAFPLoop(ThreadVars *tv, void *data, void *slot)
 
         /* make sure we have at least one packet in the packet pool, to prevent
          * us from alloc'ing packets at line rate */
-        do {
-            packet_q_len = PacketPoolSize();
-            if (unlikely(packet_q_len == 0)) {
-                PacketPoolWait();
-            }
-        } while (packet_q_len == 0);
+        PacketPoolWait();
 
         r = poll(&fds, 1, POLL_TIMEOUT);
 
@@ -1659,7 +1657,8 @@ TmEcode AFPSetBPFFilter(AFPThreadVars *ptv)
  *
  * \todo Create a general AFP setup function.
  */
-TmEcode ReceiveAFPThreadInit(ThreadVars *tv, void *initdata, void **data) {
+TmEcode ReceiveAFPThreadInit(ThreadVars *tv, void *initdata, void **data)
+{
     SCEnter();
     AFPIfaceConfig *afpconfig = initdata;
 
@@ -1795,7 +1794,8 @@ TmEcode ReceiveAFPThreadInit(ThreadVars *tv, void *initdata, void **data) {
  * \param tv pointer to ThreadVars
  * \param data pointer that gets cast into AFPThreadVars for ptv
  */
-void ReceiveAFPThreadExitStats(ThreadVars *tv, void *data) {
+void ReceiveAFPThreadExitStats(ThreadVars *tv, void *data)
+{
     SCEnter();
     AFPThreadVars *ptv = (AFPThreadVars *)data;
 
@@ -1815,7 +1815,8 @@ void ReceiveAFPThreadExitStats(ThreadVars *tv, void *data) {
  * \param tv pointer to ThreadVars
  * \param data pointer that gets cast into AFPThreadVars for ptv
  */
-TmEcode ReceiveAFPThreadDeinit(ThreadVars *tv, void *data) {
+TmEcode ReceiveAFPThreadDeinit(ThreadVars *tv, void *data)
+{
     AFPThreadVars *ptv = (AFPThreadVars *)data;
 
     AFPSwitchState(ptv, AFP_STATE_DOWN);
@@ -1920,7 +1921,7 @@ TmEcode DecodeAFPThreadInit(ThreadVars *tv, void *initdata, void **data)
 TmEcode DecodeAFPThreadDeinit(ThreadVars *tv, void *data)
 {
     if (data != NULL)
-        DecodeThreadVarsFree(data);
+        DecodeThreadVarsFree(tv, data);
     SCReturnInt(TM_ECODE_OK);
 }
 

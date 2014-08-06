@@ -74,7 +74,8 @@ typedef struct JsonFileLogThread_ {
     MemBuffer *buffer;
 } JsonFileLogThread;
 
-static json_t *LogFileMetaGetUri(const Packet *p, const File *ff) {
+static json_t *LogFileMetaGetUri(const Packet *p, const File *ff)
+{
     HtpState *htp_state = (HtpState *)p->flow->alstate;
     json_t *js = NULL;
     if (htp_state != NULL) {
@@ -96,7 +97,8 @@ static json_t *LogFileMetaGetUri(const Packet *p, const File *ff) {
     return NULL;
 }
 
-static json_t *LogFileMetaGetHost(const Packet *p, const File *ff) {
+static json_t *LogFileMetaGetHost(const Packet *p, const File *ff)
+{
     HtpState *htp_state = (HtpState *)p->flow->alstate;
     json_t *js = NULL;
     if (htp_state != NULL) {
@@ -115,7 +117,8 @@ static json_t *LogFileMetaGetHost(const Packet *p, const File *ff) {
     return NULL;
 }
 
-static json_t *LogFileMetaGetReferer(const Packet *p, const File *ff) {
+static json_t *LogFileMetaGetReferer(const Packet *p, const File *ff)
+{
     HtpState *htp_state = (HtpState *)p->flow->alstate;
     json_t *js = NULL;
     if (htp_state != NULL) {
@@ -139,7 +142,8 @@ static json_t *LogFileMetaGetReferer(const Packet *p, const File *ff) {
     return NULL;
 }
 
-static json_t *LogFileMetaGetUserAgent(const Packet *p, const File *ff) {
+static json_t *LogFileMetaGetUserAgent(const Packet *p, const File *ff)
+{
     HtpState *htp_state = (HtpState *)p->flow->alstate;
     json_t *js = NULL;
     if (htp_state != NULL) {
@@ -167,7 +171,8 @@ static json_t *LogFileMetaGetUserAgent(const Packet *p, const File *ff) {
  *  \internal
  *  \brief Write meta data on a single line json record
  */
-static void FileWriteJsonRecord(JsonFileLogThread *aft, const Packet *p, const File *ff) {
+static void FileWriteJsonRecord(JsonFileLogThread *aft, const Packet *p, const File *ff)
+{
     MemBuffer *buffer = (MemBuffer *)aft->buffer;
     json_t *js = CreateJSONHeader((Packet *)p, 0, "fileinfo"); //TODO const
     if (unlikely(js == NULL))
@@ -232,6 +237,7 @@ static void FileWriteJsonRecord(JsonFileLogThread *aft, const Packet *p, const F
     json_object_set_new(fjs, "stored",
                         (ff->flags & FILE_STORED) ? json_true() : json_false());
     json_object_set_new(fjs, "size", json_integer(ff->size));
+    json_object_set_new(fjs, "tx_id", json_integer(ff->txid));
 
     /* originally just 'file', but due to bug 1127 naming it fileinfo */
     json_object_set_new(js, "fileinfo", fjs);
@@ -352,7 +358,8 @@ OutputCtx *OutputFileLogInitSub(ConfNode *conf, OutputCtx *parent_ctx)
     return output_ctx;
 }
 
-void TmModuleJsonFileLogRegister (void) {
+void TmModuleJsonFileLogRegister (void)
+{
     tmm_modules[TMM_JSONFILELOG].name = "JsonFileLog";
     tmm_modules[TMM_JSONFILELOG].ThreadInit = JsonFileLogThreadInit;
     tmm_modules[TMM_JSONFILELOG].ThreadDeinit = JsonFileLogThreadDeinit;

@@ -81,8 +81,12 @@ static int SCLogFileWrite(const char *buffer, int buffer_len, LogFileCtx *log_ct
         SCConfLogReopen(log_ctx);
     }
 
-    int ret = fwrite(buffer, buffer_len, 1, log_ctx->fp);
-    fflush(log_ctx->fp);
+    int ret = 0;
+
+    if (log_ctx->fp) {
+        ret = fwrite(buffer, buffer_len, 1, log_ctx->fp);
+        fflush(log_ctx->fp);
+    }
 
     return ret;
 }
@@ -195,7 +199,8 @@ SCConfLogOpenGeneric(ConfNode *conf,
         log_ctx->fp = SCLogOpenUnixSocketFp(log_path, SOCK_DGRAM);
         if (log_ctx->fp == NULL)
             return -1; // Error already logged by Open...Fp routine
-    } else if (strcasecmp(filetype, DEFAULT_LOG_FILETYPE) == 0) {
+    } else if (strcasecmp(filetype, DEFAULT_LOG_FILETYPE) == 0 ||
+               strcasecmp(filetype, "file") == 0) {
         log_ctx->fp = SCLogOpenFileFp(log_path, append);
         if (log_ctx->fp == NULL)
             return -1; // Error already logged by Open...Fp routine
@@ -212,7 +217,7 @@ SCConfLogOpenGeneric(ConfNode *conf,
             return -1; // Error already logged by Open...Fp routine
     } else {
         SCLogError(SC_ERR_INVALID_YAML_CONF_ENTRY, "Invalid entry for "
-                   "%s.type.  Expected \"regular\" (default), \"unix_stream\", "
+                   "%s.filetype.  Expected \"regular\" (default), \"unix_stream\", "
                    "\"pcie\" "
                    "or \"unix_dgram\"",
                    conf->name);

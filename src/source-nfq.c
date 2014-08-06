@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2013 Open Information Security Foundation
+/* Copyright (C) 2007-2014 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -62,7 +62,8 @@
 
 TmEcode NoNFQSupportExit(ThreadVars *, void *, void **);
 
-void TmModuleReceiveNFQRegister (void) {
+void TmModuleReceiveNFQRegister (void)
+{
     tmm_modules[TMM_RECEIVENFQ].name = "ReceiveNFQ";
     tmm_modules[TMM_RECEIVENFQ].ThreadInit = NoNFQSupportExit;
     tmm_modules[TMM_RECEIVENFQ].Func = NULL;
@@ -73,7 +74,8 @@ void TmModuleReceiveNFQRegister (void) {
     tmm_modules[TMM_RECEIVENFQ].flags = TM_FLAG_RECEIVE_TM;
 }
 
-void TmModuleVerdictNFQRegister (void) {
+void TmModuleVerdictNFQRegister (void)
+{
     tmm_modules[TMM_VERDICTNFQ].name = "VerdictNFQ";
     tmm_modules[TMM_VERDICTNFQ].ThreadInit = NoNFQSupportExit;
     tmm_modules[TMM_VERDICTNFQ].Func = NULL;
@@ -83,7 +85,8 @@ void TmModuleVerdictNFQRegister (void) {
     tmm_modules[TMM_VERDICTNFQ].cap_flags = SC_CAP_NET_ADMIN;
 }
 
-void TmModuleDecodeNFQRegister (void) {
+void TmModuleDecodeNFQRegister (void)
+{
     tmm_modules[TMM_DECODENFQ].name = "DecodeNFQ";
     tmm_modules[TMM_DECODENFQ].ThreadInit = NoNFQSupportExit;
     tmm_modules[TMM_DECODENFQ].Func = NULL;
@@ -171,7 +174,8 @@ typedef struct NFQCnf_ {
 
 NFQCnf nfq_config;
 
-void TmModuleReceiveNFQRegister (void) {
+void TmModuleReceiveNFQRegister (void)
+{
     /* XXX create a general NFQ setup function */
     memset(&nfq_g, 0, sizeof(nfq_g));
     SCMutexInit(&nfq_init_lock, NULL);
@@ -186,7 +190,8 @@ void TmModuleReceiveNFQRegister (void) {
     tmm_modules[TMM_RECEIVENFQ].flags = TM_FLAG_RECEIVE_TM;
 }
 
-void TmModuleVerdictNFQRegister (void) {
+void TmModuleVerdictNFQRegister (void)
+{
     tmm_modules[TMM_VERDICTNFQ].name = "VerdictNFQ";
     tmm_modules[TMM_VERDICTNFQ].ThreadInit = VerdictNFQThreadInit;
     tmm_modules[TMM_VERDICTNFQ].Func = VerdictNFQ;
@@ -195,7 +200,8 @@ void TmModuleVerdictNFQRegister (void) {
     tmm_modules[TMM_VERDICTNFQ].RegisterTests = NULL;
 }
 
-void TmModuleDecodeNFQRegister (void) {
+void TmModuleDecodeNFQRegister (void)
+{
     tmm_modules[TMM_DECODENFQ].name = "DecodeNFQ";
     tmm_modules[TMM_DECODENFQ].ThreadInit = DecodeNFQThreadInit;
     tmm_modules[TMM_DECODENFQ].Func = DecodeNFQ;
@@ -685,7 +691,8 @@ TmEcode NFQInitThread(NFQThreadVars *nfq_t, uint32_t queue_maxlen)
     return TM_ECODE_OK;
 }
 
-TmEcode ReceiveNFQThreadInit(ThreadVars *tv, void *initdata, void **data) {
+TmEcode ReceiveNFQThreadInit(ThreadVars *tv, void *initdata, void **data)
+{
     SCMutexLock(&nfq_init_lock);
 
 #ifndef OS_WIN32
@@ -717,6 +724,7 @@ TmEcode ReceiveNFQThreadInit(ThreadVars *tv, void *initdata, void **data) {
 #undef T_DATA_SIZE
 
     *data = (void *)ntv;
+
     SCMutexUnlock(&nfq_init_lock);
     return TM_ECODE_OK;
 }
@@ -745,14 +753,16 @@ TmEcode ReceiveNFQThreadDeinit(ThreadVars *t, void *data)
 }
 
 
-TmEcode VerdictNFQThreadInit(ThreadVars *tv, void *initdata, void **data) {
+TmEcode VerdictNFQThreadInit(ThreadVars *tv, void *initdata, void **data)
+{
 
     *data = (void *)initdata;
 
     return TM_ECODE_OK;
 }
 
-TmEcode VerdictNFQThreadDeinit(ThreadVars *tv, void *data) {
+TmEcode VerdictNFQThreadDeinit(ThreadVars *tv, void *data)
+{
     NFQThreadVars *ntv = (NFQThreadVars *)data;
     NFQQueueVars *nq = NFQGetQueue(ntv->nfq_index);
 
@@ -824,7 +834,8 @@ int NFQRegisterQueue(char *queue)
  *  \retval ptr pointer to the NFQThreadVars at index
  *  \retval NULL on error
  */
-void *NFQGetQueue(int number) {
+void *NFQGetQueue(int number)
+{
     if (number >= receive_queue_num)
         return NULL;
 
@@ -841,7 +852,8 @@ void *NFQGetQueue(int number) {
  *  \retval ptr pointer to the NFQThreadVars at index
  *  \retval NULL on error
  */
-void *NFQGetThread(int number) {
+void *NFQGetThread(int number)
+{
     if (number >= receive_queue_num)
         return NULL;
 
@@ -854,7 +866,8 @@ void *NFQGetThread(int number) {
  * \note separate functions for Linux and Win32 for readability.
  */
 #ifndef OS_WIN32
-void NFQRecvPkt(NFQQueueVars *t, NFQThreadVars *tv) {
+void NFQRecvPkt(NFQQueueVars *t, NFQThreadVars *tv)
+{
     int rv, ret;
     int flag = NFQVerdictCacheLen(t) ? MSG_DONTWAIT : 0;
 
@@ -898,7 +911,8 @@ void NFQRecvPkt(NFQQueueVars *t, NFQThreadVars *tv) {
     }
 }
 #else /* WIN32 version of NFQRecvPkt */
-void NFQRecvPkt(NFQQueueVars *t, NFQThreadVars *tv) {
+void NFQRecvPkt(NFQQueueVars *t, NFQThreadVars *tv)
+{
     int rv, ret;
     static int timeouted = 0;
 
@@ -997,7 +1011,8 @@ TmEcode ReceiveNFQLoop(ThreadVars *tv, void *data, void *slot)
 /**
  * \brief NFQ receive module stats printing function
  */
-void ReceiveNFQThreadExitStats(ThreadVars *tv, void *data) {
+void ReceiveNFQThreadExitStats(ThreadVars *tv, void *data)
+{
     NFQThreadVars *ntv = (NFQThreadVars *)data;
     NFQQueueVars *nq = NFQGetQueue(ntv->nfq_index);
 #ifdef COUNTERS
@@ -1011,7 +1026,8 @@ void ReceiveNFQThreadExitStats(ThreadVars *tv, void *data) {
 /**
  * \brief NFQ verdict function
  */
-TmEcode NFQSetVerdict(Packet *p) {
+TmEcode NFQSetVerdict(Packet *p)
+{
     int iter = 0;
     int ret = 0;
     uint32_t verdict = NF_ACCEPT;
@@ -1151,7 +1167,8 @@ TmEcode NFQSetVerdict(Packet *p) {
 /**
  * \brief NFQ verdict module packet entry function
  */
-TmEcode VerdictNFQ(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq) {
+TmEcode VerdictNFQ(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+{
     int ret;
     /* if this is a tunnel packet we check if we are ready to verdict
      * already. */
@@ -1252,7 +1269,7 @@ TmEcode DecodeNFQThreadInit(ThreadVars *tv, void *initdata, void **data)
 TmEcode DecodeNFQThreadDeinit(ThreadVars *tv, void *data)
 {
     if (data != NULL)
-        DecodeThreadVarsFree(data);
+        DecodeThreadVarsFree(tv, data);
     SCReturnInt(TM_ECODE_OK);
 }
 

@@ -57,6 +57,7 @@
 #include "util-optimize.h"
 #include "util-buffer.h"
 #include "util-logopenfile.h"
+#include "util-device.h"
 
 
 #ifndef HAVE_LIBJANSSON
@@ -71,7 +72,8 @@ TmEcode OutputJsonThreadDeinit(ThreadVars *, void *);
 int OutputJsonOpenFileCtx(LogFileCtx *, char *);
 void OutputJsonRegisterTests(void);
 
-void TmModuleOutputJsonRegister (void) {
+void TmModuleOutputJsonRegister (void)
+{
     tmm_modules[TMM_OUTPUTJSON].name = "OutputJSON";
     tmm_modules[TMM_OUTPUTJSON].ThreadInit = OutputJsonThreadInit;
     tmm_modules[TMM_OUTPUTJSON].Func = OutputJson;
@@ -128,7 +130,8 @@ void OutputJsonExitPrintStats(ThreadVars *, void *);
 void OutputJsonRegisterTests(void);
 static void OutputJsonDeInitCtx(OutputCtx *);
 
-void TmModuleOutputJsonRegister (void) {
+void TmModuleOutputJsonRegister (void)
+{
     tmm_modules[TMM_OUTPUTJSON].name = MODULE_NAME;
     tmm_modules[TMM_OUTPUTJSON].ThreadInit = OutputJsonThreadInit;
     tmm_modules[TMM_OUTPUTJSON].Func = OutputJson;
@@ -146,6 +149,41 @@ static int64_t sensor_id = -1; /* -1 = not defined */
 static enum JsonOutput json_out = ALERT_FILE;
 
 static enum JsonFormat format = COMPACT;
+
+/** \brief jsonify tcp flags field
+ *  Only add 'true' fields in an attempt to keep things reasonably compact.
+ */
+void JsonTcpFlags(uint8_t flags, json_t *js)
+{
+    if (flags & TH_SYN)
+        json_object_set_new(js, "syn", json_true());
+    if (flags & TH_FIN)
+        json_object_set_new(js, "fin", json_true());
+    if (flags & TH_RST)
+        json_object_set_new(js, "rst", json_true());
+    if (flags & TH_PUSH)
+        json_object_set_new(js, "psh", json_true());
+    if (flags & TH_ACK)
+        json_object_set_new(js, "ack", json_true());
+    if (flags & TH_URG)
+        json_object_set_new(js, "urg", json_true());
+    if (flags & TH_ECN)
+        json_object_set_new(js, "ecn", json_true());
+    if (flags & TH_CWR)
+        json_object_set_new(js, "cwr", json_true());
+}
+
+void CreateJSONFlowId(json_t *js, const Flow *f)
+{
+    if (f == NULL)
+        return;
+#if __WORDSIZE == 64
+    uint64_t addr = (uint64_t)f;
+#else
+    uint32_t addr = (uint32_t)f;
+#endif
+    json_object_set_new(js, "flow_id", json_integer(addr));
+}
 
 json_t *CreateJSONHeader(Packet *p, int direction_sensitive, char *event_type)
 {
@@ -205,9 +243,16 @@ json_t *CreateJSONHeader(Packet *p, int direction_sensitive, char *event_type)
     /* time & tx */
     json_object_set_new(js, "timestamp", json_string(timebuf));
 
+    CreateJSONFlowId(js, (const Flow *)p->flow);
+
     /* sensor id */
     if (sensor_id >= 0)
         json_object_set_new(js, "sensor_id", json_integer(sensor_id));
+
+    /* input interface */
+    if (p->livedev) {
+        json_object_set_new(js, "in_iface", json_string(p->livedev->dev));
+    }
 
     /* pcap_cnt */
     if (p->pcap_cnt != 0) {
@@ -286,7 +331,8 @@ json_t *CreateJSONHeader(Packet *p, int direction_sensitive, char *event_type)
     return js;
 }
 
-int OutputJSONBuffer(json_t *js, LogFileCtx *file_ctx, MemBuffer *buffer) {
+int OutputJSONBuffer(json_t *js, LogFileCtx *file_ctx, MemBuffer *buffer)
+{
     char *js_s = json_dumps(js,
                             JSON_PRESERVE_ORDER|JSON_COMPACT|JSON_ENSURE_ASCII|
 #ifdef JSON_ESCAPE_SLASH
@@ -345,7 +391,8 @@ TmEcode OutputJsonThreadDeinit(ThreadVars *t, void *data)
     return TM_ECODE_OK;
 }
 
-void OutputJsonExitPrintStats(ThreadVars *tv, void *data) {
+void OutputJsonExitPrintStats(ThreadVars *tv, void *data)
+{
     AlertJsonThread *aft = (AlertJsonThread *)data;
     if (aft == NULL) {
         return;
@@ -386,9 +433,16 @@ OutputCtx *OutputJsonInitCtx(ConfNode *conf)
     output_ctx->DeInit = OutputJsonDeInitCtx;
 
     if (conf) {
-        const char *output_s = ConfNodeLookupChildValue(conf, "type");
+        const char *output_s = ConfNodeLookupChildValue(conf, "filetype");
+
+        // Backwards compatibility
+        if (output_s == NULL) {
+            output_s = ConfNodeLookupChildValue(conf, "type");
+        }
+
         if (output_s != NULL) {
-            if (strcmp(output_s, "file") == 0) {
+            if (strcmp(output_s, "file") == 0 ||
+                strcmp(output_s, "regular") == 0) {
                 json_ctx->json_out = ALERT_FILE;
             } else if (strcmp(output_s, "syslog") == 0) {
                 json_ctx->json_out = ALERT_SYSLOG;

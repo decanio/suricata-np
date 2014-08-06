@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2012 Open Information Security Foundation
+/* Copyright (C) 2007-2014 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -64,7 +64,8 @@ static void DetectFilemagicFree(void *);
 /**
  * \brief Registration function for keyword: filemagic
  */
-void DetectFilemagicRegister(void) {
+void DetectFilemagicRegister(void)
+{
     sigmatch_table[DETECT_FILEMAGIC].name = "filemagic";
     sigmatch_table[DETECT_FILEMAGIC].desc = "match on the information libmagic returns about a file";
     sigmatch_table[DETECT_FILEMAGIC].url = "https://redmine.openinfosecfoundation.org/projects/suricata/wiki/File-keywords#filemagic";
@@ -88,7 +89,8 @@ void DetectFilemagicRegister(void) {
  *  \retval -1 error
  *  \retval 0 ok
  */
-int FilemagicGlobalLookup(File *file) {
+int FilemagicGlobalLookup(File *file)
+{
     if (file == NULL || file->chunks_head == NULL) {
         SCReturnInt(-1);
     }
@@ -137,7 +139,8 @@ int FilemagicGlobalLookup(File *file) {
  *  \retval -1 error
  *  \retval 0 ok
  */
-int FilemagicThreadLookup(magic_t *ctx, File *file) {
+int FilemagicThreadLookup(magic_t *ctx, File *file)
+{
     if (ctx == NULL || file == NULL || file->chunks_head == NULL) {
         SCReturnInt(-1);
     }
@@ -220,8 +223,7 @@ static int DetectFilemagicMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
         /* we include the \0 in the inspection, so patterns can match on the
          * end of the string. */
         if (BoyerMooreNocase(filemagic->name, filemagic->len, (uint8_t *)file->magic,
-                    strlen(file->magic) + 1, filemagic->bm_ctx->bmGs,
-                    filemagic->bm_ctx->bmBc) != NULL)
+                    strlen(file->magic) + 1, filemagic->bm_ctx) != NULL)
         {
 #ifdef DEBUG
             if (SCLogDebugEnabled()) {
@@ -269,7 +271,7 @@ static DetectFilemagicData *DetectFilemagicParse (char *str)
         goto error;
     }
 
-    filemagic->bm_ctx = BoyerMooreCtxInit(filemagic->name, filemagic->len);
+    filemagic->bm_ctx = BoyerMooreNocaseCtxInit(filemagic->name, filemagic->len);
     if (filemagic->bm_ctx == NULL) {
         goto error;
     }
@@ -279,7 +281,6 @@ static DetectFilemagicData *DetectFilemagicParse (char *str)
         SCLogDebug("negated filemagic");
     }
 
-    BoyerMooreCtxToNocase(filemagic->bm_ctx, filemagic->name, filemagic->len);
 #ifdef DEBUG
     if (SCLogDebugEnabled()) {
         char *name = SCMalloc(filemagic->len + 1);
@@ -299,7 +300,8 @@ error:
     return NULL;
 }
 
-static void *DetectFilemagicThreadInit(void *data) {
+static void *DetectFilemagicThreadInit(void *data)
+{
     char *filename = NULL;
     FILE *fd = NULL;
     DetectFilemagicData *filemagic = (DetectFilemagicData *)data;
@@ -343,7 +345,8 @@ error:
     return NULL;
 }
 
-static void DetectFilemagicThreadFree(void *ctx) {
+static void DetectFilemagicThreadFree(void *ctx)
+{
     if (ctx != NULL) {
         DetectFilemagicThreadData *t = (DetectFilemagicThreadData *)ctx;
         if (t->ctx)
@@ -415,7 +418,8 @@ error:
  *
  * \param filemagic pointer to DetectFilemagicData
  */
-static void DetectFilemagicFree(void *ptr) {
+static void DetectFilemagicFree(void *ptr)
+{
     if (ptr != NULL) {
         DetectFilemagicData *filemagic = (DetectFilemagicData *)ptr;
         if (filemagic->bm_ctx != NULL) {
@@ -432,7 +436,8 @@ static void DetectFilemagicFree(void *ptr) {
 /**
  * \test DetectFilemagicTestParse01
  */
-int DetectFilemagicTestParse01 (void) {
+int DetectFilemagicTestParse01 (void)
+{
     DetectFilemagicData *dnd = DetectFilemagicParse("\"secret.pdf\"");
     if (dnd != NULL) {
         DetectFilemagicFree(dnd);
@@ -444,7 +449,8 @@ int DetectFilemagicTestParse01 (void) {
 /**
  * \test DetectFilemagicTestParse02
  */
-int DetectFilemagicTestParse02 (void) {
+int DetectFilemagicTestParse02 (void)
+{
     int result = 0;
 
     DetectFilemagicData *dnd = DetectFilemagicParse("\"backup.tar.gz\"");
@@ -462,7 +468,8 @@ int DetectFilemagicTestParse02 (void) {
 /**
  * \test DetectFilemagicTestParse03
  */
-int DetectFilemagicTestParse03 (void) {
+int DetectFilemagicTestParse03 (void)
+{
     int result = 0;
 
     DetectFilemagicData *dnd = DetectFilemagicParse("\"cmd.exe\"");
@@ -482,7 +489,8 @@ int DetectFilemagicTestParse03 (void) {
 /**
  * \brief this function registers unit tests for DetectFilemagic
  */
-void DetectFilemagicRegisterTests(void) {
+void DetectFilemagicRegisterTests(void)
+{
 #ifdef UNITTESTS /* UNITTESTS */
     UtRegisterTest("DetectFilemagicTestParse01", DetectFilemagicTestParse01, 1);
     UtRegisterTest("DetectFilemagicTestParse02", DetectFilemagicTestParse02, 1);

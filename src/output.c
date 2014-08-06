@@ -355,6 +355,76 @@ error:
 }
 
 /**
+ * \brief Register a flow output module.
+ *
+ * This function will register an output module so it can be
+ * configured with the configuration file.
+ *
+ * \retval Returns 0 on success, -1 on failure.
+ */
+void
+OutputRegisterFlowModule(const char *name, const char *conf_name,
+    OutputCtx *(*InitFunc)(ConfNode *), FlowLogger FlowLogFunc)
+{
+    if (unlikely(FlowLogFunc == NULL)) {
+        goto error;
+    }
+
+    OutputModule *module = SCCalloc(1, sizeof(*module));
+    if (unlikely(module == NULL)) {
+        goto error;
+    }
+
+    module->name = name;
+    module->conf_name = conf_name;
+    module->InitFunc = InitFunc;
+    module->FlowLogFunc = FlowLogFunc;
+    TAILQ_INSERT_TAIL(&output_modules, module, entries);
+
+    SCLogDebug("Flow logger \"%s\" registered.", name);
+    return;
+error:
+    SCLogError(SC_ERR_FATAL, "Fatal error encountered. Exiting...");
+    exit(EXIT_FAILURE);
+}
+
+/**
+ * \brief Register a flow output sub-module.
+ *
+ * This function will register an output module so it can be
+ * configured with the configuration file.
+ *
+ * \retval Returns 0 on success, -1 on failure.
+ */
+void
+OutputRegisterFlowSubModule(const char *parent_name, const char *name,
+    const char *conf_name, OutputCtx *(*InitFunc)(ConfNode *, OutputCtx *),
+    FlowLogger FlowLogFunc)
+{
+    if (unlikely(FlowLogFunc == NULL)) {
+        goto error;
+    }
+
+    OutputModule *module = SCCalloc(1, sizeof(*module));
+    if (unlikely(module == NULL)) {
+        goto error;
+    }
+
+    module->name = name;
+    module->conf_name = conf_name;
+    module->parent_name = parent_name;
+    module->InitSubFunc = InitFunc;
+    module->FlowLogFunc = FlowLogFunc;
+    TAILQ_INSERT_TAIL(&output_modules, module, entries);
+
+    SCLogDebug("Flow logger \"%s\" registered.", name);
+    return;
+error:
+    SCLogError(SC_ERR_FATAL, "Fatal error encountered. Exiting...");
+    exit(EXIT_FAILURE);
+}
+
+/**
  * \brief Get an output module by name.
  *
  * \retval The OutputModule with the given name or NULL if no output module
@@ -389,42 +459,48 @@ OutputDeregisterAll(void)
 
 static int drop_loggers = 0;
 
-int OutputDropLoggerEnable(void) {
+int OutputDropLoggerEnable(void)
+{
     if (drop_loggers)
         return -1;
     drop_loggers++;
     return 0;
 }
 
-void OutputDropLoggerDisable(void) {
+void OutputDropLoggerDisable(void)
+{
     if (drop_loggers)
         drop_loggers--;
 }
 
 static int tls_loggers = 0;
 
-int OutputTlsLoggerEnable(void) {
+int OutputTlsLoggerEnable(void)
+{
     if (tls_loggers)
         return -1;
     tls_loggers++;
     return 0;
 }
 
-void OutputTlsLoggerDisable(void) {
+void OutputTlsLoggerDisable(void)
+{
     if (tls_loggers)
         tls_loggers--;
 }
 
 static int ssh_loggers = 0;
 
-int OutputSshLoggerEnable(void) {
+int OutputSshLoggerEnable(void)
+{
     if (ssh_loggers)
         return -1;
     ssh_loggers++;
     return 0;
 }
 
-void OutputSshLoggerDisable(void) {
+void OutputSshLoggerDisable(void)
+{
     if (ssh_loggers)
         ssh_loggers--;
 }
@@ -435,7 +511,8 @@ void OutputSshLoggerDisable(void) {
  * \param flag A pointer that will be set to 1 when file rotation is
  *   requested.
  */
-void OutputRegisterFileRotationFlag(int *flag) {
+void OutputRegisterFileRotationFlag(int *flag)
+{
     OutputFileRolloverFlag *flag_entry = SCCalloc(1, sizeof(*flag_entry));
     if (unlikely(flag_entry == NULL)) {
         SCLogError(SC_ERR_MEM_ALLOC,
@@ -456,7 +533,8 @@ void OutputRegisterFileRotationFlag(int *flag) {
  * \param flag A pointer that has been previously registered for file
  *   rotation notifications.
  */
-void OutputUnregisterFileRotationFlag(int *flag) {
+void OutputUnregisterFileRotationFlag(int *flag)
+{
     OutputFileRolloverFlag *entry, *next;
     for (entry = TAILQ_FIRST(&output_file_rotation_flags); entry != NULL;
          entry = next) {

@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2012 Open Information Security Foundation
+/* Copyright (C) 2007-2014 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -59,7 +59,8 @@ static void DetectFilenameFree(void *);
 /**
  * \brief Registration function for keyword: filename
  */
-void DetectFilenameRegister(void) {
+void DetectFilenameRegister(void)
+{
     sigmatch_table[DETECT_FILENAME].name = "filename";
     sigmatch_table[DETECT_FILENAME].desc = "match on the file name";
     sigmatch_table[DETECT_FILENAME].url = "https://redmine.openinfosecfoundation.org/projects/suricata/wiki/File-keywords#filename";
@@ -105,8 +106,7 @@ static int DetectFilenameMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
         SCReturnInt(0);
 
     if (BoyerMooreNocase(filename->name, filename->len, file->name,
-                file->name_len, filename->bm_ctx->bmGs,
-                filename->bm_ctx->bmBc) != NULL)
+                file->name_len, filename->bm_ctx) != NULL)
     {
 #ifdef DEBUG
         if (SCLogDebugEnabled()) {
@@ -155,7 +155,7 @@ static DetectFilenameData *DetectFilenameParse (char *str)
         goto error;
     }
 
-    filename->bm_ctx = BoyerMooreCtxInit(filename->name, filename->len);
+    filename->bm_ctx = BoyerMooreNocaseCtxInit(filename->name, filename->len);
     if (filename->bm_ctx == NULL) {
         goto error;
     }
@@ -165,7 +165,6 @@ static DetectFilenameData *DetectFilenameParse (char *str)
         SCLogDebug("negated filename");
     }
 
-    BoyerMooreCtxToNocase(filename->bm_ctx, filename->name, filename->len);
 #ifdef DEBUG
     if (SCLogDebugEnabled()) {
         char *name = SCMalloc(filename->len + 1);
@@ -241,7 +240,8 @@ error:
  *
  * \param filename pointer to DetectFilenameData
  */
-static void DetectFilenameFree(void *ptr) {
+static void DetectFilenameFree(void *ptr)
+{
     if (ptr != NULL) {
         DetectFilenameData *filename = (DetectFilenameData *)ptr;
         if (filename->bm_ctx != NULL) {
@@ -258,7 +258,8 @@ static void DetectFilenameFree(void *ptr) {
 /**
  * \test DetectFilenameTestParse01
  */
-int DetectFilenameTestParse01 (void) {
+int DetectFilenameTestParse01 (void)
+{
     DetectFilenameData *dnd = DetectFilenameParse("\"secret.pdf\"");
     if (dnd != NULL) {
         DetectFilenameFree(dnd);
@@ -270,7 +271,8 @@ int DetectFilenameTestParse01 (void) {
 /**
  * \test DetectFilenameTestParse02
  */
-int DetectFilenameTestParse02 (void) {
+int DetectFilenameTestParse02 (void)
+{
     int result = 0;
 
     DetectFilenameData *dnd = DetectFilenameParse("\"backup.tar.gz\"");
@@ -288,7 +290,8 @@ int DetectFilenameTestParse02 (void) {
 /**
  * \test DetectFilenameTestParse03
  */
-int DetectFilenameTestParse03 (void) {
+int DetectFilenameTestParse03 (void)
+{
     int result = 0;
 
     DetectFilenameData *dnd = DetectFilenameParse("\"cmd.exe\"");
@@ -308,7 +311,8 @@ int DetectFilenameTestParse03 (void) {
 /**
  * \brief this function registers unit tests for DetectFilename
  */
-void DetectFilenameRegisterTests(void) {
+void DetectFilenameRegisterTests(void)
+{
 #ifdef UNITTESTS /* UNITTESTS */
     UtRegisterTest("DetectFilenameTestParse01", DetectFilenameTestParse01, 1);
     UtRegisterTest("DetectFilenameTestParse02", DetectFilenameTestParse02, 1);

@@ -337,14 +337,15 @@ int DecodeICMPV6(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
 #endif
 
     /* Flow is an integral part of us */
-    FlowHandlePacket(tv, p);
+    FlowHandlePacket(tv, dtv, p);
 
     return TM_ECODE_OK;
 }
 
 #ifdef UNITTESTS
 
-static int ICMPV6CalculateValidChecksumtest01(void) {
+static int ICMPV6CalculateValidChecksumtest01(void)
+{
     uint16_t csum = 0;
 
     uint8_t raw_ipv6[] = {
@@ -371,7 +372,8 @@ static int ICMPV6CalculateValidChecksumtest01(void) {
                                             (uint16_t *)(raw_ipv6 + 54), 68));
 }
 
-static int ICMPV6CalculateInvalidChecksumtest02(void) {
+static int ICMPV6CalculateInvalidChecksumtest02(void)
+{
     uint16_t csum = 0;
 
     uint8_t raw_ipv6[] = {

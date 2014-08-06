@@ -45,12 +45,14 @@
 
 TmEcode NoNFLOGSupportExit(ThreadVars *, void *, void **);
 
-void TmModuleReceiveNFLOGRegister (void) {
+void TmModuleReceiveNFLOGRegister (void)
+{
     tmm_modules[TMM_RECEIVENFLOG].name = "ReceiveNFLOG";
     tmm_modules[TMM_RECEIVENFLOG].ThreadInit = NoNFLOGSupportExit;
 }
 
-void TmModuleDecodeNFLOGRegister (void) {
+void TmModuleDecodeNFLOGRegister (void)
+{
     tmm_modules[TMM_DECODENFLOG].name = "DecodeNFLOG";
     tmm_modules[TMM_DECODENFLOG].ThreadInit = NoNFLOGSupportExit;
 }
@@ -548,7 +550,7 @@ TmEcode DecodeNFLOGThreadInit(ThreadVars *tv, void *initdata, void **data)
 TmEcode DecodeNFLOGThreadDeinit(ThreadVars *tv, void *data)
 {
     if (data != NULL)
-        DecodeThreadVarsFree(data);
+        DecodeThreadVarsFree(tv, data);
     SCReturnInt(TM_ECODE_OK);
 }
 

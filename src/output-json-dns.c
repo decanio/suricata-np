@@ -70,7 +70,9 @@ typedef struct LogDnsLogThread_ {
     MemBuffer *buffer;
 } LogDnsLogThread;
 
-static void LogQuery(LogDnsLogThread *aft, json_t *js, DNSTransaction *tx, DNSQueryEntry *entry) {
+static void LogQuery(LogDnsLogThread *aft, json_t *js, DNSTransaction *tx,
+        uint64_t tx_id, DNSQueryEntry *entry)
+{
     MemBuffer *buffer = (MemBuffer *)aft->buffer;
 
     SCLogDebug("got a DNS request and now logging !!");
@@ -102,13 +104,17 @@ static void LogQuery(LogDnsLogThread *aft, json_t *js, DNSTransaction *tx, DNSQu
     DNSCreateTypeString(entry->type, record, sizeof(record));
     json_object_set_new(djs, "rrtype", json_string(record));
 
+    /* tx id (tx counter) */
+    json_object_set_new(djs, "tx_id", json_integer(tx_id));
+
     /* dns */
     json_object_set_new(js, "dns", djs);
     OutputJSONBuffer(js, aft->dnslog_ctx->file_ctx, buffer);
     json_object_del(js, "dns");
 }
 
-static void OutputAnswer(LogDnsLogThread *aft, json_t *djs, DNSTransaction *tx, DNSAnswerEntry *entry) {
+static void OutputAnswer(LogDnsLogThread *aft, json_t *djs, DNSTransaction *tx, DNSAnswerEntry *entry)
+{
     MemBuffer *buffer = (MemBuffer *)aft->buffer;
     json_t *js = json_object();
     if (js == NULL)
@@ -174,7 +180,8 @@ static void OutputAnswer(LogDnsLogThread *aft, json_t *djs, DNSTransaction *tx, 
     return;
 }
 
-static void LogAnswers(LogDnsLogThread *aft, json_t *js, DNSTransaction *tx) {
+static void LogAnswers(LogDnsLogThread *aft, json_t *js, DNSTransaction *tx, uint64_t tx_id)
+{
 
     SCLogDebug("got a DNS response and now logging !!");
 
@@ -208,7 +215,7 @@ static int JsonDnsLogger(ThreadVars *tv, void *thread_data, const Packet *p, Flo
         if (unlikely(js == NULL))
             return TM_ECODE_OK;
 
-        LogQuery(td, js, tx, query);
+        LogQuery(td, js, tx, tx_id, query);
 
         json_decref(js);
     }
@@ -217,7 +224,7 @@ static int JsonDnsLogger(ThreadVars *tv, void *thread_data, const Packet *p, Flo
     if (unlikely(js == NULL))
         return TM_ECODE_OK;
 
-    LogAnswers(td, js, tx);
+    LogAnswers(td, js, tx, tx_id);
 
     json_decref(js);
 
@@ -360,7 +367,8 @@ static OutputCtx *JsonDnsLogInitCtx(ConfNode *conf)
 
 
 #define MODULE_NAME "JsonDnsLog"
-void TmModuleJsonDnsLogRegister (void) {
+void TmModuleJsonDnsLogRegister (void)
+{
     tmm_modules[TMM_JSONDNSLOG].name = MODULE_NAME;
     tmm_modules[TMM_JSONDNSLOG].ThreadInit = LogDnsLogThreadInit;
     tmm_modules[TMM_JSONDNSLOG].ThreadDeinit = LogDnsLogThreadDeinit;
