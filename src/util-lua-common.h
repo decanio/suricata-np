@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2014 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -21,18 +21,20 @@
  * \author Victor Julien <victor@inliniac.net>
  */
 
-#ifndef __DECODE_SLL_H__
-#define __DECODE_SLL_H__
+#ifndef __UTIL_LUA_COMMON_H__
+#define __UTIL_LUA_COMMON_H__
 
-#define SLL_HEADER_LEN                16
+#ifdef HAVE_LUA
 
-typedef struct SllHdr_ {
-    uint16_t sll_pkttype;      /* packet type */
-    uint16_t sll_hatype;       /* link-layer address type */
-    uint16_t sll_halen;        /* link-layer address length */
-    uint8_t sll_addr[8];       /* link-layer address */
-    uint16_t sll_protocol;     /* protocol */
-} __attribute__((__packed__)) SllHdr;
+int LuaCallbackError(lua_State *luastate, const char *msg);
+const char *LuaGetStringArgument(lua_State *luastate, int argc);
 
-#endif /* __DECODE_SLL_H__ */
+void LuaPushTableKeyValueInt(lua_State *luastate, const char *key, int value);
+void LuaPushTableKeyValueString(lua_State *luastate, const char *key, const char *value);
+void LuaPushTableKeyValueArray(lua_State *luastate, const char *key, const uint8_t *value, size_t len);
 
+int LuaRegisterFunctions(lua_State *luastate);
+
+#endif /* HAVE_LUA */
+
+#endif /* __UTIL_LUA_COMMON_H__ */

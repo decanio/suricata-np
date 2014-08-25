@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2013 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -18,18 +18,18 @@
 /**
  * \file
  *
- * \author Tom DeCanio <td@npulsetech.com>
+ * \author Victor Julien <victor@inliniac.net>
  */
 
-#ifndef __OUTPUT_JSON_HTTP_H__
-#define __OUTPUT_JSON_HTTP_H__
+#ifndef __DETECT_LUA_EXT_H__
+#define __DETECT_LUA_EXT_H__
 
-void TmModuleJsonHttpLogRegister (void);
+#ifdef HAVE_LUA
+int LuaRegisterExtensions(lua_State *);
 
-#ifdef HAVE_LIBJANSSON
-void JsonHttpLogJSONBasic(json_t *js, htp_tx_t *tx);
-void JsonHttpLogJSONExtended(json_t *js, htp_tx_t *tx);
-#endif /* HAVE_LIBJANSSON */
+void LuaExtensionsMatchSetup(lua_State *lua_state,
+        DetectLuaData *, DetectEngineThreadCtx *det_ctx,
+        Flow *f, int flow_locked, Packet *p);
 
-#endif /* __OUTPUT_JSON_HTTP_H__ */
-
+#endif /* HAVE_LUA */
+#endif

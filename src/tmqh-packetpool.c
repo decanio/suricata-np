@@ -187,6 +187,7 @@ Packet *PacketPoolGetPacket(void)
         Packet *p = pool->head;
         pool->head = p->next;
         p->pool = pool;
+        PACKET_REINIT(p);
         return p;
     }
 
@@ -202,6 +203,7 @@ Packet *PacketPoolGetPacket(void)
         Packet *p = pool->head;
         pool->head = p->next;
         p->pool = pool;
+        PACKET_REINIT(p);
         return p;
     }
 
@@ -217,13 +219,13 @@ void PacketPoolReturnPacket(Packet *p)
 {
     PktPool *my_pool = GetThreadPacketPool();
 
+    PACKET_RELEASE_REFS(p);
+
     PktPool *pool = p->pool;
     if (pool == NULL) {
         free(p);
         return;
     }
-
-    PACKET_RECYCLE(p);
 
     if (pool == my_pool) {
         /* Push back onto this thread's own stack, so no locking. */
@@ -293,8 +295,7 @@ void PacketPoolDestroy(void)
 {
     Packet *p = NULL;
     while ((p = PacketPoolGetPacket()) != NULL) {
-        PACKET_CLEANUP(p);
-        SCFree(p);
+        PacketFree(p);
     }
 }
 
@@ -395,23 +396,9 @@ void TmqhOutputPacketpool(ThreadVars *t, Packet *p)
         SCLogDebug("getting rid of root pkt... alloc'd %s", p->root->flags & PKT_ALLOC ? "true" : "false");
 
         FlowDeReference(&p->root->flow);
-        /* if p->root uses extended data, free them */
-        if (p->root->ext_pkt) {
-            if (!(p->root->flags & PKT_ZERO_COPY)) {
-                SCFree(p->root->ext_pkt);
-            }
-            p->root->ext_pkt = NULL;
-        }
+
         p->root->ReleasePacket(p->root);
         p->root = NULL;
-    }
-
-    /* if p uses extended data, free them */
-    if (p->ext_pkt) {
-        if (!(p->flags & PKT_ZERO_COPY)) {
-            SCFree(p->ext_pkt);
-        }
-        p->ext_pkt = NULL;
     }
 
     PACKET_PROFILING_END(p);
