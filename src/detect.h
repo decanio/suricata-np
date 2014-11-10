@@ -39,6 +39,7 @@
 #include "util-error.h"
 #include "util-radix-tree.h"
 #include "util-file.h"
+#include "reputation.h"
 
 #include "detect-mark.h"
 
@@ -120,6 +121,7 @@ enum DetectSigmatchListEnum {
     DETECT_SM_LIST_FILEMATCH,
 
     DETECT_SM_LIST_DNSQUERY_MATCH,
+    DETECT_SM_LIST_MODBUS_MATCH,
 
     /* list for post match actions: flowbit set, flowint increment, etc */
     DETECT_SM_LIST_POSTMATCH,
@@ -586,6 +588,9 @@ typedef struct DetectEngineCtx_ {
     /* version of the srep data */
     uint32_t srep_version;
 
+    /* reputation for netblocks */
+    SRepCIDRTree *srepCIDR_ctx;
+
     Signature **sig_array;
     uint32_t sig_array_size; /* size in bytes */
     uint32_t sig_array_len;  /* size in array members */
@@ -1023,6 +1028,9 @@ typedef struct SigGroupHead_ {
 #define SIGMATCH_PAYLOAD        (1 << 3)
 /**< Flag to indicate that the signature is not built-in */
 #define SIGMATCH_NOT_BUILT      (1 << 4)
+/** sigmatch may have options, so the parser should be ready to
+ *  deal with both cases */
+#define SIGMATCH_OPTIONAL_OPT   (1 << 5)
 
 /** Remember to add the options in SignatureIsIPOnly() at detect.c otherwise it wont be part of a signature group */
 
@@ -1142,6 +1150,7 @@ enum {
     DETECT_IPREP,
 
     DETECT_AL_DNS_QUERY,
+    DETECT_AL_MODBUS,
 
     /* make sure this stays last */
     DETECT_TBLSIZE,

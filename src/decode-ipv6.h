@@ -164,10 +164,12 @@ typedef struct IPV6RouteHdr_
                                         including first 8 bytes. */
     uint8_t ip6rh_type;              /* routing type */
     uint8_t ip6rh_segsleft;          /* segments left */
+#if 0
     struct in6_addr ip6rh0_addr[23];  /* type 0 addresses */
     uint8_t ip6rh0_num_addrs;        /* number of actual addresses in the
                                         array/packet. The array is guarranteed
                                         to be filled up to this number. */
+#endif
 } __attribute__((__packed__)) IPV6RouteHdr;
 
 #define IPV6_EXTHDR_GET_RAW_RH_NH(p)        ((p)->ip6eh.ip6rh->ip6rh_nxt)
@@ -262,18 +264,18 @@ typedef struct IPV6GenOptHdr_
 
 typedef struct IPV6ExtHdrs_
 {
-    IPV6FragHdr    *ip6fh;
+    const IPV6FragHdr    *ip6fh;
     /* In fh_offset we store the offset of this extension into the packet past
      * the ipv6 header. We use it in defrag for creating a defragmented packet
      * without the frag header */
     uint16_t      fh_offset;
 
-    IPV6RouteHdr   *ip6rh;
-    IPV6AuthHdr    *ip6ah;
-    IPV6EspHdr     *ip6eh;
-    IPV6DstOptsHdr *ip6dh1;
-    IPV6DstOptsHdr *ip6dh2;
-    IPV6HopOptsHdr *ip6hh;
+    const IPV6RouteHdr   *ip6rh;
+    const IPV6AuthHdr    *ip6ah;
+    const IPV6EspHdr     *ip6eh;
+    const IPV6DstOptsHdr *ip6dh1;
+    const IPV6DstOptsHdr *ip6dh2;
+    const IPV6HopOptsHdr *ip6hh;
 
     /* Hop-By-Hop options */
     IPV6OptHAO ip6hh_opt_hao;

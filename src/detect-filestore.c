@@ -77,6 +77,7 @@ void DetectFilestoreRegister(void)
     sigmatch_table[DETECT_FILESTORE].Setup = DetectFilestoreSetup;
     sigmatch_table[DETECT_FILESTORE].Free  = DetectFilestoreFree;
     sigmatch_table[DETECT_FILESTORE].RegisterTests = NULL;
+    sigmatch_table[DETECT_FILESTORE].flags = SIGMATCH_OPTIONAL_OPT;
 
     const char *eb;
     int eo;
@@ -410,17 +411,17 @@ static int DetectFilestoreSetup (DetectEngineCtx *de_ctx, Signature *s, char *st
         sm->ctx = NULL;
     }
 
-    SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_FILEMATCH);
-    s->filestore_sm = sm;
-
-    if (s->alproto != ALPROTO_UNKNOWN && s->alproto != ALPROTO_HTTP) {
+    if (s->alproto != ALPROTO_HTTP && s->alproto != ALPROTO_SMTP) {
         SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting keywords.");
         goto error;
     }
 
-    AppLayerHtpNeedFileInspection();
+    if (s->alproto == ALPROTO_HTTP) {
+        AppLayerHtpNeedFileInspection();
+    }
 
-    s->alproto = ALPROTO_HTTP;
+    SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_FILEMATCH);
+    s->filestore_sm = sm;
 
     s->flags |= SIG_FLAG_FILESTORE;
     return 0;

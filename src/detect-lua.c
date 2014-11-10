@@ -109,6 +109,8 @@ static pthread_mutex_t luajit_states_lock = SCMUTEX_INITIALIZER;
 
 static int DetectLuaMatch (ThreadVars *, DetectEngineThreadCtx *,
         Packet *, Signature *, SigMatch *);
+static int DetectLuaAppMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+        Flow *f, uint8_t flags, void *state, Signature *s, SigMatch *m);
 static int DetectLuaSetup (DetectEngineCtx *, Signature *, char *);
 static void DetectLuaRegisterTests(void);
 static void DetectLuaFree(void *);
@@ -123,6 +125,7 @@ void DetectLuaRegister(void)
     sigmatch_table[DETECT_LUA].desc = "match via a luajit script";
     sigmatch_table[DETECT_LUA].url = "https://redmine.openinfosecfoundation.org/projects/suricata/wiki/Lua_scripting";
     sigmatch_table[DETECT_LUA].Match = DetectLuaMatch;
+    sigmatch_table[DETECT_LUA].AppLayerMatch = DetectLuaAppMatch;
     sigmatch_table[DETECT_LUA].Setup = DetectLuaSetup;
     sigmatch_table[DETECT_LUA].Free  = DetectLuaFree;
     sigmatch_table[DETECT_LUA].RegisterTests = DetectLuaRegisterTests;
@@ -151,6 +154,8 @@ void DetectLuaRegister(void)
 
 #define DATATYPE_HTTP_RESPONSE_HEADERS      (1<<13)
 #define DATATYPE_HTTP_RESPONSE_HEADERS_RAW  (1<<14)
+
+#define DATATYPE_DNS_RRNAME                 (1<<15)
 
 #ifdef HAVE_LUAJIT
 static void *LuaStatePoolAlloc(void)
@@ -505,6 +510,118 @@ static int DetectLuaMatch (ThreadVars *tv, DetectEngineThreadCtx *det_ctx,
     SCReturnInt(ret);
 }
 
+/**
+ * \brief match the specified lua script in AMATCH
+ *
+ * \param t thread local vars
+ * \param det_ctx pattern matcher thread local data
+ * \param s signature being inspected
+ * \param m sigmatch that we will cast into DetectLuaData
+ *
+ * \retval 0 no match
+ * \retval 1 match
+ */
+static int DetectLuaAppMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+        Flow *f, uint8_t flags, void *state, Signature *s, SigMatch *m)
+{
+    SCEnter();
+    int ret = 0;
+    DetectLuaData *luajit = (DetectLuaData *)m->ctx;
+    if (luajit == NULL)
+        SCReturnInt(0);
+
+    DetectLuaThreadData *tluajit = (DetectLuaThreadData *)DetectThreadCtxGetKeywordThreadCtx(det_ctx, luajit->thread_ctx_id);
+    if (tluajit == NULL)
+        SCReturnInt(0);
+
+    /* setup extension data for use in lua c functions */
+    LuaExtensionsMatchSetup(tluajit->luastate, luajit, det_ctx,
+            f, /* flow is locked */LUA_FLOW_LOCKED_BY_PARENT, NULL);
+
+    if (tluajit->alproto != ALPROTO_UNKNOWN) {
+        int alproto = f->alproto;
+        if (tluajit->alproto != alproto)
+            SCReturnInt(0);
+    }
+
+    lua_getglobal(tluajit->luastate, "match");
+    lua_newtable(tluajit->luastate); /* stack at -1 */
+
+    if (tluajit->alproto == ALPROTO_HTTP) {
+        HtpState *htp_state = state;
+        if (htp_state != NULL && htp_state->connp != NULL) {
+            htp_tx_t *tx = NULL;
+            tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP, htp_state, det_ctx->tx_id);
+            if (tx != NULL) {
+                if ((tluajit->flags & DATATYPE_HTTP_REQUEST_LINE) && tx->request_line != NULL &&
+                    bstr_len(tx->request_line) > 0) {
+                    lua_pushliteral(tluajit->luastate, "http.request_line"); /* stack at -2 */
+                    LuaPushStringBuffer(tluajit->luastate,
+                                     (const uint8_t *)bstr_ptr(tx->request_line),
+                                     bstr_len(tx->request_line));
+                    lua_settable(tluajit->luastate, -3);
+                }
+            }
+        }
+    }
+
+    int retval = lua_pcall(tluajit->luastate, 1, 1, 0);
+    if (retval != 0) {
+        SCLogInfo("failed to run script: %s", lua_tostring(tluajit->luastate, -1));
+    }
+
+    /* process returns from script */
+    if (lua_gettop(tluajit->luastate) > 0) {
+
+        /* script returns a number (return 1 or return 0) */
+        if (lua_type(tluajit->luastate, 1) == LUA_TNUMBER) {
+            double script_ret = lua_tonumber(tluajit->luastate, 1);
+            SCLogDebug("script_ret %f", script_ret);
+            lua_pop(tluajit->luastate, 1);
+
+            if (script_ret == 1.0)
+                ret = 1;
+
+        /* script returns a table */
+        } else if (lua_type(tluajit->luastate, 1) == LUA_TTABLE) {
+            lua_pushnil(tluajit->luastate);
+            const char *k, *v;
+            while (lua_next(tluajit->luastate, -2)) {
+                v = lua_tostring(tluajit->luastate, -1);
+                lua_pop(tluajit->luastate, 1);
+                k = lua_tostring(tluajit->luastate, -1);
+
+                if (!k || !v)
+                    continue;
+
+                SCLogDebug("k='%s', v='%s'", k, v);
+
+                if (strcmp(k, "retval") == 0) {
+                    if (atoi(v) == 1)
+                        ret = 1;
+                } else {
+                    /* set flow var? */
+                }
+            }
+
+            /* pop the table */
+            lua_pop(tluajit->luastate, 1);
+        }
+    }
+    while (lua_gettop(tluajit->luastate) > 0) {
+        lua_pop(tluajit->luastate, 1);
+    }
+
+    if (luajit->negated) {
+        if (ret == 1)
+            ret = 0;
+        else
+            ret = 1;
+    }
+
+    SCReturnInt(ret);
+}
+
 #ifdef UNITTESTS
 /* if this ptr is set the luajit setup functions will use this buffer as the
  * lua script instead of calling luaL_loadfile on the filename supplied. */
@@ -755,6 +872,15 @@ static int DetectLuaSetupPrime(DetectEngineCtx *de_ctx, DetectLuaData *ld)
             ld->flags |= DATATYPE_PACKET;
         } else if (strcmp(k, "payload") == 0 && strcmp(v, "true") == 0) {
             ld->flags |= DATATYPE_PAYLOAD;
+        } else if (strcmp(k, "stream") == 0 && strcmp(v, "true") == 0) {
+            ld->flags |= DATATYPE_STREAM;
+
+            ld->buffername = SCStrdup("stream");
+            if (ld->buffername == NULL) {
+                SCLogError(SC_ERR_LUA_ERROR, "alloc error");
+                goto error;
+            }
+
         } else if (strncmp(k, "http", 4) == 0 && strcmp(v, "true") == 0) {
             if (ld->alproto != ALPROTO_UNKNOWN && ld->alproto != ALPROTO_HTTP) {
                 SCLogError(SC_ERR_LUA_ERROR, "can just inspect script against one app layer proto like HTTP at a time");
@@ -814,7 +940,22 @@ static int DetectLuaSetupPrime(DetectEngineCtx *de_ctx, DetectLuaData *ld)
                 SCLogError(SC_ERR_LUA_ERROR, "alloc error");
                 goto error;
             }
+        } else if (strncmp(k, "dns", 3) == 0 && strcmp(v, "true") == 0) {
 
+            ld->alproto = ALPROTO_DNS;
+
+            if (strcmp(k, "dns.rrname") == 0)
+                ld->flags |= DATATYPE_DNS_RRNAME;
+
+            else {
+                SCLogError(SC_ERR_LUA_ERROR, "unsupported dns data type %s", k);
+                goto error;
+            }
+            ld->buffername = SCStrdup(k);
+            if (ld->buffername == NULL) {
+                SCLogError(SC_ERR_LUA_ERROR, "alloc error");
+                goto error;
+            }
         } else {
             SCLogError(SC_ERR_LUA_ERROR, "unsupported data type %s", k);
             goto error;
@@ -876,9 +1017,12 @@ static int DetectLuaSetup (DetectEngineCtx *de_ctx, Signature *s, char *str)
     sm->type = DETECT_LUA;
     sm->ctx = (void *)luajit;
 
-    if (luajit->alproto == ALPROTO_UNKNOWN)
-        SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_MATCH);
-    else if (luajit->alproto == ALPROTO_HTTP) {
+    if (luajit->alproto == ALPROTO_UNKNOWN) {
+        if (luajit->flags & DATATYPE_STREAM)
+            SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_PMATCH);
+        else
+            SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_MATCH);
+    } else if (luajit->alproto == ALPROTO_HTTP) {
         if (luajit->flags & DATATYPE_HTTP_RESPONSE_BODY)
             SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_HSBDMATCH);
         else if (luajit->flags & DATATYPE_HTTP_REQUEST_BODY)
@@ -899,6 +1043,8 @@ static int DetectLuaSetup (DetectEngineCtx *de_ctx, Signature *s, char *str)
             SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_HCDMATCH);
         else
             SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_AMATCH);
+    } else if (luajit->alproto == ALPROTO_DNS) {
+        SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_DNSQUERY_MATCH);
     } else {
         SCLogError(SC_ERR_LUA_ERROR, "luajit can't be used with protocol %s",
                    AppLayerGetProtoName(luajit->alproto));

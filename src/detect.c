@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2013 Open Information Security Foundation
+/* Copyright (C) 2007-2014 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -165,6 +165,7 @@
 #include "detect-http-stat-code.h"
 #include "detect-ssl-version.h"
 #include "detect-ssl-state.h"
+#include "detect-modbus.h"
 
 #include "action-globals.h"
 #include "tm-threads.h"
@@ -617,8 +618,7 @@ int SigMatchSignaturesRunPostMatch(ThreadVars *tv,
         }
     }
 
-    DetectReplaceExecute(p, det_ctx->replist);
-    det_ctx->replist = NULL;
+    DetectReplaceExecute(p, det_ctx);
 
     if (s->flags & SIG_FLAG_FILESTORE)
         DetectFilestorePostMatch(tv, det_ctx, p, s);
@@ -1564,8 +1564,7 @@ int SigMatchSignatures(ThreadVars *th_v, DetectEngineCtx *de_ctx, DetectEngineTh
         alerts++;
 next:
         DetectFlowvarProcessList(det_ctx, pflow);
-        DetectReplaceFree(det_ctx->replist);
-        det_ctx->replist = NULL;
+        DetectReplaceFree(det_ctx);
         RULE_PROFILING_END(det_ctx, s, smatch, p);
 
         det_ctx->flags = 0;
@@ -1574,6 +1573,10 @@ next:
     PACKET_PROFILING_DETECT_END(p, PROF_DETECT_RULES);
 
 end:
+#ifdef __SC_CUDA_SUPPORT__
+    CudaReleasePacket(p);
+#endif
+
     /* see if we need to increment the inspect_id and reset the de_state */
     if (has_state && AppLayerParserProtocolSupportsTxs(p->proto, alproto)) {
         PACKET_PROFILING_DETECT_START(p, PROF_DETECT_STATEFUL);
@@ -4811,6 +4814,7 @@ void SigTableSetup(void)
     DetectLuaRegister();
     DetectIPRepRegister();
     DetectDnsQueryRegister();
+    DetectModbusRegister();
     DetectAppLayerProtocolRegister();
 }
 

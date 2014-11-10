@@ -93,6 +93,7 @@
 #include "log-pcap.h"
 #include "log-file.h"
 #include "output-json-file.h"
+#include "output-json-smtp.h"
 #include "log-filestore.h"
 #include "log-tcp-data.h"
 
@@ -151,6 +152,8 @@
 
 #include "util-coredump-config.h"
 
+#include "util-decode-mime.h"
+
 #include "defrag.h"
 
 #include "runmodes.h"
@@ -202,7 +205,7 @@ SC_ATOMIC_DECLARE(unsigned int, engine_stage);
 #define DEFAULT_MAX_PENDING_PACKETS 1024
 
 /** suricata engine control flags */
-uint8_t suricata_ctl_flags = 0;
+volatile uint8_t suricata_ctl_flags = 0;
 
 /** Run mode selected */
 int run_mode = RUNMODE_UNKNOWN;
@@ -868,6 +871,8 @@ void RegisterAllModules()
     TmModuleJsonDropLogRegister();
     /* json log */
     TmModuleOutputJsonRegister();
+    /* email logs */
+    TmModuleJsonSmtpLogRegister();
     /* http log */
     TmModuleLogHttpLogRegister();
     TmModuleJsonHttpLogRegister();
@@ -992,6 +997,10 @@ static TmEcode ParseInterfacesList(int run_mode, char *pcap_dev)
             if (ret == 0) {
                 SCLogError(SC_ERR_INITIALIZATION, "No interface found in config for af-packet");
                 SCReturnInt(TM_ECODE_FAILED);
+            }
+            if (AFPRunModeIsIPS()) {
+                SCLogInfo("AF_PACKET: Setting IPS mode");
+                EngineModeSetIPS();
             }
         }
 #ifdef HAVE_NFLOG

@@ -71,7 +71,6 @@ TmEcode DecodePfring(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue 
 TmEcode DecodePfringThreadDeinit(ThreadVars *tv, void *data);
 
 extern int max_pending_packets;
-extern uint8_t suricata_ctl_flags;
 
 #ifndef HAVE_PFRING
 
@@ -149,15 +148,13 @@ typedef struct PfringThreadVars_
     /* threads count */
     int threads;
 
-#ifdef HAVE_PFRING_CLUSTER_TYPE
     cluster_type ctype;
-#endif /* HAVE_PFRING_CLUSTER_TYPE */
+
     uint8_t cluster_id;
     char *interface;
     LiveDevice *livedev;
-#ifdef HAVE_PFRING_SET_BPF_FILTER
+
     char *bpf_filter;
-#endif /* HAVE_PFRING_SET_BPF_FILTER */
 
      ChecksumValidationMode checksum_mode;
 } PfringThreadVars;
@@ -306,13 +303,11 @@ TmEcode ReceivePfringLoop(ThreadVars *tv, void *data, void *slot)
 
     /* we have to enable the ring here as we need to do it after all
      * the threads have called pfring_set_cluster(). */
-#ifdef HAVE_PFRING_ENABLE
     int rc = pfring_enable_ring(ptv->pd);
     if (rc != 0) {
         SCLogError(SC_ERR_PF_RING_OPEN, "pfring_enable_ring failed returned %d ", rc);
         SCReturnInt(TM_ECODE_FAILED);
     }
-#endif /* HAVE_PFRING_ENABLE */
 
     while(1) {
         if (suricata_ctl_flags & (SURICATA_STOP | SURICATA_KILL)) {
@@ -333,7 +328,6 @@ TmEcode ReceivePfringLoop(ThreadVars *tv, void *data, void *slot)
         hdr.ts.tv_sec = hdr.ts.tv_usec = 0;
 
         /* Depending on what compile time options are used for pfring we either return 0 or -1 on error and always 1 for success */
-#ifdef HAVE_PFRING_RECV_UCHAR
         u_char *pkt_buffer = GET_PKT_DIRECT_DATA(p);
         u_int buffer_size = GET_PKT_DIRECT_MAX_SIZE(p);
         int r = pfring_recv(ptv->pd, &pkt_buffer,
@@ -345,12 +339,6 @@ TmEcode ReceivePfringLoop(ThreadVars *tv, void *data, void *slot)
         if (buffer_size == 0) {
             PacketSetData(p, pkt_buffer, hdr.caplen);
         }
-#else
-        int r = pfring_recv(ptv->pd, (char *)GET_PKT_DIRECT_DATA(p),
-                (u_int)GET_PKT_DIRECT_MAX_SIZE(p),
-                &hdr,
-                LIBPFRING_WAIT_FOR_INCOMING);
-#endif /* HAVE_PFRING_RECV_UCHAR */
 
         if (r == 1) {
             //printf("RecievePfring src %" PRIu32 " sport %" PRIu32 " dst %" PRIu32 " dstport %" PRIu32 "\n",
@@ -448,11 +436,7 @@ TmEcode ReceivePfringThreadInit(ThreadVars *tv, void *initdata, void **data)
         }
     }
 
-#ifdef HAVE_PFRING_OPEN_NEW
     ptv->pd = pfring_open(ptv->interface, (uint32_t)default_packet_size, opflag);
-#else
-    ptv->pd = pfring_open(ptv->interface, LIBPFRING_PROMISC, (uint32_t)default_packet_size, LIBPFRING_REENTRANT);
-#endif
     if (ptv->pd == NULL) {
         SCLogError(SC_ERR_PF_RING_OPEN,"Failed to open %s: pfring_open error."
                 " Check if %s exists and pf_ring module is loaded.",
@@ -475,12 +459,8 @@ TmEcode ReceivePfringThreadInit(ThreadVars *tv, void *initdata, void **data)
     } else if (strncmp(ptv->interface, "zc", 2) == 0) {
         SCLogInfo("ZC interface detected, not adding thread to cluster");
     } else {
-#ifdef HAVE_PFRING_CLUSTER_TYPE
         ptv->ctype = pfconf->ctype;
         rc = pfring_set_cluster(ptv->pd, ptv->cluster_id, ptv->ctype);
-#else
-        rc = pfring_set_cluster(ptv->pd, ptv->cluster_id);
-#endif /* HAVE_PFRING_CLUSTER_TYPE */
 
         if (rc != 0) {
             SCLogError(SC_ERR_PF_RING_SET_CLUSTER_FAILED, "pfring_set_cluster "
@@ -500,7 +480,6 @@ TmEcode ReceivePfringThreadInit(ThreadVars *tv, void *initdata, void **data)
                 version & 0x000000FF, ptv->interface, ptv->cluster_id);
     }
 
-#ifdef HAVE_PFRING_SET_BPF_FILTER
     if (pfconf->bpf_filter) {
         ptv->bpf_filter = SCStrdup(pfconf->bpf_filter);
         if (unlikely(ptv->bpf_filter == NULL)) {
@@ -516,7 +495,6 @@ TmEcode ReceivePfringThreadInit(ThreadVars *tv, void *initdata, void **data)
             }
         }
     }
-#endif /* HAVE_PFRING_SET_BPF_FILTER */
 
     ptv->capture_kernel_packets = SCPerfTVRegisterCounter("capture.kernel_packets",
             ptv->tv,
@@ -540,6 +518,19 @@ TmEcode ReceivePfringThreadInit(ThreadVars *tv, void *initdata, void **data)
      * parsing */
     if (! SCKernelVersionIsAtLeast(3, 0)) {
         ptv->vlan_disabled = 1;
+    }
+
+    /* Since VLAN is disabled we force the cluster type to CLUSTER_FLOW_5_TUPLE */
+    if (ptv->vlan_disabled == 1 && ptv->ctype == CLUSTER_FLOW) {
+        SCLogInfo("VLAN disabled, setting cluster type to CLUSTER_FLOW_5_TUPLE");
+        rc = pfring_set_cluster(ptv->pd, ptv->cluster_id, CLUSTER_FLOW_5_TUPLE);
+
+        if (rc != 0) {
+            SCLogError(SC_ERR_PF_RING_SET_CLUSTER_FAILED, "pfring_set_cluster "
+                    "returned %d for cluster-id: %d", rc, ptv->cluster_id);
+            pfconf->DerefFunc(pfconf);
+            return TM_ECODE_FAILED;
+        }
     }
 
     *data = (void *)ptv;
@@ -577,12 +568,12 @@ TmEcode ReceivePfringThreadDeinit(ThreadVars *tv, void *data)
     if (ptv->interface)
         SCFree(ptv->interface);
     pfring_remove_from_cluster(ptv->pd);
-#ifdef HAVE_PFRING_SET_BPF_FILTER
+
     if (ptv->bpf_filter) {
         pfring_remove_bpf_filter(ptv->pd);
         SCFree(ptv->bpf_filter);
     }
-#endif /* HAVE_PFRING_SET_BPF_FILTER */
+
     pfring_close(ptv->pd);
     return TM_ECODE_OK;
 }

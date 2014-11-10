@@ -26,6 +26,7 @@ app-layer-htp.c app-layer-htp.h \
 app-layer-htp-file.c app-layer-htp-file.h \
 app-layer-htp-libhtp.c app-layer-htp-libhtp.h \
 app-layer-htp-mem.c app-layer-htp-mem.h \
+app-layer-modbus.c app-layer-modbus.h \
 app-layer-parser.c app-layer-parser.h \
 app-layer-protos.c app-layer-protos.h \
 app-layer-smb2.c app-layer-smb2.h \
@@ -55,6 +56,7 @@ decode-tcp.c decode-tcp.h \
 decode-teredo.c decode-teredo.h \
 decode-udp.c decode-udp.h \
 decode-vlan.c decode-vlan.h \
+decode-mpls.c decode-mpls.h \
 defrag-config.c defrag-config.h \
 defrag.c defrag.h \
 defrag-hash.c defrag-hash.h \
@@ -90,6 +92,7 @@ detect-engine.c detect-engine.h \
 detect-engine-content-inspection.c detect-engine-content-inspection.h \
 detect-engine-dcepayload.c detect-engine-dcepayload.h \
 detect-engine-dns.c detect-engine-dns.h \
+detect-engine-modbus.c detect-engine-modbus.h \
 detect-engine-event.c detect-engine-event.h \
 detect-engine-file.c detect-engine-file.h \
 detect-engine-hcbd.c detect-engine-hcbd.h \
@@ -192,6 +195,7 @@ detect-uricontent.c detect-uricontent.h \
 detect-urilen.c detect-urilen.h \
 detect-window.c detect-window.h \
 detect-within.c detect-within.h \
+detect-modbus.c detect-modbus.h \
 flow-bit.c flow-bit.h \
 flow.c flow.h \
 flow-hash.c flow-hash.h \
@@ -220,10 +224,12 @@ output-flow.c output-flow.h \
 output-json-alert.c output-json-alert.h \
 output-json-dns.c output-json-dns.h \
 output-json-drop.c output-json-drop.h \
+output-json-email-common.c output-json-email-common.h \
 output-json-file.c output-json-file.h \
 output-json-flow.c output-json-flow.h \
 output-json-netflow.c output-json-netflow.h \
 output-json-http.c output-json-http.h \
+output-json-smtp.c output-json-smtp.h \
 output-json-ssh.c output-json-ssh.h \
 output-json-tls.c output-json-tls.h \
 output-lua.c output-lua.h \
@@ -282,6 +288,7 @@ tm-threads.c tm-threads.h tm-threads-common.h \
 unix-manager.c unix-manager.h \
 util-action.c util-action.h \
 util-atomic.c util-atomic.h \
+util-base64.c util-base64.h \
 util-bloomfilter-counting.c util-bloomfilter-counting.h \
 util-bloomfilter.c util-bloomfilter.h \
 util-buffer.c util-buffer.h \
@@ -303,6 +310,7 @@ util-debug-filters.c util-debug-filters.h \
 util-decode-asn1.c util-decode-asn1.h \
 util-decode-der.c util-decode-der.h \
 util-decode-der-get.c util-decode-der-get.h \
+util-decode-mime.c util-decode-mime.h \
 util-device.c util-device.h \
 util-enum.c util-enum.h \
 util-error.c util-error.h \
@@ -320,6 +328,7 @@ util-logopenfile.h util-logopenfile.c \
 util-logopenfile-tile.h util-logopenfile-tile.c \
 util-lua.c util-lua.h \
 util-lua-common.c util-lua-common.h \
+util-lua-dns.c util-lua-dns.h \
 util-lua-http.c util-lua-http.h \
 util-magic.c util-magic.h \
 util-memcmp.c util-memcmp.h \
