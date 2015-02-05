@@ -279,13 +279,16 @@ SCProfilingDestroy(void)
     if (profiling_packets_csv_enabled) {
         if (packet_profile_csv_fp != NULL)
             fclose(packet_profile_csv_fp);
+        packet_profile_csv_fp = NULL;
     }
 
     if (profiling_csv_file_name != NULL)
         SCFree(profiling_csv_file_name);
+    profiling_csv_file_name = NULL;
 
     if (profiling_file_name != NULL)
         SCFree(profiling_file_name);
+    profiling_file_name = NULL;
 
 #ifdef PROFILE_LOCKING
     LockRecordFreeHash();
@@ -1032,6 +1035,7 @@ const char * PacketProfileDetectIdToString(PacketProfileDetectId id)
         CASE_CODE (PROF_DETECT_ALERT);
         CASE_CODE (PROF_DETECT_CLEANUP);
         CASE_CODE (PROF_DETECT_GETSGH);
+        CASE_CODE (PROF_DETECT_NONMPMLIST);
         case PROF_DETECT_MPM_PKT_STREAM:
             return "PROF_DETECT_MPM_PKT_STR";
         default:

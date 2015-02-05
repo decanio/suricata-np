@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2013 Open Information Security Foundation
+/* Copyright (C) 2007-2014 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -52,7 +52,7 @@ static pcre *parse_regex;
 static pcre_extra *parse_regex_study;
 
 int DetectFlowintMatch(ThreadVars *, DetectEngineThreadCtx *, Packet *,
-                        Signature *, SigMatch *);
+                        Signature *, const SigMatchCtx *);
 static int DetectFlowintSetup(DetectEngineCtx *, Signature *, char *);
 void DetectFlowintFree(void *);
 void DetectFlowintRegisterTests(void);
@@ -105,9 +105,9 @@ error:
  * condition
  */
 int DetectFlowintMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx,
-                        Packet *p, Signature *s, SigMatch *m)
+                        Packet *p, Signature *s, const SigMatchCtx *ctx)
 {
-    DetectFlowintData *sfd =(DetectFlowintData *) m->ctx;
+    const DetectFlowintData *sfd = (const DetectFlowintData *)ctx;
     FlowVar *fv;
     FlowVar *fvt;
     uint32_t targetval;
@@ -121,9 +121,9 @@ int DetectFlowintMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx,
      * return zero(not match).
      */
     if (sfd->targettype == FLOWINT_TARGET_VAR) {
-        sfd->target.tvar.idx = VariableNameGetIdx(det_ctx->de_ctx, sfd->target.tvar.name, DETECT_FLOWINT);
+        uint16_t tvar_idx = VariableNameGetIdx(det_ctx->de_ctx, sfd->target.tvar.name, DETECT_FLOWINT);
 
-        fvt = FlowVarGet(p->flow, sfd->target.tvar.idx);
+        fvt = FlowVarGet(p->flow, tvar_idx);
             /* We don't have that variable initialized yet */
         if (fvt == NULL)
             targetval = 0;
@@ -322,6 +322,7 @@ DetectFlowintData *DetectFlowintParse(DetectEngineCtx *de_ctx, char *rawstr)
                             " Values should be between 0 and %"PRIu32, UINT32_MAX);
                 goto error;
             }
+            sfd->target.value = (uint32_t) value_long;
         } else {
             sfd->targettype = FLOWINT_TARGET_VAR;
             sfd->target.tvar.name = SCStrdup(varval);
@@ -342,7 +343,6 @@ DetectFlowintData *DetectFlowintParse(DetectEngineCtx *de_ctx, char *rawstr)
     }
     if (de_ctx != NULL)
         sfd->idx = VariableNameGetIdx(de_ctx, varname, DETECT_FLOWINT);
-    sfd->target.value = (uint32_t) value_long;
     sfd->modifier = modifier;
 
     pcre_free_substring(varname);
@@ -388,7 +388,7 @@ static int DetectFlowintSetup(DetectEngineCtx *de_ctx, Signature *s, char *rawst
         goto error;
 
     sm->type = DETECT_FLOWINT;
-    sm->ctx = (void *)sfd;
+    sm->ctx = (SigMatchCtx *)sfd;
 
     switch (sfd->modifier) {
         case FLOWINT_MODIFIER_SET:
@@ -451,8 +451,8 @@ void DetectFlowintPrintData(DetectFlowintData *sfd)
                 sfd->name, sfd->modifier, sfd->idx);
     switch(sfd->targettype) {
         case FLOWINT_TARGET_VAR:
-            SCLogDebug("target_var: %s, target_idx: %"PRIu16,
-                        sfd->target.tvar.name, sfd->target.tvar.idx);
+            SCLogDebug("target_var: %s",
+                        sfd->target.tvar.name);
             break;
         case FLOWINT_TARGET_VAL:
             SCLogDebug("Value: %"PRIu32"; ", sfd->target.value);

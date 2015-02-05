@@ -52,8 +52,7 @@ enum PktSrcEnum {
     PKT_SRC_DECODER_TEREDO,
     PKT_SRC_DEFRAG,
     PKT_SRC_STREAM_TCP_STREAM_END_PSEUDO,
-    PKT_SRC_FFR_V2,
-    PKT_SRC_FFR_SHUTDOWN,
+    PKT_SRC_FFR,
 };
 
 #include "source-nflog.h"
@@ -62,6 +61,7 @@ enum PktSrcEnum {
 #include "source-pcap.h"
 #include "source-af-packet.h"
 #include "source-mpipe.h"
+#include "source-netmap.h"
 
 #include "action-globals.h"
 
@@ -414,6 +414,9 @@ typedef struct Packet_
 #ifdef HAVE_MPIPE
         /* tilegx mpipe stuff */
         MpipePacketVars mpipe_v;
+#endif
+#ifdef HAVE_NETMAP
+        NetmapPacketVars netmap_v;
 #endif
 
         /** libpcap vars: shared by Pcap Live mode and Pcap File mode */

@@ -48,7 +48,7 @@
 static pcre *parse_regex;
 static pcre_extra *parse_regex_study;
 
-int DetectEngineEventMatch (ThreadVars *, DetectEngineThreadCtx *, Packet *, Signature *, SigMatch *);
+int DetectEngineEventMatch (ThreadVars *, DetectEngineThreadCtx *, Packet *, Signature *, const SigMatchCtx *);
 static int DetectEngineEventSetup (DetectEngineCtx *, Signature *, char *);
 static int DetectDecodeEventSetup (DetectEngineCtx *, Signature *, char *);
 static int DetectStreamEventSetup (DetectEngineCtx *, Signature *, char *);
@@ -114,11 +114,11 @@ error:
  * \retval 0 no match
  * \retval 1 match
  */
-int DetectEngineEventMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx, Packet *p, Signature *s, SigMatch *m)
+int DetectEngineEventMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx, Packet *p, Signature *s, const SigMatchCtx *ctx)
 {
     SCEnter();
 
-    DetectEngineEventData *de = (DetectEngineEventData *)m->ctx;
+    const DetectEngineEventData *de = (const DetectEngineEventData *)ctx;
 
     if (ENGINE_ISSET_EVENT(p, de->event)) {
         SCLogDebug("de->event matched %u", de->event);
@@ -151,16 +151,17 @@ DetectEngineEventData *DetectEngineEventParse (char *rawstr)
         goto error;
     }
 
-    const char *str_ptr;
-    res = pcre_get_substring((char *)rawstr, ov, MAX_SUBSTRINGS, 0, &str_ptr);
+    char copy_str[128] = "";
+    res = pcre_copy_substring((char *)rawstr, ov, MAX_SUBSTRINGS, 0,
+            copy_str, sizeof(copy_str));
 
     if (res < 0) {
-        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_get_substring failed");
+        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_copy_substring failed");
         goto error;
     }
 
     for (i = 0; DEvents[i].event_name != NULL; i++) {
-        if (strcasecmp(DEvents[i].event_name,str_ptr) == 0) {
+        if (strcasecmp(DEvents[i].event_name,copy_str) == 0) {
             found = 1;
             break;
         }
@@ -168,7 +169,7 @@ DetectEngineEventData *DetectEngineEventParse (char *rawstr)
 
     if (found == 0) {
         SCLogError(SC_ERR_UNKNOWN_DECODE_EVENT, "unknown decode event \"%s\"",
-                str_ptr);
+                copy_str);
         goto error;
     }
 
@@ -184,7 +185,8 @@ DetectEngineEventData *DetectEngineEventParse (char *rawstr)
     return de;
 
 error:
-    if (de) SCFree(de);
+    if (de)
+        SCFree(de);
     return NULL;
 }
 
@@ -214,7 +216,7 @@ static int _DetectEngineEventSetup (DetectEngineCtx *de_ctx, Signature *s, char 
         goto error;
 
     sm->type = smtype;
-    sm->ctx = (void *)de;
+    sm->ctx = (SigMatchCtx *)de;
 
     SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_MATCH);
     return 0;
@@ -377,9 +379,9 @@ int EngineEventTestParse06 (void)
         goto error;
 
     sm->type = DETECT_DECODE_EVENT;
-    sm->ctx = (void *)de;
+    sm->ctx = (SigMatchCtx *)de;
 
-    ret = DetectEngineEventMatch(&tv,NULL,p,NULL,sm);
+    ret = DetectEngineEventMatch(&tv,NULL,p,NULL,sm->ctx);
 
     if(ret) {
         SCFree(p);

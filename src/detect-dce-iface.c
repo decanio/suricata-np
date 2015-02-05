@@ -113,10 +113,10 @@ static inline DetectDceIfaceData *DetectDceIfaceArgParse(const char *arg)
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
     uint8_t hex_value;
-    const char *pcre_sub_str = NULL;
+    char copy_str[128] = "";
     int i = 0, j = 0;
     int len = 0;
-    char temp_str[3];
+    char temp_str[3] = "";
     int version;
 
     ret = pcre_exec(parse_regex, parse_regex_study, arg, strlen(arg), 0, 0, ov,
@@ -131,24 +131,24 @@ static inline DetectDceIfaceData *DetectDceIfaceArgParse(const char *arg)
     memset(did, 0, sizeof(DetectDceIfaceData));
 
     /* retrieve the iface uuid string.  iface uuid is a compulsion in the keyword */
-    res = pcre_get_substring(arg, ov, MAX_SUBSTRINGS, 1, &pcre_sub_str);
+    res = pcre_copy_substring(arg, ov, MAX_SUBSTRINGS, 1, copy_str, sizeof(copy_str));
     if (res < 0) {
-        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_get_substring failed");
+        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_copy_substring failed");
         goto error;
     }
 
     /* parse the iface uuid string */
-    len = strlen(pcre_sub_str);
+    len = strlen(copy_str);
     j = 0;
     temp_str[2] = '\0';
     for (i = 0; i < len; ) {
-        if (pcre_sub_str[i] == '-') {
+        if (copy_str[i] == '-') {
             i++;
             continue;
         }
 
-        temp_str[0] = pcre_sub_str[i];
-        temp_str[1] = pcre_sub_str[i + 1];
+        temp_str[0] = copy_str[i];
+        temp_str[1] = copy_str[i + 1];
 
         hex_value = strtol(temp_str, NULL, 16);
         did->uuid[j] = hex_value;
@@ -164,13 +164,13 @@ static inline DetectDceIfaceData *DetectDceIfaceArgParse(const char *arg)
     if (ret == 4 || ret == 5) {
         /* first handle the version number, so that we can do some additional
          * validations of the version number, wrt. the operator */
-        res = pcre_get_substring(arg, ov, MAX_SUBSTRINGS, 3, &pcre_sub_str);
+        res = pcre_copy_substring(arg, ov, MAX_SUBSTRINGS, 3, copy_str, sizeof(copy_str));
         if (res < 0) {
-            SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_get_substring failed");
+            SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_copy_substring failed");
             goto error;
         }
 
-        version = atoi(pcre_sub_str);
+        version = atoi(copy_str);
         if (version > UINT16_MAX) {
             SCLogError(SC_ERR_INVALID_SIGNATURE, "DCE_IFACE interface version "
                        "invalid: %d\n", version);
@@ -178,17 +178,14 @@ static inline DetectDceIfaceData *DetectDceIfaceArgParse(const char *arg)
         }
         did->version = version;
 
-        /* free the substring */
-        pcre_free_substring(pcre_sub_str);
-
         /* now let us handle the operator supplied with the version number */
-        res = pcre_get_substring(arg, ov, MAX_SUBSTRINGS, 2, &pcre_sub_str);
+        res = pcre_copy_substring(arg, ov, MAX_SUBSTRINGS, 2, copy_str, sizeof(copy_str));
         if (res < 0) {
-            SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_get_substring failed");
+            SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_copy_substring failed");
             goto error;
         }
 
-        switch (pcre_sub_str[0]) {
+        switch (copy_str[0]) {
             case '<':
                 if (version == 0) {
                     SCLogError(SC_ERR_INVALID_SIGNATURE, "DCE_IFACE interface "
@@ -217,9 +214,6 @@ static inline DetectDceIfaceData *DetectDceIfaceArgParse(const char *arg)
                 did->op = DETECT_DCE_IFACE_OP_NE;
                 break;
         }
-
-        /* free the substring */
-        pcre_free_substring(pcre_sub_str);
     }
 
     return did;
@@ -416,7 +410,7 @@ static int DetectDceIfaceTestParse01(void)
     }
 
     temp = s->sm_lists[DETECT_SM_LIST_AMATCH];
-    did = temp->ctx;
+    did = (DetectDceIfaceData *)temp->ctx;
     if (did == NULL) {
         SCReturnInt(0);
     }
@@ -459,7 +453,7 @@ static int DetectDceIfaceTestParse02(void)
     }
 
     temp = s->sm_lists[DETECT_SM_LIST_AMATCH];
-    did = temp->ctx;
+    did = (DetectDceIfaceData *)temp->ctx;
     if (did == NULL) {
         SCReturnInt(0);
     }
@@ -502,7 +496,7 @@ static int DetectDceIfaceTestParse03(void)
     }
 
     temp = s->sm_lists[DETECT_SM_LIST_AMATCH];
-    did = temp->ctx;
+    did = (DetectDceIfaceData *)temp->ctx;
     result &= 1;
     for (i = 0; i < 16; i++) {
         if (did->uuid[i] != test_uuid[i]) {
@@ -541,7 +535,7 @@ static int DetectDceIfaceTestParse04(void)
     }
 
     temp = s->sm_lists[DETECT_SM_LIST_AMATCH];
-    did = temp->ctx;
+    did = (DetectDceIfaceData *)temp->ctx;
     if (did == NULL) {
         SCReturnInt(0);
     }
@@ -581,7 +575,7 @@ static int DetectDceIfaceTestParse05(void)
     }
 
     temp = s->sm_lists[DETECT_SM_LIST_AMATCH];
-    did = temp->ctx;
+    did = (DetectDceIfaceData *)temp->ctx;
     if (did == NULL) {
         SCReturnInt(0);
     }
@@ -624,7 +618,7 @@ static int DetectDceIfaceTestParse06(void)
     }
 
     temp = s->sm_lists[DETECT_SM_LIST_AMATCH];
-    did = temp->ctx;
+    did = (DetectDceIfaceData *)temp->ctx;
     if (did == NULL) {
         SCReturnInt(0);
     }
@@ -667,7 +661,7 @@ static int DetectDceIfaceTestParse07(void)
     }
 
     temp = s->sm_lists[DETECT_SM_LIST_AMATCH];
-    did = temp->ctx;
+    did = (DetectDceIfaceData *)temp->ctx;
     if (did == NULL) {
         SCReturnInt(0);
     }
@@ -708,7 +702,7 @@ static int DetectDceIfaceTestParse08(void)
     }
 
     temp = s->sm_lists[DETECT_SM_LIST_AMATCH];
-    did = temp->ctx;
+    did = (DetectDceIfaceData *)temp->ctx;
     if (did == NULL) {
         SCReturnInt(0);
     }
@@ -747,7 +741,7 @@ static int DetectDceIfaceTestParse09(void)
     result = (DetectDceIfaceSetup(NULL, s, "12345678-1234-1234-1234-123456789ABC,=1,any_frag") == 0);
 
     temp = s->sm_lists[DETECT_SM_LIST_AMATCH];
-    did = temp->ctx;
+    did = (DetectDceIfaceData *)temp->ctx;
     if (did == NULL) {
         SCReturnInt(0);
     }
@@ -790,7 +784,7 @@ static int DetectDceIfaceTestParse10(void)
     }
 
     temp = s->sm_lists[DETECT_SM_LIST_AMATCH];
-    did = temp->ctx;
+    did = (DetectDceIfaceData *)temp->ctx;
     if (did == NULL) {
         SCReturnInt(0);
     }

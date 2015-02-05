@@ -913,6 +913,17 @@ static void SigRefFree (Signature *s)
     SCReturn;
 }
 
+static void SigMatchFreeArrays(Signature *s)
+{
+    if (s != NULL) {
+        int type;
+        for (type = 0; type < DETECT_SM_LIST_MAX; type++) {
+            if (s->sm_arrays[type] != NULL)
+                SCFree(s->sm_arrays[type]);
+        }
+    }
+}
+
 void SigFree(Signature *s)
 {
     if (s == NULL)
@@ -933,6 +944,7 @@ void SigFree(Signature *s)
             sm = nsm;
         }
     }
+    SigMatchFreeArrays(s);
 
     DetectAddressHeadCleanup(&s->src);
     DetectAddressHeadCleanup(&s->dst);
@@ -1535,12 +1547,6 @@ error:
     if (sig != NULL) {
         SigFree(sig);
     }
-
-    if (de_ctx->failure_fatal == 1) {
-        SCLogError(SC_ERR_INVALID_SIGNATURE, "Signature parsing failed: "
-                   "\"%s\"", sigstr);
-        exit(EXIT_FAILURE);
-    }
     return NULL;
 }
 
@@ -1578,13 +1584,6 @@ error:
     if (sig != NULL) {
         SigFree(sig);
     }
-
-    if (de_ctx->failure_fatal == 1) {
-        SCLogError(SC_ERR_INVALID_SIGNATURE, "Signature parsing failed: "
-                   "\"%s\"", sigstr);
-        exit(EXIT_FAILURE);
-    }
-
     /* if something failed, restore the old signum count
      * since we didn't install it */
     de_ctx->signum = oldsignum;

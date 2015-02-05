@@ -43,6 +43,8 @@
 #include "host.h"
 #include "defrag.h"
 
+#include "util-profiling.h"
+
 static const char *default_mode = NULL;
 
 int unix_socket_mode_is_running = 0;
@@ -290,25 +292,33 @@ TmEcode UnixSocketPcapFilesCheck(void *data)
         /* handle graceful shutdown of the flow engine, it's helper
          * threads and the packet threads */
         FlowKillFlowManagerThread();
-        TmThreadDisableThreadsWithTMS(TM_FLAG_RECEIVE_TM | TM_FLAG_DECODE_TM);
+        TmThreadDisableReceiveThreads();
         FlowForceReassembly();
-        TmThreadKillThreadsFamily(TVT_PPT);
-        TmThreadClearThreadsFamily(TVT_PPT);
+        TmThreadDisablePacketThreads();
         FlowKillFlowRecyclerThread();
-        RunModeShutDown();
 
-        /* kill remaining mgt threads */
+        /* kill the stats threads */
         TmThreadKillThreadsFamily(TVT_MGMT);
         TmThreadClearThreadsFamily(TVT_MGMT);
-        SCPerfReleaseResources();
+
+        /* kill packet threads -- already in 'disabled' state */
+        TmThreadKillThreadsFamily(TVT_PPT);
+        TmThreadClearThreadsFamily(TVT_PPT);
 
         /* mgt and ppt threads killed, we can run non thread-safe
          * shutdown functions */
+        SCPerfReleaseResources();
+        RunModeShutDown();
         FlowShutdown();
         HostCleanup();
         StreamTcpFreeConfig(STREAM_VERBOSE);
         DefragDestroy();
         TmqResetQueues();
+#ifdef PROFILING
+        if (profiling_rules_enabled)
+            SCProfilingDump();
+        SCProfilingDestroy();
+#endif
     }
     if (!TAILQ_EMPTY(&this->files)) {
         PcapFiles *cfile = TAILQ_FIRST(&this->files);
@@ -334,11 +344,16 @@ TmEcode UnixSocketPcapFilesCheck(void *data)
             return TM_ECODE_FAILED;
         }
         PcapFilesFree(cfile);
-        SCPerfInitCounterApi();
+#ifdef PROFILING
+        SCProfilingRulesGlobalInit();
+        SCProfilingKeywordsGlobalInit();
+        SCProfilingInit();
+#endif /* PROFILING */
         DefragInit();
         FlowInitConfig(FLOW_QUIET);
         StreamTcpInitConfig(STREAM_VERBOSE);
         RunModeInitializeOutputs();
+        SCPerfInitCounterApi();
         RunModeDispatch(RUNMODE_PCAP_FILE, NULL, this->de_ctx);
         FlowManagerThreadSpawn();
         FlowRecyclerThreadSpawn();

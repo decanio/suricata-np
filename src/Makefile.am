@@ -26,6 +26,7 @@ app-layer-htp.c app-layer-htp.h \
 app-layer-htp-file.c app-layer-htp-file.h \
 app-layer-htp-libhtp.c app-layer-htp-libhtp.h \
 app-layer-htp-mem.c app-layer-htp-mem.h \
+app-layer-htp-xff.c app-layer-htp-xff.h \
 app-layer-modbus.c app-layer-modbus.h \
 app-layer-parser.c app-layer-parser.h \
 app-layer-protos.c app-layer-protos.h \
@@ -70,7 +71,6 @@ detect-byte-extract.c detect-byte-extract.h \
 detect-bytejump.c detect-bytejump.h \
 detect-bytetest.c detect-bytetest.h \
 detect.c detect.h \
-detect-simd.c \
 detect-classtype.c detect-classtype.h \
 detect-content.c detect-content.h \
 detect-csum.c detect-csum.h \
@@ -215,6 +215,7 @@ log-file.c log-file.h \
 log-filestore.c log-filestore.h \
 log-httplog.c log-httplog.h \
 log-pcap.c log-pcap.h \
+log-stats.c log-stats.h \
 log-tcp-data.c log-tcp-data.h \
 log-tlslog.c log-tlslog.h \
 output.c output.h \
@@ -234,6 +235,7 @@ output-json-ssh.c output-json-ssh.h \
 output-json-tls.c output-json-tls.h \
 output-lua.c output-lua.h \
 output-packet.c output-packet.h \
+output-stats.c output-stats.h \
 output-streaming.c output-streaming.h \
 output-tx.c output-tx.h \
 output-json.c output-json.h \
@@ -247,6 +249,7 @@ runmode-erf-dag.c runmode-erf-dag.h \
 runmode-erf-file.c runmode-erf-file.h \
 runmode-ipfw.c runmode-ipfw.h \
 runmode-napatech.c runmode-napatech.h \
+runmode-netmap.c runmode-netmap.h \
 runmode-nfq.c runmode-nfq.h \
 runmode-nflog.c runmode-nflog.h \
 runmode-pcap.c runmode-pcap.h \
@@ -262,6 +265,7 @@ source-erf-file.c source-erf-file.h \
 source-ipfw.c source-ipfw.h \
 source-mpipe.c source-mpipe.h \
 source-napatech.c source-napatech.h \
+source-netmap.c source-netmap.h \
 source-nfq.c source-nfq.h \
 source-nflog.c source-nflog.h \
 source-pcap.c source-pcap.h \
@@ -341,9 +345,7 @@ util-mpm-ac.c util-mpm-ac.h \
 util-mpm-ac-gfbs.c util-mpm-ac-gfbs.h \
 util-mpm-ac-tile.c util-mpm-ac-tile.h \
 util-mpm-ac-tile-small.c \
-util-mpm-b2gc.c util-mpm-b2gc.h \
 util-mpm-b2g.c util-mpm-b2g.h \
-util-mpm-b2gm.c util-mpm-b2gm.h \
 util-mpm-b3g.c util-mpm-b3g.h \
 util-mpm.c util-mpm.h \
 util-mpm-wumanber.c util-mpm-wumanber.h \

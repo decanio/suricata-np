@@ -272,6 +272,16 @@ typedef unsigned int FlowRefCount;
 typedef unsigned short FlowRefCount;
 #endif
 
+#ifdef __tile__
+/* Atomic Ints performance better on Tile. */
+typedef unsigned int FlowStateType;
+#else
+typedef unsigned short FlowStateType;
+#endif
+
+/** Local Thread ID */
+typedef uint16_t FlowThreadId;
+
 /**
  *  \brief Flow data structure.
  *
@@ -309,6 +319,8 @@ typedef struct Flow_
 
     /* end of flow "header" */
 
+    SC_ATOMIC_DECLARE(FlowStateType, flow_state);
+
     /** how many pkts and stream msgs are using the flow *right now*. This
      *  variable is atomic so not protected by the Flow mutex "m".
      *
@@ -325,7 +337,9 @@ typedef struct Flow_
 
     uint32_t flags;
 
-    /* time stamp of last update (last packet) */
+    /* time stamp of last update (last packet). Set/updated under the
+     * flow and flow hash row locks, safe to read under either the
+     * flow lock or flow hash row lock. */
     struct timeval lastts;
 
 #ifdef FLOWLOCK_RWLOCK
@@ -356,6 +370,9 @@ typedef struct Flow_
      *  inspection. If it doesn't match the currently in use de_ctx, the
      *  de_state and stored sgh ptrs are reset. */
     uint32_t de_ctx_id;
+
+    /** Thread ID for the stream/detect portion of this flow */
+    FlowThreadId thread_id;
 
     /** application level storage ptrs.
      *
@@ -408,7 +425,6 @@ typedef struct FlowProto_ {
     uint32_t emerg_est_timeout;
     uint32_t emerg_closed_timeout;
     void (*Freefunc)(void *);
-    int (*GetProtoState)(void *);
 } FlowProto;
 
 void FlowHandlePacket (ThreadVars *, DecodeThreadVars *, Packet *);
@@ -422,7 +438,6 @@ void FlowRegisterTests (void);
 int FlowSetProtoTimeout(uint8_t ,uint32_t ,uint32_t ,uint32_t);
 int FlowSetProtoEmergencyTimeout(uint8_t ,uint32_t ,uint32_t ,uint32_t);
 int FlowSetProtoFreeFunc (uint8_t , void (*Free)(void *));
-int FlowSetFlowStateFunc (uint8_t , int (*GetProtoState)(void *));
 void FlowUpdateQueue(Flow *);
 
 struct FlowQueue_;

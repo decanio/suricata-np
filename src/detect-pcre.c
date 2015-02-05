@@ -737,6 +737,11 @@ static int DetectPcreSetup (DetectEngineCtx *de_ctx, Signature *s, char *regexst
     sm->ctx = (void *)pd;
     SigMatchAppendSMToList(s, sm, sm_list);
 
+    if (pd->capidx != 0) {
+        if (DetectFlowvarPostMatchSetup(s, pd->capidx) < 0)
+            goto error_nofree;
+    }
+
     if (!(pd->flags & DETECT_PCRE_RELATIVE))
         goto okay;
 
@@ -758,11 +763,6 @@ static int DetectPcreSetup (DetectEngineCtx *de_ctx, Signature *s, char *regexst
     } else if (prev_pm->type == DETECT_PCRE) {
         DetectPcreData *tmp = (DetectPcreData *)prev_pm->ctx;
         tmp->flags |= DETECT_PCRE_RELATIVE_NEXT;
-    }
-
-    if (pd->capidx != 0) {
-        if (DetectFlowvarPostMatchSetup(s, pd->capidx) < 0)
-            goto error_nofree;
     }
 
  okay:
@@ -3716,7 +3716,7 @@ static int DetectPcreFlowvarCapture01(void)
         s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->type != DETECT_PCRE) {
         goto end;
     }
-    DetectPcreData *pd = s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->ctx;
+    DetectPcreData *pd = (DetectPcreData *)s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->ctx;
 
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
@@ -3842,7 +3842,7 @@ static int DetectPcreFlowvarCapture02(void)
         s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->type != DETECT_PCRE) {
         goto end;
     }
-    DetectPcreData *pd1 = s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->ctx;
+    DetectPcreData *pd1 = (DetectPcreData *)s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->ctx;
 
     s = DetectEngineAppendSig(de_ctx, "alert http any any -> any any (content:\"Server: \"; http_header; pcre:\"/(?P<flow_ua>.*)\\r\\n/HR\"; priority:3; sid:2;)");
     if (s == NULL) {
@@ -3855,7 +3855,7 @@ static int DetectPcreFlowvarCapture02(void)
         s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->type != DETECT_PCRE) {
         goto end;
     }
-    DetectPcreData *pd2 = s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->ctx;
+    DetectPcreData *pd2 = (DetectPcreData *)s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->ctx;
 
     if (pd1->capidx != pd2->capidx) {
         printf("capidx mismatch, %u != %u: ", pd1->capidx, pd2->capidx);
@@ -3988,7 +3988,7 @@ static int DetectPcreFlowvarCapture03(void)
         s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->type != DETECT_PCRE) {
         goto end;
     }
-    DetectPcreData *pd1 = s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->ctx;
+    DetectPcreData *pd1 = (DetectPcreData *)s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->ctx;
 
     s = DetectEngineAppendSig(de_ctx, "alert http any any -> any any (content:\"Server: \"; http_header; pcre:\"/(?P<flow_ua>.*)\\r\\n/HR\"; content:\"xyz\"; http_header; priority:3; sid:2;)");
     if (s == NULL) {
@@ -4001,7 +4001,7 @@ static int DetectPcreFlowvarCapture03(void)
         s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->type != DETECT_PCRE) {
         goto end;
     }
-    DetectPcreData *pd2 = s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->ctx;
+    DetectPcreData *pd2 = (DetectPcreData *)s->sm_lists[DETECT_SM_LIST_HHDMATCH]->next->ctx;
 
     if (pd1->capidx != pd2->capidx) {
         printf("capidx mismatch, %u != %u: ", pd1->capidx, pd2->capidx);

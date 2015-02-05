@@ -66,7 +66,7 @@ static int pkt_pool_thread_key_initialized = 0;
 
 static void PktPoolThreadDestroy(void * buf)
 {
-    free(buf);
+    SCFreeAligned(buf);
 }
 
 static void TmqhPacketPoolInit(void)
@@ -101,6 +101,8 @@ static PktPool *ThreadPacketPoolCreate(void)
         SCLogError(SC_ERR_MEM_ALLOC, "malloc failed");
         exit(EXIT_FAILURE);
     }
+    memset(pool,0x0,sizeof(*pool));
+
     int r = pthread_setspecific(pkt_pool_thread_key, pool);
     if (r != 0) {
         SCLogError(SC_ERR_MEM_ALLOC, "pthread_setspecific failed with %d", r);
@@ -223,7 +225,7 @@ void PacketPoolReturnPacket(Packet *p)
 
     PktPool *pool = p->pool;
     if (pool == NULL) {
-        free(p);
+        PacketFree(p);
         return;
     }
 
@@ -252,6 +254,9 @@ void PacketPoolReturnPacket(Packet *p)
                 SCMutexUnlock(&pool->return_stack.mutex);
                 /* Clear the list of pending packets to return. */
                 my_pool->pending_pool = NULL;
+                my_pool->pending_head = NULL;
+                my_pool->pending_tail = NULL;
+                my_pool->pending_count = 0;
             }
         } else {
             /* Push onto return stack for this pool */
@@ -294,6 +299,21 @@ void PacketPoolInit(void)
 void PacketPoolDestroy(void)
 {
     Packet *p = NULL;
+    PktPool *my_pool = GetThreadPacketPool();
+    if (my_pool && my_pool->pending_pool != NULL) {
+        p = my_pool->pending_head;
+        while (p) {
+            Packet *next_p = p->next;
+            PacketFree(p);
+            p = next_p;
+            my_pool->pending_count--;
+        }
+        BUG_ON(my_pool->pending_count);
+        my_pool->pending_pool = NULL;
+        my_pool->pending_head = NULL;
+        my_pool->pending_tail = NULL;
+    }
+
     while ((p = PacketPoolGetPacket()) != NULL) {
         PacketFree(p);
     }

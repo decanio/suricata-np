@@ -133,6 +133,12 @@ static const char *RunModeTranslateModeToName(int runmode)
             return "MPIPE";
         case RUNMODE_AFP_DEV:
             return "AF_PACKET_DEV";
+        case RUNMODE_NETMAP:
+#ifdef HAVE_NETMAP
+            return "NETMAP";
+#else
+            return "NETMAP(DISABLED)";
+#endif
         case RUNMODE_UNIX_SOCKET:
             return "UNIX_SOCKET";
         default:
@@ -205,6 +211,7 @@ void RunModeRegisterRunModes(void)
     RunModeErfDagRegister();
     RunModeNapatechRegister();
     RunModeIdsAFPRegister();
+    RunModeIdsNetmapRegister();
     RunModeIdsNflogRegister();
     RunModeTileMpipeRegister();
     RunModeUnixSocketRegister();
@@ -272,7 +279,7 @@ void RunModeDispatch(int runmode, const char *custom_mode, DetectEngineCtx *de_c
         }
     }
 
-    if (custom_mode == NULL) {
+    if (custom_mode == NULL || strcmp(custom_mode, "auto") == 0) {
         switch (runmode) {
             case RUNMODE_PCAP_DEV:
                 custom_mode = RunModeIdsGetDefaultMode();
@@ -305,6 +312,9 @@ void RunModeDispatch(int runmode, const char *custom_mode, DetectEngineCtx *de_c
                 break;
             case RUNMODE_AFP_DEV:
                 custom_mode = RunModeAFPGetDefaultMode();
+                break;
+            case RUNMODE_NETMAP:
+                custom_mode = RunModeNetmapGetDefaultMode();
                 break;
             case RUNMODE_UNIX_SOCKET:
                 custom_mode = RunModeUnixSocketGetDefaultMode();
@@ -436,6 +446,16 @@ static TmModule *file_logger_module = NULL;
 static TmModule *filedata_logger_module = NULL;
 static TmModule *streaming_logger_module = NULL;
 
+int RunModeOutputFileEnabled(void)
+{
+    return (file_logger_module != NULL);
+}
+
+int RunModeOutputFiledataEnabled(void)
+{
+    return (filedata_logger_module != NULL);
+}
+
 /**
  * Cleanup the run mode.
  */
@@ -447,6 +467,8 @@ void RunModeShutDown(void)
     OutputTxShutdown();
     OutputFileShutdown();
     OutputFiledataShutdown();
+    OutputStreamingShutdown();
+    OutputStatsShutdown();
 
     /* Close any log files. */
     RunModeOutput *output;
@@ -461,6 +483,7 @@ void RunModeShutDown(void)
     tx_logger_module = NULL;
     file_logger_module = NULL;
     filedata_logger_module = NULL;
+    streaming_logger_module = NULL;
 }
 
 /** \internal
@@ -488,6 +511,11 @@ static void SetupOutput(const char *name, OutputModule *module, OutputCtx *outpu
     /* flow logger doesn't run in the packet path */
     if (module->FlowLogFunc) {
         OutputRegisterFlowLogger(module->name, module->FlowLogFunc, output_ctx);
+        return;
+    }
+    /* stats logger doesn't run in the packet path */
+    if (module->StatsLogFunc) {
+        OutputRegisterStatsLogger(module->name, module->StatsLogFunc, output_ctx);
         return;
     }
 
@@ -544,27 +572,6 @@ static void SetupOutput(const char *name, OutputModule *module, OutputCtx *outpu
             TAILQ_INSERT_TAIL(&RunModeOutputs, runmode_output, entries);
             SCLogDebug("__tx_logger__ added");
         }
-    } else if (module->FileLogFunc) {
-        SCLogDebug("%s is a file logger", module->name);
-        OutputRegisterFileLogger(module->name, module->FileLogFunc, output_ctx);
-
-        /* need one instance of the tx logger module */
-        if (file_logger_module == NULL) {
-            file_logger_module = TmModuleGetByName("__file_logger__");
-            if (file_logger_module == NULL) {
-                SCLogError(SC_ERR_INVALID_ARGUMENT,
-                        "TmModuleGetByName for __file_logger__ failed");
-                exit(EXIT_FAILURE);
-            }
-
-            RunModeOutput *runmode_output = SCCalloc(1, sizeof(RunModeOutput));
-            if (unlikely(runmode_output == NULL))
-                return;
-            runmode_output->tm_module = file_logger_module;
-            runmode_output->output_ctx = NULL;
-            TAILQ_INSERT_TAIL(&RunModeOutputs, runmode_output, entries);
-            SCLogDebug("__file_logger__ added");
-        }
     } else if (module->FiledataLogFunc) {
         SCLogDebug("%s is a filedata logger", module->name);
         OutputRegisterFiledataLogger(module->name, module->FiledataLogFunc, output_ctx);
@@ -585,6 +592,27 @@ static void SetupOutput(const char *name, OutputModule *module, OutputCtx *outpu
             runmode_output->output_ctx = NULL;
             TAILQ_INSERT_TAIL(&RunModeOutputs, runmode_output, entries);
             SCLogDebug("__filedata_logger__ added");
+        }
+    } else if (module->FileLogFunc) {
+        SCLogDebug("%s is a file logger", module->name);
+        OutputRegisterFileLogger(module->name, module->FileLogFunc, output_ctx);
+
+        /* need one instance of the tx logger module */
+        if (file_logger_module == NULL) {
+            file_logger_module = TmModuleGetByName("__file_logger__");
+            if (file_logger_module == NULL) {
+                SCLogError(SC_ERR_INVALID_ARGUMENT,
+                        "TmModuleGetByName for __file_logger__ failed");
+                exit(EXIT_FAILURE);
+            }
+
+            RunModeOutput *runmode_output = SCCalloc(1, sizeof(RunModeOutput));
+            if (unlikely(runmode_output == NULL))
+                return;
+            runmode_output->tm_module = file_logger_module;
+            runmode_output->output_ctx = NULL;
+            TAILQ_INSERT_TAIL(&RunModeOutputs, runmode_output, entries);
+            SCLogDebug("__file_logger__ added");
         }
     } else if (module->StreamingLogFunc) {
         SCLogDebug("%s is a streaming logger", module->name);
@@ -635,9 +663,6 @@ void RunModeInitializeOutputs(void)
     const char *enabled;
 
     TAILQ_FOREACH(output, &outputs->head, next) {
-
-        if (strcmp(output->val, "stats") == 0)
-            continue;
 
         output_config = ConfNodeLookupChild(output, output->val);
         if (output_config == NULL) {

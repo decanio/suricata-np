@@ -40,6 +40,7 @@
         (f)->sp = 0; \
         (f)->dp = 0; \
         (f)->proto = 0; \
+        SC_ATOMIC_INIT((f)->flow_state); \
         SC_ATOMIC_INIT((f)->use_cnt); \
         (f)->probing_parser_toserver_alproto_masks = 0; \
         (f)->probing_parser_toclient_alproto_masks = 0; \
@@ -55,6 +56,7 @@
         (f)->data_al_so_far[0] = 0; \
         (f)->data_al_so_far[1] = 0; \
         (f)->de_ctx_id = 0; \
+        (f)->thread_id = 0; \
         (f)->alparser = NULL; \
         (f)->alstate = NULL; \
         (f)->de_state = NULL; \
@@ -81,6 +83,7 @@
         (f)->sp = 0; \
         (f)->dp = 0; \
         (f)->proto = 0; \
+        SC_ATOMIC_RESET((f)->flow_state); \
         SC_ATOMIC_RESET((f)->use_cnt); \
         (f)->probing_parser_toserver_alproto_masks = 0; \
         (f)->probing_parser_toclient_alproto_masks = 0; \
@@ -97,6 +100,7 @@
         (f)->data_al_so_far[0] = 0; \
         (f)->data_al_so_far[1] = 0; \
         (f)->de_ctx_id = 0; \
+        (f)->thread_id = 0; \
         if ((f)->de_state != NULL) { \
             SCMutexLock(&(f)->de_state_m); \
             DetectEngineStateReset((f)->de_state, (STREAM_TOSERVER | STREAM_TOCLIENT)); \
@@ -114,6 +118,7 @@
 
 #define FLOW_DESTROY(f) do { \
         FlowCleanupAppLayer((f)); \
+        SC_ATOMIC_DESTROY((f)->flow_state); \
         SC_ATOMIC_DESTROY((f)->use_cnt); \
         \
         FLOWLOCK_DESTROY((f)); \

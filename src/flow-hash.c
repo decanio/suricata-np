@@ -529,6 +529,9 @@ Flow *FlowGetFlowFromHash(ThreadVars *tv, DecodeThreadVars *dtv, const Packet *p
         FlowInit(f, p);
         f->fb = fb;
 
+        /* update the last seen timestamp of this flow */
+        COPY_TIMESTAMP(&p->ts,&f->lastts);
+
         FBLOCK_UNLOCK(fb);
         FlowHashCountUpdate;
         return f;
@@ -564,6 +567,9 @@ Flow *FlowGetFlowFromHash(ThreadVars *tv, DecodeThreadVars *dtv, const Packet *p
                 FlowInit(f, p);
                 f->fb = fb;
 
+                /* update the last seen timestamp of this flow */
+                COPY_TIMESTAMP(&p->ts,&f->lastts);
+
                 FBLOCK_UNLOCK(fb);
                 FlowHashCountUpdate;
                 return f;
@@ -589,6 +595,9 @@ Flow *FlowGetFlowFromHash(ThreadVars *tv, DecodeThreadVars *dtv, const Packet *p
 
                 /* found our flow, lock & return */
                 FLOWLOCK_WRLOCK(f);
+                /* update the last seen timestamp of this flow */
+                COPY_TIMESTAMP(&p->ts,&f->lastts);
+
                 FBLOCK_UNLOCK(fb);
                 FlowHashCountUpdate;
                 return f;
@@ -598,6 +607,9 @@ Flow *FlowGetFlowFromHash(ThreadVars *tv, DecodeThreadVars *dtv, const Packet *p
 
     /* lock & return */
     FLOWLOCK_WRLOCK(f);
+    /* update the last seen timestamp of this flow */
+    COPY_TIMESTAMP(&p->ts,&f->lastts);
+
     FBLOCK_UNLOCK(fb);
     FlowHashCountUpdate;
     return f;
@@ -666,7 +678,7 @@ static Flow *FlowGetUsedFlow(ThreadVars *tv, DecodeThreadVars *dtv)
         f->fb = NULL;
         FBLOCK_UNLOCK(fb);
 
-        int state = FlowGetFlowState(f);
+        int state = SC_ATOMIC_GET(f->flow_state);
         if (state == FLOW_STATE_NEW)
             f->flow_end_flags |= FLOW_END_FLAG_STATE_NEW;
         else if (state == FLOW_STATE_ESTABLISHED)

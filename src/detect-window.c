@@ -47,7 +47,7 @@
 static pcre *parse_regex;
 static pcre_extra *parse_regex_study;
 
-int DetectWindowMatch(ThreadVars *, DetectEngineThreadCtx *, Packet *, Signature *, SigMatch *);
+int DetectWindowMatch(ThreadVars *, DetectEngineThreadCtx *, Packet *, Signature *, const SigMatchCtx *);
 int DetectWindowSetup(DetectEngineCtx *, Signature *, char *);
 void DetectWindowRegisterTests(void);
 void DetectWindowFree(void *);
@@ -104,9 +104,9 @@ error:
  * \retval 0 no match
  * \retval 1 match
  */
-int DetectWindowMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx, Packet *p, Signature *s, SigMatch *m)
+int DetectWindowMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx, Packet *p, Signature *s, const SigMatchCtx *ctx)
 {
-    DetectWindowData *wd = (DetectWindowData *)m->ctx;
+    const DetectWindowData *wd = (const DetectWindowData *)ctx;
 
     if ( !(PKT_IS_TCP(p)) || wd == NULL || PKT_IS_PSEUDOPKT(p)) {
         return 0;
@@ -130,15 +130,11 @@ int DetectWindowMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx, Packet *p, 
 DetectWindowData *DetectWindowParse(char *windowstr)
 {
     DetectWindowData *wd = NULL;
-    char *args[3] = {NULL,NULL,NULL}; /* PR: Why PCRE MAX_SUBSTRING must be multiple of 3? */
-	#define MAX_SUBSTRINGS 30
-
+#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
 
-
     ret = pcre_exec(parse_regex, parse_regex_study, windowstr, strlen(windowstr), 0, 0, ov, MAX_SUBSTRINGS);
-
     if (ret < 1 || ret > 3) {
         SCLogError(SC_ERR_PCRE_MATCH, "pcre_exec parse error, ret %" PRId32 ", string %s", ret, windowstr);
         goto error;
@@ -149,45 +145,39 @@ DetectWindowData *DetectWindowParse(char *windowstr)
         goto error;
 
     if (ret > 1) {
-        const char *str_ptr;
-        res = pcre_get_substring((char *)windowstr, ov, MAX_SUBSTRINGS, 1, &str_ptr);
+        char copy_str[128] = "";
+        res = pcre_copy_substring((char *)windowstr, ov, MAX_SUBSTRINGS, 1,
+                copy_str, sizeof(copy_str));
         if (res < 0) {
-            SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_get_substring failed");
+            SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_copy_substring failed");
             goto error;
         }
-        args[0] = (char *)str_ptr;
+
         /* Detect if it's negated */
-        if (args[0][0] == '!')
+        if (copy_str[0] == '!')
             wd->negated = 1;
         else
             wd->negated = 0;
 
         if (ret > 2) {
-            res = pcre_get_substring((char *)windowstr, ov, MAX_SUBSTRINGS, 2, &str_ptr);
+            res = pcre_copy_substring((char *)windowstr, ov, MAX_SUBSTRINGS, 2,
+                    copy_str, sizeof(copy_str));
             if (res < 0) {
-                SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_get_substring failed");
+                SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_copy_substring failed");
                 goto error;
             }
 
-            /* Get the window size if it's a valid value (in packets, we should alert if this doesn't happend from decode) */
-            if (-1 == ByteExtractStringUint16(&wd->size, 10, 0, str_ptr)) {
+            /* Get the window size if it's a valid value (in packets, we
+             * should alert if this doesn't happend from decode) */
+            if (-1 == ByteExtractStringUint16(&wd->size, 10, 0, copy_str)) {
                 goto error;
             }
         }
     }
 
-	int i = 0;
-    for (i = 0; i < (ret -1); i++){
-        if (args[i] != NULL)
-            SCFree(args[i]);
-    }
     return wd;
 
 error:
-    for (i = 0; i < (ret -1) && i < 3; i++){
-        if (args[i] != NULL)
-            SCFree(args[i]);
-    }
     if (wd != NULL)
         DetectWindowFree(wd);
     return NULL;
@@ -219,7 +209,7 @@ int DetectWindowSetup (DetectEngineCtx *de_ctx, Signature *s, char *windowstr)
         goto error;
 
     sm->type = DETECT_WINDOW;
-    sm->ctx = (void *)wd;
+    sm->ctx = (SigMatchCtx *)wd;
 
     SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_MATCH);
     s->flags |= SIG_FLAG_REQUIRE_PACKET;

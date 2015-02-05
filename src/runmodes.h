@@ -35,6 +35,7 @@ enum {
     RUNMODE_ERF_FILE,
     RUNMODE_DAG,
     RUNMODE_AFP_DEV,
+    RUNMODE_NETMAP,
     RUNMODE_TILERA_MPIPE,
     RUNMODE_UNITTEST,
     RUNMODE_NAPATECH,
@@ -72,6 +73,11 @@ void RunModeInitializeOutputs(void);
 void SetupOutputs(ThreadVars *);
 void RunModeShutDown(void);
 
+/* bool indicating if file logger is enabled */
+int RunModeOutputFileEnabled(void);
+/* bool indicating if filedata logger is enabled */
+int RunModeOutputFiledataEnabled(void);
+
 #include "runmode-pcap.h"
 #include "runmode-pcap-file.h"
 #include "runmode-pfring.h"
@@ -84,6 +90,7 @@ void RunModeShutDown(void);
 #include "runmode-af-packet.h"
 #include "runmode-nflog.h"
 #include "runmode-unix-socket.h"
+#include "runmode-netmap.h"
 
 int threading_set_cpu_affinity;
 extern float threading_detect_ratio;

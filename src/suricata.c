@@ -96,6 +96,7 @@
 #include "output-json-smtp.h"
 #include "log-filestore.h"
 #include "log-tcp-data.h"
+#include "log-stats.h"
 
 #include "output-json.h"
 
@@ -118,6 +119,7 @@
 #include "source-napatech.h"
 
 #include "source-af-packet.h"
+#include "source-netmap.h"
 #include "source-mpipe.h"
 
 #include "respond-reject.h"
@@ -604,6 +606,9 @@ void usage(const char *progname)
 #ifdef HAVE_AF_PACKET
     printf("\t--af-packet[=<dev>]                  : run in af-packet mode, no value select interfaces from suricata.yaml\n");
 #endif
+#ifdef HAVE_NETMAP
+    printf("\t--netmap[=<dev>]                     : run in netmap mode, no value select interfaces from suricata.yaml\n");
+#endif
 #ifdef HAVE_PFRING
     printf("\t--pfring[=<dev>]                     : run in pfring mode, use interfaces from suricata.yaml\n");
     printf("\t--pfring-int <dev>                   : run in pfring mode, use interface <dev>\n");
@@ -640,6 +645,7 @@ void SCPrintBuildInfo(void)
     char *bits = "<unknown>-bits";
     char *endian = "<unknown>-endian";
     char features[2048] = "";
+    char *tls = "pthread key";
 
 #ifdef REVISION
     printf("This is %s version %s (rev %s)\n", PROG_NAME, PROG_VER, xstr(REVISION));
@@ -681,6 +687,9 @@ void SCPrintBuildInfo(void)
 #ifdef HAVE_AF_PACKET
     strlcat(features, "AF_PACKET ", sizeof(features));
 #endif
+#ifdef HAVE_NETMAP
+    strlcat(features, "NETMAP ", sizeof(features));
+#endif
 #ifdef HAVE_PACKET_FANOUT
     strlcat(features, "HAVE_PACKET_FANOUT ", sizeof(features));
 #endif
@@ -716,6 +725,9 @@ void SCPrintBuildInfo(void)
 #endif
 #ifdef PROFILE_LOCKING
     strlcat(features, "PROFILE_LOCKING ", sizeof(features));
+#endif
+#ifdef TLS
+    strlcat(features, "TLS ", sizeof(features));
 #endif
     if (strlen(features) == 0) {
         strlcat(features, "none", sizeof(features));
@@ -797,10 +809,14 @@ void SCPrintBuildInfo(void)
 #ifdef CLS
     printf("L1 cache line size (CLS)=%d\n", CLS);
 #endif
+#ifdef TLS
+    tls = "__thread";
+#endif
+    printf("thread local storage method: %s\n", tls);
 
     printf("compiled with %s, linked against %s\n",
            HTP_VERSION_STRING_FULL, htp_get_version());
-
+    printf("\n");
 #include "build-info.h"
 }
 
@@ -835,6 +851,9 @@ void RegisterAllModules()
     /* af-packet */
     TmModuleReceiveAFPRegister();
     TmModuleDecodeAFPRegister();
+    /* netmap */
+    TmModuleReceiveNetmapRegister();
+    TmModuleDecodeNetmapRegister();
     /* pfring */
     TmModuleReceivePfringRegister();
     TmModuleDecodePfringRegister();
@@ -892,6 +911,8 @@ void RegisterAllModules()
     TmModuleJsonDnsLogRegister();
     /* tcp streaming data */
     TmModuleLogTcpDataLogRegister();
+    /* log stats */
+    TmModuleLogStatsLogRegister();
 
     TmModuleJsonAlertLogRegister();
     /* flow/netflow */
@@ -904,6 +925,7 @@ void RegisterAllModules()
     TmModuleFileLoggerRegister();
     TmModuleFiledataLoggerRegister();
     TmModuleStreamingLoggerRegister();
+    TmModuleStatsLoggerRegister();
     TmModuleDebugList();
     /* nflog */
     TmModuleReceiveNFLOGRegister();
@@ -1003,6 +1025,26 @@ static TmEcode ParseInterfacesList(int run_mode, char *pcap_dev)
                 EngineModeSetIPS();
             }
         }
+#ifdef HAVE_NETMAP
+    } else if (run_mode == RUNMODE_NETMAP) {
+        /* iface has been set on command line */
+        if (strlen(pcap_dev)) {
+            if (ConfSetFinal("netmap.live-interface", pcap_dev) != 1) {
+                SCLogError(SC_ERR_INITIALIZATION, "Failed to set netmap.live-interface");
+                SCReturnInt(TM_ECODE_FAILED);
+            }
+        } else {
+            int ret = LiveBuildDeviceList("netmap");
+            if (ret == 0) {
+                SCLogError(SC_ERR_INITIALIZATION, "No interface found in config for netmap");
+                SCReturnInt(TM_ECODE_FAILED);
+            }
+            if (NetmapRunModeIsIPS()) {
+                SCLogInfo("Netmap: Setting IPS mode");
+                EngineModeSetIPS();
+            }
+        }
+#endif
 #ifdef HAVE_NFLOG
     } else if (run_mode == RUNMODE_NFLOG) {
         int ret = LiveBuildDeviceListCustom("nflog", "group");
@@ -1117,6 +1159,7 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
         {"pfring-cluster-id", required_argument, 0, 0},
         {"pfring-cluster-type", required_argument, 0, 0},
         {"af-packet", optional_argument, 0, 0},
+        {"netmap", optional_argument, 0, 0},
         {"pcap", optional_argument, 0, 0},
 #ifdef BUILD_UNIX_SOCKET
         {"unix-socket", optional_argument, 0, 0},
@@ -1236,6 +1279,36 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
                         "host, make sure to pass --enable-af-packet to "
                         "configure when building.");
                 return TM_ECODE_FAILED;
+#endif
+            } else if (strcmp((long_opts[option_index]).name , "netmap") == 0){
+#ifdef HAVE_NETMAP
+                if (suri->run_mode == RUNMODE_UNKNOWN) {
+                    suri->run_mode = RUNMODE_NETMAP;
+                    if (optarg) {
+                        LiveRegisterDevice(optarg);
+                        memset(suri->pcap_dev, 0, sizeof(suri->pcap_dev));
+                        strlcpy(suri->pcap_dev, optarg,
+                                ((strlen(optarg) < sizeof(suri->pcap_dev)) ?
+                                 (strlen(optarg) + 1) : sizeof(suri->pcap_dev)));
+                    }
+                } else if (suri->run_mode == RUNMODE_NETMAP) {
+                    SCLogWarning(SC_WARN_PCAP_MULTI_DEV_EXPERIMENTAL, "using "
+                            "multiple devices to get packets is experimental.");
+                    if (optarg) {
+                        LiveRegisterDevice(optarg);
+                    } else {
+                        SCLogInfo("Multiple netmap option without interface on each is useless");
+                        break;
+                    }
+                } else {
+                    SCLogError(SC_ERR_MULTIPLE_RUN_MODE, "more than one run mode "
+                            "has been specified");
+                    usage(argv[0]);
+                    return TM_ECODE_FAILED;
+                }
+#else
+                    SCLogError(SC_ERR_NO_NETMAP, "NETMAP not enabled.");
+                    return TM_ECODE_FAILED;
 #endif
             } else if (strcmp((long_opts[option_index]).name, "nflog") == 0) {
 #ifdef HAVE_NFLOG
@@ -1913,11 +1986,7 @@ static void SetupDelayedDetect(DetectEngineCtx *de_ctx, SCInstance *suri)
 static int LoadSignatures(DetectEngineCtx *de_ctx, SCInstance *suri)
 {
     if (SigLoadSignatures(de_ctx, suri->sig_file, suri->sig_file_exclusive) < 0) {
-        if (suri->sig_file == NULL) {
-            SCLogError(SC_ERR_OPENING_FILE, "Signature file has not been provided");
-        } else {
-            SCLogError(SC_ERR_NO_RULES_LOADED, "Loading signatures failed.");
-        }
+        SCLogError(SC_ERR_NO_RULES_LOADED, "Loading signatures failed.");
         if (de_ctx->failure_fatal)
             return TM_ECODE_FAILED;
     }
@@ -1948,6 +2017,7 @@ static int ConfigGetCaptureValue(SCInstance *suri)
         switch (suri->run_mode) {
             case RUNMODE_PCAP_DEV:
             case RUNMODE_AFP_DEV:
+            case RUNMODE_NETMAP:
             case RUNMODE_PFRING:
                 /* FIXME this don't work effficiently in multiinterface */
                 /* find payload for interface and use it */
@@ -2069,14 +2139,12 @@ static int PostConfLoadedSetup(SCInstance *suri)
     StorageInit();
     CIDRInit();
     SigParsePrepare();
-    //PatternMatchPrepare(mpm_ctx, MPM_B2G);
-    if (suri->run_mode != RUNMODE_UNIX_SOCKET) {
-        SCPerfInitCounterApi();
-    }
 #ifdef PROFILING
-    SCProfilingRulesGlobalInit();
-    SCProfilingKeywordsGlobalInit();
-    SCProfilingInit();
+    if (suri->run_mode != RUNMODE_UNIX_SOCKET) {
+        SCProfilingRulesGlobalInit();
+        SCProfilingKeywordsGlobalInit();
+        SCProfilingInit();
+    }
 #endif /* PROFILING */
     SCReputationInitCtx();
     SCProtoNameInit();
@@ -2214,10 +2282,10 @@ int main(int argc, char **argv)
     }
 
     if (MayDaemonize(&suri) != TM_ECODE_OK)
-            exit(EXIT_FAILURE);
+        exit(EXIT_FAILURE);
 
     if (InitSignalHandler(&suri) != TM_ECODE_OK)
-            exit(EXIT_FAILURE);
+        exit(EXIT_FAILURE);
 
 #ifdef HAVE_NSS
     /* init NSS for md5 */
@@ -2260,7 +2328,6 @@ int main(int argc, char **argv)
     if (MagicInit() != 0)
         exit(EXIT_FAILURE);
 
-
     if (de_ctx != NULL) {
         SetupDelayedDetect(de_ctx, &suri);
 
@@ -2283,10 +2350,11 @@ int main(int argc, char **argv)
 
     if (suri.run_mode != RUNMODE_UNIX_SOCKET) {
         RunModeInitializeOutputs();
+        SCPerfInitCounterApi();
     }
 
     if (ParseInterfacesList(suri.run_mode, suri.pcap_dev) != TM_ECODE_OK) {
-            exit(EXIT_FAILURE);
+        exit(EXIT_FAILURE);
     }
 
     if(suri.run_mode == RUNMODE_CONF_TEST){
@@ -2395,20 +2463,19 @@ int main(int argc, char **argv)
         FlowKillFlowManagerThread();
     }
 
-    /* Disable packet acquire thread first */
-    TmThreadDisableThreadsWithTMS(TM_FLAG_RECEIVE_TM | TM_FLAG_DECODE_TM);
+    /* Disable packet acquisition first */
+    TmThreadDisableReceiveThreads();
 
     if (suri.run_mode != RUNMODE_UNIX_SOCKET) {
         FlowForceReassembly();
+        /* kill receive threads when they have processed all
+         * flow timeout packets */
+        TmThreadDisablePacketThreads();
     }
 
     SCPrintElapsedTime(&suri);
 
     if (suri.rule_reload == 1) {
-        /* Disable detect threads first.  This is required by live rule swap */
-        TmThreadDisableThreadsWithTMS(TM_FLAG_RECEIVE_TM | TM_FLAG_DECODE_TM |
-                                      TM_FLAG_STREAM_TM | TM_FLAG_DETECT_TM);
-
         /* wait if live rule swap is in progress */
         if (UtilSignalIsHandler(SIGUSR2, SignalHandlerSigusr2Idle)) {
             SCLogInfo("Live rule swap in progress.  Waiting for it to end "
@@ -2433,6 +2500,7 @@ int main(int argc, char **argv)
         FlowKillFlowRecyclerThread();
     }
 
+    /* kill remaining threads */
     TmThreadKillThreads();
 
     if (suri.run_mode != RUNMODE_UNIX_SOCKET) {
@@ -2486,9 +2554,11 @@ int main(int argc, char **argv)
 #endif
 
 #ifdef PROFILING
-    if (profiling_rules_enabled)
-        SCProfilingDump();
-    SCProfilingDestroy();
+    if (suri.run_mode != RUNMODE_UNIX_SOCKET) {
+        if (profiling_rules_enabled)
+            SCProfilingDump();
+        SCProfilingDestroy();
+    }
 #endif
 
 #ifdef OS_WIN32
@@ -2504,6 +2574,7 @@ int main(int argc, char **argv)
         MpmCudaBufferDeSetup();
     CudaHandlerFreeProfiles();
 #endif
+    ConfDeInit();
 
     exit(engine_retval);
 }

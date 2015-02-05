@@ -164,6 +164,7 @@
     AC_FUNC_MALLOC
     AC_FUNC_REALLOC
     AC_CHECK_FUNCS([gettimeofday memset strcasecmp strchr strdup strerror strncasecmp strtol strtoul memchr memrchr])
+    AC_CHECK_FUNCS([strlcpy strlcat])
 
     # Add large file support
     AC_SYS_LARGEFILE
@@ -224,13 +225,18 @@
     esac
     AC_MSG_RESULT(ok)
 
-    # check if our target supports thread local storage
-    AC_MSG_CHECKING(for thread local storage __thread support)
-    AC_TRY_COMPILE([#include <stdlib.h>],
-        [ static __thread int i; i = 1; i++; ],
-        [AC_DEFINE([TLS], [1], [Thread local storage])
-         AC_MSG_RESULT([yes]) ],
-        [AC_MSG_RESULT([no])])
+  # disable TLS on user request
+    AC_ARG_ENABLE(threading-tls,
+           AS_HELP_STRING([--disable-threading-tls], [Disable TLS (thread local storage)])], [enable_tls="$enableval"],[enable_tls=yes])
+    AS_IF([test "x$enable_tls" = "xyes"], [
+        # check if our target supports thread local storage
+        AC_MSG_CHECKING(for thread local storage __thread support)
+        AC_TRY_COMPILE([#include <stdlib.h>],
+            [ static __thread int i; i = 1; i++; ],
+            [AC_DEFINE([TLS], [1], [Thread local storage])
+             AC_MSG_RESULT([yes]) ],
+            [AC_MSG_RESULT([no])])
+    ])
 
     #Enable support for gcc compile time security options. There is no great way to do detection of valid cflags that I have found
     #AX_CFLAGS_GCC_OPTION don't seem to do a better job than the code below and are a pain because of extra m4 files etc.
@@ -1049,6 +1055,22 @@
             [[#include <linux/if_packet.h>]])
     ])
 
+  # Netmap support
+    AC_ARG_ENABLE(netmap,
+            AS_HELP_STRING([--enable-netmap], [Enable Netmap support]),,[enable_netmap=no])
+    AC_ARG_WITH(netmap_includes,
+            [  --with-netmap-includes=DIR netmap include directory],
+            [with_netmap_includes="$withval"],[with_netmap_includes=no])
+
+    AS_IF([test "x$enable_netmap" = "xyes"], [
+        CFLAGS="$CFLAGS -DHAVE_NETMAP"
+
+        if test "$with_netmap_includes" != "no"; then
+            CPPFLAGS="${CPPFLAGS} -I${with_netmap_includes}"
+        fi
+
+        AC_CHECK_HEADER(net/netmap_user.h,,[AC_ERROR(net/netmap_user.h not found ...)],)
+  ])
 
   # libhtp
     AC_ARG_ENABLE(non-bundled-htp,
@@ -1711,6 +1733,7 @@ SURICATA_BUILD_CONF="Suricata Configuration:
   NFQueue support:                         ${enable_nfqueue}
   NFLOG support:                           ${enable_nflog}
   IPFW support:                            ${enable_ipfw}
+  Netmap support:                          ${enable_netmap}
   DAG enabled:                             ${enable_dag}
   Napatech enabled:                        ${enable_napatech}
   Unix socket enabled:                     ${enable_unixsocket}
