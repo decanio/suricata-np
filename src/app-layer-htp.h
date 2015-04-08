@@ -36,6 +36,7 @@
 #include "util-radix-tree.h"
 #include "util-file.h"
 #include "app-layer-htp-mem.h"
+#include "detect-engine-state.h"
 
 #include <htp/htp.h>
 
@@ -121,6 +122,8 @@ enum {
     HTTP_DECODER_EVENT_REQUEST_SERVER_PORT_TCP_PORT_MISMATCH,
     HTTP_DECODER_EVENT_URI_HOST_INVALID,
     HTTP_DECODER_EVENT_HEADER_HOST_INVALID,
+    HTTP_DECODER_EVENT_METHOD_DELIM_NON_COMPLIANT,
+    HTTP_DECODER_EVENT_URI_DELIM_NON_COMPLIANT,
 
     /* suricata errors/warnings */
     HTTP_DECODER_EVENT_MULTIPART_GENERIC_ERROR,
@@ -170,8 +173,6 @@ typedef struct HtpBody_ {
     HtpBodyChunk *first; /**< Pointer to the first chunk */
     HtpBodyChunk *last;  /**< Pointer to the last chunk */
 
-    /* Holds the length of the htp request body */
-    uint64_t content_len;
     /* Holds the length of the htp request body seen so far */
     uint64_t content_len_so_far;
     /* parser tracker */
@@ -228,6 +229,7 @@ typedef struct HtpTxUserData_ {
     uint8_t request_body_type;
     uint8_t response_body_type;
 
+    DetectEngineState *de_state;
 } HtpTxUserData;
 
 typedef struct HtpState_ {

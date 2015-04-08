@@ -105,6 +105,8 @@ outputs:
             # payload-printable: yes # enable dumping payload in printable (lossy) format
             # packet: yes            # enable dumping of packet (without stream segments)
             # http: yes              # enable dumping of http fields
+            # tls: yes               # enable dumping of tls fields
+            # ssh: yes               # enable dumping of ssh fields
 
             # HTTP X-Forwarded-For support by adding an extra field or overwriting
             # the source or destination IP address (depending on flow direction)
@@ -134,7 +136,8 @@ outputs:
         - files:
             force-magic: no   # force logging magic on all logged files
             force-md5: no     # force logging of md5 checksums
-        #- drop
+        #- drop:
+        #    alerts: no       # log alerts that caused drops
         - smtp
         - ssh
         # bi-directional flows
@@ -525,9 +528,6 @@ detect-engine:
       toserver-dp-groups: 25
   - sgh-mpm-context: auto
   - inspection-recursion-limit: 3000
-  # When rule-reload is enabled, sending a USR2 signal to the Suricata process
-  # will trigger a live rule reload. Experimental feature, use with care.
-  #- rule-reload: true
   # If set to yes, the loading of signatures will be made after the capture
   # is started. This will limit the downtime in IPS mode.
   #- delayed-detect: yes
@@ -620,7 +620,7 @@ cuda:
 
 # Select the multi pattern algorithm you want to run for scan/search the
 # in the engine. The supported algorithms are b2g, b3g, wumanber,
-# ac and ac-gfbs.
+# ac, ac-bs and ac-gfbs.
 #
 # The mpm you choose also decides the distribution of mpm contexts for
 # signature groups, specified by the conf - "detect-engine.sgh-mpm-context".
@@ -1086,6 +1086,7 @@ rule-files:
  - dns-events.rules     # available in suricata sources under rules dir
  - tls-events.rules     # available in suricata sources under rules dir
  - modbus-events.rules  # available in suricata sources under rules dir
+ - app-layer-events.rules  # available in suricata sources under rules dir
 
 classification-file: @e_sysconfdir@classification.config
 reference-config-file: @e_sysconfdir@reference.config

@@ -310,6 +310,7 @@ ConfYamlParse(yaml_parser_t *parser, ConfNode *parent, int inseq)
             SCLogDebug("event.type=YAML_SEQUENCE_START_EVENT; state=%d", state);
             if (ConfYamlParse(parser, node, 1) != 0)
                 goto fail;
+            node->is_seq = 1;
             state = CONF_KEY;
         }
         else if (event.type == YAML_SEQUENCE_END_EVENT) {
@@ -448,10 +449,75 @@ ConfYamlLoadString(const char *string, size_t len)
     return ret;
 }
 
+/**
+ * \brief Load configuration from a YAML file, insert in tree at 'prefix'
+ *
+ * This function will load a configuration file and insert it into the
+ * config tree at 'prefix'. This means that if this is called with prefix
+ * "abc" and the file contains a parameter "def", it will be loaded as
+ * "abc.def".
+ *
+ * \param filename Filename of configuration file to load.
+ * \param prefix Name prefix to use.
+ *
+ * \retval 0 on success, -1 on failure.
+ */
+int
+ConfYamlLoadFileWithPrefix(const char *filename, const char *prefix)
+{
+    FILE *infile;
+    yaml_parser_t parser;
+    int ret;
+    ConfNode *root = ConfGetNode(prefix);
+
+    if (yaml_parser_initialize(&parser) != 1) {
+        SCLogError(SC_ERR_FATAL, "failed to initialize yaml parser.");
+        return -1;
+    }
+
+    struct stat stat_buf;
+    if (stat(filename, &stat_buf) == 0) {
+        if (stat_buf.st_mode & S_IFDIR) {
+            SCLogError(SC_ERR_FATAL, "yaml argument is not a file but a directory: %s. "
+                    "Please specify the yaml file in your -c option.", filename);
+            return -1;
+        }
+    }
+
+    infile = fopen(filename, "r");
+    if (infile == NULL) {
+        SCLogError(SC_ERR_FATAL, "failed to open file: %s: %s", filename,
+            strerror(errno));
+        yaml_parser_delete(&parser);
+        return -1;
+    }
+
+    if (conf_dirname == NULL) {
+        ConfYamlSetConfDirname(filename);
+    }
+
+    if (root == NULL) {
+        /* if node at 'prefix' doesn't yet exist, add a place holder */
+        ConfSet(prefix, "<prefix root node>");
+        root = ConfGetNode(prefix);
+        if (root == NULL) {
+            fclose(infile);
+            yaml_parser_delete(&parser);
+            return -1;
+        }
+    }
+    yaml_parser_set_input_file(&parser, infile);
+    ret = ConfYamlParse(&parser, root, 0);
+    yaml_parser_delete(&parser);
+    fclose(infile);
+
+    return ret;
+}
+
 #ifdef UNITTESTS
 
 static int
-ConfYamlRuleFileTest(void)
+ConfYamlSequenceTest(void)
 {
     char input[] = "\
 %YAML 1.1\n\
@@ -472,6 +538,8 @@ default-log-dir: /tmp\n\
     node = ConfGetNode("rule-files");
     if (node == NULL)
         return 0;
+    if (!ConfNodeIsSequence(node))
+        return 0;
     if (TAILQ_EMPTY(&node->head))
         return 0;
     int i = 0;
@@ -480,9 +548,15 @@ default-log-dir: /tmp\n\
         if (i == 0) {
             if (strcmp(filename->val, "netbios.rules") != 0)
                 return 0;
+            if (ConfNodeIsSequence(filename))
+                return 0;
+            if (filename->is_seq != 0)
+                return 0;
         }
         else if (i == 1) {
             if (strcmp(filename->val, "x11.rules") != 0)
+                return 0;
+            if (ConfNodeIsSequence(filename))
                 return 0;
         }
         else {
@@ -864,7 +938,7 @@ void
 ConfYamlRegisterTests(void)
 {
 #ifdef UNITTESTS
-    UtRegisterTest("ConfYamlRuleFileTest", ConfYamlRuleFileTest, 1);
+    UtRegisterTest("ConfYamlSequenceTest", ConfYamlSequenceTest, 1);
     UtRegisterTest("ConfYamlLoggingOutputTest", ConfYamlLoggingOutputTest, 1);
     UtRegisterTest("ConfYamlNonYamlFileTest", ConfYamlNonYamlFileTest, 1);
     UtRegisterTest("ConfYamlBadYamlVersionTest", ConfYamlBadYamlVersionTest, 1);

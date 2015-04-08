@@ -713,7 +713,7 @@ static void DetectLuaThreadFree(void *ctx)
  * \retval luajit pointer to DetectLuaData on success
  * \retval NULL on failure
  */
-static DetectLuaData *DetectLuaParse (char *str)
+static DetectLuaData *DetectLuaParse (const DetectEngineCtx *de_ctx, char *str)
 {
     DetectLuaData *luajit = NULL;
 
@@ -730,7 +730,7 @@ static DetectLuaData *DetectLuaParse (char *str)
     }
 
     /* get full filename */
-    luajit->filename = DetectLoadCompleteSigPath(str);
+    luajit->filename = DetectLoadCompleteSigPath(de_ctx, str);
     if (luajit->filename == NULL) {
         goto error;
     }
@@ -987,7 +987,7 @@ static int DetectLuaSetup (DetectEngineCtx *de_ctx, Signature *s, char *str)
     DetectLuaData *luajit = NULL;
     SigMatch *sm = NULL;
 
-    luajit = DetectLuaParse(str);
+    luajit = DetectLuaParse(de_ctx, str);
     if (luajit == NULL)
         goto error;
 
@@ -1042,7 +1042,7 @@ static int DetectLuaSetup (DetectEngineCtx *de_ctx, Signature *s, char *str)
         else if (luajit->flags & DATATYPE_HTTP_RESPONSE_COOKIE)
             SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_HCDMATCH);
         else
-            SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_AMATCH);
+            SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_HRLMATCH);
     } else if (luajit->alproto == ALPROTO_DNS) {
         SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_DNSQUERY_MATCH);
     } else {

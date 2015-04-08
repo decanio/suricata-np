@@ -23,53 +23,43 @@
 #ifndef __UTIL_RUNMODES_H__
 #define __UTIL_RUNMODES_H__
 
+void RunmodeSetFlowStreamAsync(void);
+int RunmodeGetFlowStreamAsync(void);
 
 typedef void *(*ConfigIfaceParserFunc) (const char *);
 typedef void *(*ConfigIPSParserFunc) (int);
 typedef int (*ConfigIfaceThreadsCountFunc) (void *);
 
-int RunModeSetLiveCaptureAuto(DetectEngineCtx *de_ctx,
-                              ConfigIfaceParserFunc configparser,
+int RunModeSetLiveCaptureAuto(ConfigIfaceParserFunc configparser,
                               ConfigIfaceThreadsCountFunc ModThreadsCount,
                               char *recv_mod_name,
                               char *decode_mod_name, char *thread_name,
                               const char *live_dev);
 
-int RunModeSetLiveCaptureAutoFp(DetectEngineCtx *de_ctx,
-                              ConfigIfaceParserFunc configparser,
+int RunModeSetLiveCaptureAutoFp(ConfigIfaceParserFunc configparser,
                               ConfigIfaceThreadsCountFunc ModThreadsCount,
                               char *recv_mod_name,
                               char *decode_mod_name, char *thread_name,
                               const char *live_dev);
 
-int RunModeSetLiveCaptureSingle(DetectEngineCtx *de_ctx,
-                              ConfigIfaceParserFunc configparser,
+int RunModeSetLiveCaptureSingle(ConfigIfaceParserFunc configparser,
                               ConfigIfaceThreadsCountFunc ModThreadsCount,
                               char *recv_mod_name,
                               char *decode_mod_name, char *thread_name,
                               const char *live_dev);
 
-int RunModeSetLiveCaptureWorkers(DetectEngineCtx *de_ctx,
-                              ConfigIfaceParserFunc configparser,
+int RunModeSetLiveCaptureWorkers(ConfigIfaceParserFunc configparser,
                               ConfigIfaceThreadsCountFunc ModThreadsCount,
                               char *recv_mod_name,
                               char *decode_mod_name, char *thread_name,
                               const char *live_dev);
 
-int RunModeSetIPSAuto(DetectEngineCtx *de_ctx,
-                      ConfigIPSParserFunc ConfigParser,
-                      char *recv_mod_name,
-                      char *verdict_mod_name,
-                      char *decode_mod_name);
-
-int RunModeSetIPSAutoFp(DetectEngineCtx *de_ctx,
-                        ConfigIPSParserFunc ConfigParser,
+int RunModeSetIPSAutoFp(ConfigIPSParserFunc ConfigParser,
                         char *recv_mod_name,
                         char *verdict_mod_name,
                         char *decode_mod_name);
 
-int RunModeSetIPSWorker(DetectEngineCtx *de_ctx,
-                        ConfigIPSParserFunc ConfigParser,
+int RunModeSetIPSWorker(ConfigIPSParserFunc ConfigParser,
                         char *recv_mod_name,
                         char *verdict_mod_name,
                         char *decode_mod_name);

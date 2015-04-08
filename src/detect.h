@@ -109,6 +109,8 @@ enum DetectSigmatchListEnum {
     DETECT_SM_LIST_HCDMATCH,
     /* list for http_user_agent keyword and the ones relative to it */
     DETECT_SM_LIST_HUADMATCH,
+    /* list for http_request_line keyword and the ones relative to it */
+    DETECT_SM_LIST_HRLMATCH,
     /* app event engine sm list */
     DETECT_SM_LIST_APP_EVENT,
 
@@ -718,11 +720,6 @@ typedef struct DetectEngineCtx_ {
     char *rule_file;
     int rule_line;
 
-    /** Is detect engine using a delayed init */
-    int delayed_detect;
-    /** Did we load the signatures? */
-    int delayed_detect_initialized;
-
     /** list of keywords that need thread local ctxs */
     DetectEngineThreadKeywordCtxItem *keyword_list;
     int keyword_id;
@@ -734,6 +731,16 @@ typedef struct DetectEngineCtx_ {
     struct SCProfileKeywordDetectCtx_ *profile_keyword_ctx;
     struct SCProfileKeywordDetectCtx_ *profile_keyword_ctx_per_list[DETECT_SM_LIST_MAX];
 #endif
+
+    char config_prefix[64];
+
+    /** minimal: essentially a stub */
+    int minimal;
+
+    /** how many de_ctx' are referencing this */
+    uint32_t ref_cnt;
+    /** list in master: either active or freelist */
+    struct DetectEngineCtx_ *next;
 } DetectEngineCtx;
 
 /* Engine groups profiles (low, medium, high, custom) */
@@ -767,7 +774,7 @@ typedef struct HttpReassembledBody_ {
 /**
   * Detection engine thread data.
   */
-typedef struct DetectionEngineThreadCtx_ {
+typedef struct DetectEngineThreadCtx_ {
     /* the thread to which this detection engine thread belongs */
     ThreadVars *tv;
 
@@ -784,6 +791,10 @@ typedef struct DetectionEngineThreadCtx_ {
 
     /* counter for the filestore array below -- up here for cache reasons. */
     uint16_t filestore_cnt;
+
+    /* bool to hint the POSTMATCH list members about the lock status of the
+     * flow. If locked this is TRUE, unlocked or no-flow: FALSE */
+    uint8_t flow_locked;
 
     HttpReassembledBody *hsbd;
     uint64_t hsbd_start_tx_id;
@@ -1039,6 +1050,19 @@ typedef struct SigGroupHead_ {
  *  deal with both cases */
 #define SIGMATCH_OPTIONAL_OPT   (1 << 5)
 
+typedef struct DetectEngineMasterCtx_ {
+    SCMutex lock;
+
+    /** list of active detection engines. This list is used to generate the
+     *  threads det_ctx's */
+    DetectEngineCtx *list;
+
+    /** free list, containing detection engines that will be removed but may
+     *  still be referenced by det_ctx's. Freed as soon as all references are
+     *  gone. */
+    DetectEngineCtx *free_list;
+} DetectEngineMasterCtx;
+
 /** Remember to add the options in SignatureIsIPOnly() at detect.c otherwise it wont be part of a signature group */
 
 enum {
@@ -1184,7 +1208,7 @@ int SigGroupBuild(DetectEngineCtx *);
 int SigGroupCleanup (DetectEngineCtx *de_ctx);
 void SigAddressPrepareBidirectionals (DetectEngineCtx *);
 
-char *DetectLoadCompleteSigPath(char *sig_file);
+char *DetectLoadCompleteSigPath(const DetectEngineCtx *, char *sig_file);
 int SigLoadSignatures (DetectEngineCtx *, char *, int);
 void SigTableList(const char *keyword);
 void SigTableSetup(void);
@@ -1207,6 +1231,7 @@ void *DetectThreadCtxGetKeywordThreadCtx(DetectEngineThreadCtx *, int);
 int SigMatchSignaturesRunPostMatch(ThreadVars *tv,
                                    DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx, Packet *p,
                                    Signature *s);
+void DetectSignatureApplyActions(Packet *p, const Signature *s);
 
 #endif /* __DETECT_H__ */
 

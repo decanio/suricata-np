@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2015 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -20,15 +20,15 @@
  *  \author Victor Julien <victor@inliniac.net>
  */
 
-#ifndef __RUNMODE_PFRING_H__
-#define __RUNMODE_PFRING_H__
+#ifndef __DETECT_ENGINE_HRL_H__
+#define __DETECT_ENGINE_HRL_H__
 
-#include "suricata-common.h"
+int DetectEngineInspectHttpRequestLine(ThreadVars *tv,
+                                  DetectEngineCtx *de_ctx,
+                                  DetectEngineThreadCtx *det_ctx,
+                                  Signature *s, Flow *f, uint8_t flags,
+                                  void *alstate,
+                                  void *tx, uint64_t tx_id);
+void HttpRequestLineRegisterTests(void);
 
-int RunModeIdsPfringAutoFp(void);
-int RunModeIdsPfringSingle(void);
-int RunModeIdsPfringWorkers(void);
-void RunModeIdsPfringRegister(void);
-const char *RunModeIdsPfringGetDefaultMode(void);
-
-#endif /* __RUNMODE_PFRING_H__ */
+#endif /* __DETECT_ENGINE_HRL_H__ */

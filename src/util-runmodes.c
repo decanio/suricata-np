@@ -32,6 +32,8 @@
 #include "runmode-af-packet.h"
 #include "log-httplog.h"
 #include "output.h"
+
+#include "detect-engine.h"
 #include "detect-engine-mpm.h"
 
 #include "alert-fastlog.h"
@@ -46,6 +48,23 @@
 #include "util-device.h"
 
 #include "util-runmodes.h"
+
+#include "flow-hash.h"
+
+/** set to true if flow engine and stream engine run in different
+ *  threads. */
+static int runmode_flow_stream_async = 0;
+
+void RunmodeSetFlowStreamAsync(void)
+{
+    runmode_flow_stream_async = 1;
+    FlowDisableTcpReuseHandling();
+}
+
+int RunmodeGetFlowStreamAsync(void)
+{
+    return runmode_flow_stream_async;
+}
 
 /** \brief create a queue string for autofp to pass to
  *         the flow queue handler.
@@ -80,10 +99,8 @@ char *RunmodeAutoFpCreatePickupQueuesString(int n)
 }
 
 /**
- *  \param de_ctx detection engine, can be NULL
  */
-int RunModeSetLiveCaptureAutoFp(DetectEngineCtx *de_ctx,
-                              ConfigIfaceParserFunc ConfigParser,
+int RunModeSetLiveCaptureAutoFp(ConfigIfaceParserFunc ConfigParser,
                               ConfigIfaceThreadsCountFunc ModThreadsCount,
                               char *recv_mod_name,
                               char *decode_mod_name, char *thread_name,
@@ -102,6 +119,8 @@ int RunModeSetLiveCaptureAutoFp(DetectEngineCtx *de_ctx,
         thread_max = ncpus * threading_detect_ratio;
     if (thread_max < 1)
         thread_max = 1;
+
+    RunmodeSetFlowStreamAsync();
 
     queues = RunmodeAutoFpCreatePickupQueuesString(thread_max);
     if (queues == NULL) {
@@ -256,14 +275,13 @@ int RunModeSetLiveCaptureAutoFp(DetectEngineCtx *de_ctx,
         }
         TmSlotSetFuncAppend(tv_detect_ncpu, tm_module, NULL);
 
-        if (de_ctx != NULL) {
+        if (DetectEngineEnabled()) {
             tm_module = TmModuleGetByName("Detect");
             if (tm_module == NULL) {
                 SCLogError(SC_ERR_RUNMODE, "TmModuleGetByName Detect failed");
                 exit(EXIT_FAILURE);
             }
-            TmSlotSetFuncAppendDelayed(tv_detect_ncpu, tm_module,
-                    (void *)de_ctx, de_ctx->delayed_detect);
+            TmSlotSetFuncAppend(tv_detect_ncpu, tm_module, NULL);
         }
 
         TmThreadSetCPU(tv_detect_ncpu, DETECT_CPU_SET);
@@ -296,10 +314,8 @@ int RunModeSetLiveCaptureAutoFp(DetectEngineCtx *de_ctx,
 }
 
 /**
- *  \param de_ctx detection engine, can be NULL
  */
-static int RunModeSetLiveCaptureWorkersForDevice(DetectEngineCtx *de_ctx,
-                              ConfigIfaceThreadsCountFunc ModThreadsCount,
+static int RunModeSetLiveCaptureWorkersForDevice(ConfigIfaceThreadsCountFunc ModThreadsCount,
                               char *recv_mod_name,
                               char *decode_mod_name, char *thread_name,
                               const char *live_dev, void *aconf,
@@ -363,14 +379,13 @@ static int RunModeSetLiveCaptureWorkersForDevice(DetectEngineCtx *de_ctx,
         }
         TmSlotSetFuncAppend(tv, tm_module, NULL);
 
-        if (de_ctx != NULL) {
+        if (DetectEngineEnabled()) {
             tm_module = TmModuleGetByName("Detect");
             if (tm_module == NULL) {
                 SCLogError(SC_ERR_RUNMODE, "TmModuleGetByName Detect failed");
                 exit(EXIT_FAILURE);
             }
-            TmSlotSetFuncAppendDelayed(tv, tm_module,
-                    (void *)de_ctx, de_ctx->delayed_detect);
+            TmSlotSetFuncAppend(tv, tm_module, NULL);
         }
 
         tm_module = TmModuleGetByName("RespondReject");
@@ -393,8 +408,7 @@ static int RunModeSetLiveCaptureWorkersForDevice(DetectEngineCtx *de_ctx,
     return 0;
 }
 
-int RunModeSetLiveCaptureWorkers(DetectEngineCtx *de_ctx,
-                              ConfigIfaceParserFunc ConfigParser,
+int RunModeSetLiveCaptureWorkers(ConfigIfaceParserFunc ConfigParser,
                               ConfigIfaceThreadsCountFunc ModThreadsCount,
                               char *recv_mod_name,
                               char *decode_mod_name, char *thread_name,
@@ -417,8 +431,7 @@ int RunModeSetLiveCaptureWorkers(DetectEngineCtx *de_ctx,
             live_dev_c = LiveGetDeviceName(ldev);
             aconf = ConfigParser(live_dev_c);
         }
-        RunModeSetLiveCaptureWorkersForDevice(de_ctx,
-                ModThreadsCount,
+        RunModeSetLiveCaptureWorkersForDevice(ModThreadsCount,
                 recv_mod_name,
                 decode_mod_name,
                 thread_name,
@@ -430,8 +443,7 @@ int RunModeSetLiveCaptureWorkers(DetectEngineCtx *de_ctx,
     return 0;
 }
 
-int RunModeSetLiveCaptureSingle(DetectEngineCtx *de_ctx,
-                              ConfigIfaceParserFunc ConfigParser,
+int RunModeSetLiveCaptureSingle(ConfigIfaceParserFunc ConfigParser,
                               ConfigIfaceThreadsCountFunc ModThreadsCount,
                               char *recv_mod_name,
                               char *decode_mod_name, char *thread_name,
@@ -454,7 +466,7 @@ int RunModeSetLiveCaptureSingle(DetectEngineCtx *de_ctx,
         /* \todo Set threads number in config to 1 */
     }
 
-    return RunModeSetLiveCaptureWorkersForDevice(de_ctx,
+    return RunModeSetLiveCaptureWorkersForDevice(
                                  ModThreadsCount,
                                  recv_mod_name,
                                  decode_mod_name,
@@ -466,10 +478,8 @@ int RunModeSetLiveCaptureSingle(DetectEngineCtx *de_ctx,
 
 
 /**
- *  \param de_ctx detection engine, can be NULL
  */
-int RunModeSetIPSAutoFp(DetectEngineCtx *de_ctx,
-                        ConfigIPSParserFunc ConfigParser,
+int RunModeSetIPSAutoFp(ConfigIPSParserFunc ConfigParser,
                         char *recv_mod_name,
                         char *verdict_mod_name,
                         char *decode_mod_name)
@@ -492,6 +502,8 @@ int RunModeSetIPSAutoFp(DetectEngineCtx *de_ctx,
         thread_max = ncpus * threading_detect_ratio;
     if (thread_max < 1)
         thread_max = 1;
+
+    RunmodeSetFlowStreamAsync();
 
     queues = RunmodeAutoFpCreatePickupQueuesString(thread_max);
     if (queues == NULL) {
@@ -571,14 +583,13 @@ int RunModeSetIPSAutoFp(DetectEngineCtx *de_ctx,
         }
         TmSlotSetFuncAppend(tv_detect_ncpu, tm_module, NULL);
 
-        if (de_ctx != NULL) {
+        if (DetectEngineEnabled()) {
             tm_module = TmModuleGetByName("Detect");
             if (tm_module == NULL) {
                 SCLogError(SC_ERR_RUNMODE, "TmModuleGetByName Detect failed");
                 exit(EXIT_FAILURE);
             }
-            TmSlotSetFuncAppendDelayed(tv_detect_ncpu, tm_module,
-                    (void *)de_ctx, de_ctx->delayed_detect);
+            TmSlotSetFuncAppend(tv_detect_ncpu, tm_module, NULL);
         }
 
         TmThreadSetCPU(tv_detect_ncpu, DETECT_CPU_SET);
@@ -644,10 +655,8 @@ int RunModeSetIPSAutoFp(DetectEngineCtx *de_ctx,
 }
 
 /**
- *  \param de_ctx detection engine, can be NULL
  */
-int RunModeSetIPSWorker(DetectEngineCtx *de_ctx,
-        ConfigIPSParserFunc ConfigParser,
+int RunModeSetIPSWorker(ConfigIPSParserFunc ConfigParser,
         char *recv_mod_name,
         char *verdict_mod_name,
         char *decode_mod_name)
@@ -704,14 +713,13 @@ int RunModeSetIPSWorker(DetectEngineCtx *de_ctx,
         }
         TmSlotSetFuncAppend(tv, tm_module, NULL);
 
-        if (de_ctx != NULL) {
+        if (DetectEngineEnabled()) {
             tm_module = TmModuleGetByName("Detect");
             if (tm_module == NULL) {
                 SCLogError(SC_ERR_RUNMODE, "TmModuleGetByName Detect failed");
                 exit(EXIT_FAILURE);
             }
-            TmSlotSetFuncAppendDelayed(tv, tm_module,
-                    (void *)de_ctx, de_ctx->delayed_detect);
+            TmSlotSetFuncAppend(tv, tm_module, NULL);
         }
 
         tm_module = TmModuleGetByName(verdict_mod_name);
@@ -720,7 +728,7 @@ int RunModeSetIPSWorker(DetectEngineCtx *de_ctx,
             exit(EXIT_FAILURE);
         }
 
-        TmSlotSetFuncAppend(tv, tm_module, (void *)de_ctx);
+        TmSlotSetFuncAppend(tv, tm_module, NULL);
 
         tm_module = TmModuleGetByName("RespondReject");
         if (tm_module == NULL) {

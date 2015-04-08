@@ -239,14 +239,20 @@ void DetectExitPrintStats(ThreadVars *tv, void *data)
  *  \param sig_file The name of the file
  *  \retval str Pointer to the string path + sig_file
  */
-char *DetectLoadCompleteSigPath(char *sig_file)
+char *DetectLoadCompleteSigPath(const DetectEngineCtx *de_ctx, char *sig_file)
 {
     char *defaultpath = NULL;
     char *path = NULL;
+    char varname[128] = "default-rule-path";
+
+    if (strlen(de_ctx->config_prefix) > 0) {
+        snprintf(varname, sizeof(varname), "%s.default-rule-path",
+                de_ctx->config_prefix);
+    }
 
     /* Path not specified */
     if (PathIsRelative(sig_file)) {
-        if (ConfGet("default-rule-path", &defaultpath) == 1) {
+        if (ConfGet(varname, &defaultpath) == 1) {
             SCLogDebug("Default path: %s", defaultpath);
             size_t path_len = sizeof(char) * (strlen(defaultpath) +
                           strlen(sig_file) + 2);
@@ -396,6 +402,13 @@ int SigLoadSignatures(DetectEngineCtx *de_ctx, char *sig_file, int sig_file_excl
     int goodtotal = 0;
     int badtotal = 0;
 
+    char varname[128] = "rule-files";
+
+    if (strlen(de_ctx->config_prefix) > 0) {
+        snprintf(varname, sizeof(varname), "%s.rule-files",
+                de_ctx->config_prefix);
+    }
+
     if (RunmodeGetCurrent() == RUNMODE_ENGINE_ANALYSIS) {
         fp_engine_analysis_set = SetupFPAnalyzer();
         rule_engine_analysis_set = SetupRuleAnalyzer();
@@ -403,24 +416,32 @@ int SigLoadSignatures(DetectEngineCtx *de_ctx, char *sig_file, int sig_file_excl
 
     /* ok, let's load signature files from the general config */
     if (!(sig_file != NULL && sig_file_exclusive == TRUE)) {
-        rule_files = ConfGetNode("rule-files");
+        rule_files = ConfGetNode(varname);
         if (rule_files != NULL) {
-            TAILQ_FOREACH(file, &rule_files->head, next) {
-                sfile = DetectLoadCompleteSigPath(file->val);
-                SCLogDebug("Loading rule file: %s", sfile);
+            if (!ConfNodeIsSequence(rule_files)) {
+                SCLogWarning(SC_ERR_INVALID_ARGUMENT,
+                    "Invalid rule-files configuration section: "
+                    "expected a list of filenames.");
+            }
+            else {
+                TAILQ_FOREACH(file, &rule_files->head, next) {
+                    sfile = DetectLoadCompleteSigPath(de_ctx, file->val);
+                    SCLogDebug("Loading rule file: %s", sfile);
 
-                cntf++;
-                r = DetectLoadSigFile(de_ctx, sfile, &goodsigs, &badsigs);
-                if (r < 0) {
-                    badfiles++;
-                }
-                if (goodsigs == 0) {
-                    SCLogWarning(SC_ERR_NO_RULES, "No rules loaded from %s", sfile);
-                }
-                SCFree(sfile);
+                    cntf++;
+                    r = DetectLoadSigFile(de_ctx, sfile, &goodsigs, &badsigs);
+                    if (r < 0) {
+                        badfiles++;
+                    }
+                    if (goodsigs == 0) {
+                        SCLogWarning(SC_ERR_NO_RULES,
+                            "No rules loaded from %s", sfile);
+                    }
+                    SCFree(sfile);
 
-                goodtotal += goodsigs;
-                badtotal += badsigs;
+                    goodtotal += goodsigs;
+                    badtotal += badsigs;
+                }
             }
         }
     }
@@ -1145,7 +1166,6 @@ int SigMatchSignatures(ThreadVars *th_v, DetectEngineCtx *de_ctx, DetectEngineTh
     Signature *s = NULL;
     Signature *next_s = NULL;
     uint16_t alversion = 0;
-    int reset_de_state = 0;
     int state_alert = 0;
     int alerts = 0;
     int app_decoder_events = 0;
@@ -1187,11 +1207,14 @@ int SigMatchSignatures(ThreadVars *th_v, DetectEngineCtx *de_ctx, DetectEngineTh
                 pflow->flags &= ~FLOW_SGH_TOCLIENT;
                 pflow->sgh_toserver = NULL;
                 pflow->sgh_toclient = NULL;
-                reset_de_state = 1;
 
                 pflow->de_ctx_id = de_ctx->id;
                 GenericVarFree(pflow->flowvar);
                 pflow->flowvar = NULL;
+
+                DetectEngineStateReset(pflow->de_state,
+                        (STREAM_TOSERVER|STREAM_TOCLIENT));
+                DetectEngineStateResetTxs(pflow);
             }
 
             /* set the iponly stuff */
@@ -1255,13 +1278,6 @@ int SigMatchSignatures(ThreadVars *th_v, DetectEngineCtx *de_ctx, DetectEngineTh
             SCLogDebug("flag STREAM_TOCLIENT set");
         }
         SCLogDebug("p->flowflags 0x%02x", p->flowflags);
-
-        /* reset because of ruleswap */
-        if (reset_de_state) {
-            SCMutexLock(&pflow->de_state_m);
-            DetectEngineStateReset(pflow->de_state, (STREAM_TOSERVER|STREAM_TOCLIENT));
-            SCMutexUnlock(&pflow->de_state_m);
-        }
 
         if (((p->flowflags & FLOW_PKT_TOSERVER) && !(p->flowflags & FLOW_PKT_TOSERVER_IPONLY_SET)) ||
             ((p->flowflags & FLOW_PKT_TOCLIENT) && !(p->flowflags & FLOW_PKT_TOCLIENT_IPONLY_SET)))
@@ -1680,7 +1696,7 @@ int SigMatchSignatures(ThreadVars *th_v, DetectEngineCtx *de_ctx, DetectEngineTh
                 PacketAlertAppend(det_ctx, s, p, 0, alert_flags);
         } else {
             /* apply actions even if not alerting */
-            PACKET_UPDATE_ACTION(p, s->action);
+            DetectSignatureApplyActions(p, s);
         }
         alerts++;
 next:
@@ -1816,6 +1832,21 @@ end:
     PACKET_PROFILING_DETECT_END(p, PROF_DETECT_CLEANUP);
 
     SCReturnInt((int)(alerts > 0));
+}
+
+/** \brief Apply action(s) and Set 'drop' sig info,
+ *         if applicable */
+void DetectSignatureApplyActions(Packet *p, const Signature *s)
+{
+    PACKET_UPDATE_ACTION(p, s->action);
+
+    if (s->action & ACTION_DROP) {
+        if (p->alerts.drop.action == 0) {
+            p->alerts.drop.num = s->num;
+            p->alerts.drop.action = s->action;
+            p->alerts.drop.s = (Signature *)s;
+        }
+    }
 }
 
 /* tm module api functions */
@@ -2687,9 +2718,7 @@ int SigAddressPrepareStage1(DetectEngineCtx *de_ctx)
 
 #ifdef HAVE_LUAJIT
     /* run this before the mpm states are initialized */
-    if (DetectLuajitSetupStatesPool(de_ctx->detect_luajit_instances,
-                                    IsRuleReloadSet(TRUE))
-            != 0) {
+    if (DetectLuajitSetupStatesPool(de_ctx->detect_luajit_instances, TRUE) != 0) {
         if (de_ctx->failure_fatal)
             return -1;
     }

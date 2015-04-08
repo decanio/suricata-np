@@ -71,6 +71,7 @@
 #include "util-profiling.h"
 #include "util-misc.h"
 #include "util-validate.h"
+#include "util-runmodes.h"
 
 #include "source-pcap-file.h"
 
@@ -752,18 +753,25 @@ uint32_t StreamTcpGetStreamSize(TcpStream *stream)
 }
 
 /**
- *  \brief macro to update last_ack only if the new value is higher
+ *  \brief macro to update last_ack only if the new value is higher and
+ *         the ack value isn't beyond the next_seq
  *
  *  \param ssn session
  *  \param stream stream to update
  *  \param ack ACK value to test and set
  */
 #define StreamTcpUpdateLastAck(ssn, stream, ack) { \
-    if (SEQ_GT((ack), (stream)->last_ack)) { \
+    if (SEQ_GT((ack), (stream)->last_ack) && \
+            (SEQ_LEQ((ack),(stream)->next_seq) || \
+            ((ssn)->state >= TCP_FIN_WAIT1 && SEQ_EQ((ack),((stream)->next_seq + 1))))) \
+    { \
         (stream)->last_ack = (ack); \
         SCLogDebug("ssn %p: last_ack set to %"PRIu32, (ssn), (stream)->last_ack); \
         StreamTcpSackPruneList((stream)); \
-    } \
+    } else { \
+        SCLogDebug("ssn %p: no update: ack %u, last_ack %"PRIu32", next_seq %u (state %u)", \
+                    (ssn), (ack), (stream)->last_ack, (stream)->next_seq, (ssn)->state); \
+    }\
 }
 
 /**
@@ -912,6 +920,9 @@ static int StreamTcpPacketStateNone(ThreadVars *tv, Packet *p,
                     "SACK permitted for both sides", ssn);
         }
 
+        /* packet thinks it is in the wrong direction, flip it */
+        StreamTcpPacketSwitchDir(ssn, p);
+
     } else if (p->tcph->th_flags & TH_SYN) {
         if (ssn == NULL) {
             ssn = StreamTcpNewSession(p, stt->ssn_pool_id);
@@ -982,11 +993,16 @@ static int StreamTcpPacketStateNone(ThreadVars *tv, Packet *p,
         ssn->flags = STREAMTCP_FLAG_MIDSTREAM;
         ssn->flags |= STREAMTCP_FLAG_MIDSTREAM_ESTABLISHED;
 
+        /** window scaling for midstream pickups, we can't do much other
+         *  than assume that it's set to the max value: 14 */
+        ssn->client.wscale = TCP_WSCALE_MAX;
+        ssn->server.wscale = TCP_WSCALE_MAX;
+
         /* set the sequence numbers and window */
         ssn->client.isn = TCP_GET_SEQ(p) - 1;
         STREAMTCP_SET_RA_BASE_SEQ(&ssn->client, ssn->client.isn);
         ssn->client.next_seq = TCP_GET_SEQ(p) + p->payload_len;
-        ssn->client.window = TCP_GET_WINDOW(p);
+        ssn->client.window = TCP_GET_WINDOW(p) << ssn->client.wscale;
         ssn->client.last_ack = TCP_GET_SEQ(p);
         ssn->client.next_win = ssn->client.last_ack + ssn->client.window;
         SCLogDebug("ssn %p: ssn->client.isn %u, ssn->client.next_seq %u",
@@ -1004,11 +1020,6 @@ static int StreamTcpPacketStateNone(ThreadVars *tv, Packet *p,
         SCLogDebug("ssn %p: ssn->client.last_ack %"PRIu32", "
                 "ssn->server.last_ack %"PRIu32"", ssn,
                 ssn->client.last_ack, ssn->server.last_ack);
-
-        /** window scaling for midstream pickups, we can't do much other
-         *  than assume that it's set to the max value: 14 */
-        ssn->client.wscale = TCP_WSCALE_MAX;
-        ssn->server.wscale = TCP_WSCALE_MAX;
 
         /* Set the timestamp value for both streams, if packet has timestamp
          * option enabled.*/
@@ -2032,6 +2043,7 @@ static int HandleEstablishedPacketToServer(ThreadVars *tv, TcpSession *ssn, Pack
 
         /* Check if the ACK value is sane and inside the window limit */
         StreamTcpUpdateLastAck(ssn, &ssn->server, TCP_GET_ACK(p));
+        SCLogDebug("ack %u last_ack %u next_seq %u", TCP_GET_ACK(p), ssn->server.last_ack, ssn->server.next_seq);
 
         if (ssn->flags & STREAMTCP_FLAG_TIMESTAMP) {
             StreamTcpHandleTimestamp(ssn, p);
@@ -4386,7 +4398,6 @@ static int StreamTcpPacketIsBadWindowUpdate(TcpSession *ssn, Packet *p)
     return 0;
 }
 
-
 /* flow is and stays locked */
 int StreamTcpPacket (ThreadVars *tv, Packet *p, StreamTcpThread *stt,
                      PacketQueue *pq)
@@ -4540,60 +4551,8 @@ int StreamTcpPacket (ThreadVars *tv, Packet *p, StreamTcpThread *stt,
                 }
                 break;
             case TCP_CLOSED:
-                /* TCP session memory is not returned to pool until timeout.
-                 * If in the mean time we receive any other session from
-                 * the same client reusing same port then we switch back to
-                 * tcp state none, but only on a valid SYN that is not a
-                 * resend from our previous session.
-                 *
-                 * We also check it's not a SYN/ACK, all other SYN pkt
-                 * validation is done at StreamTcpPacketStateNone();
-                 */
-                if (PKT_IS_TOSERVER(p) && (p->tcph->th_flags & TH_SYN) &&
-                    !(p->tcph->th_flags & TH_ACK) &&
-                    !(SEQ_EQ(ssn->client.isn, TCP_GET_SEQ(p))))
-                {
-                    SCLogDebug("reusing closed TCP session");
-
-                    /* return segments */
-                    StreamTcpReturnStreamSegments(&ssn->client);
-                    StreamTcpReturnStreamSegments(&ssn->server);
-                    /* free SACK list */
-                    StreamTcpSackFreeList(&ssn->client);
-                    StreamTcpSackFreeList(&ssn->server);
-                    /* reset the app layer state */
-                    FlowCleanupAppLayer(p->flow);
-
-                    ssn->state = 0;
-                    ssn->flags = 0;
-                    ssn->client.flags = 0;
-                    ssn->server.flags = 0;
-
-                    /* set state the NONE, also pulls flow out of closed queue */
-                    StreamTcpPacketSetState(p, ssn, TCP_NONE);
-
-                    p->flow->alproto_ts = p->flow->alproto_tc = p->flow->alproto = ALPROTO_UNKNOWN;
-                    p->flow->data_al_so_far[0] = p->flow->data_al_so_far[1] = 0;
-                    ssn->data_first_seen_dir = 0;
-                    p->flow->flags &= (~FLOW_TS_PM_ALPROTO_DETECT_DONE &
-                                       ~FLOW_TS_PP_ALPROTO_DETECT_DONE &
-                                       ~FLOW_TC_PM_ALPROTO_DETECT_DONE &
-                                       ~FLOW_TC_PP_ALPROTO_DETECT_DONE);
-                    p->flow->flags &= ~ FLOW_NO_APPLAYER_INSPECTION;
-                    if (p->flow->de_state != NULL) {
-                        SCMutexLock(&p->flow->de_state_m);
-                        DetectEngineStateReset(p->flow->de_state, (STREAM_TOSERVER | STREAM_TOCLIENT));
-                        SCMutexUnlock(&p->flow->de_state_m);
-                    }
-
-                    if (StreamTcpPacketStateNone(tv,p,stt,ssn, &stt->pseudo_queue)) {
-                        goto error;
-                    }
-
-                    SCPerfCounterIncr(stt->counter_tcp_reused_ssn, tv->sc_perf_pca);
-                } else {
-                    SCLogDebug("packet received on closed state");
-                }
+                /* TCP session memory is not returned to pool until timeout. */
+                SCLogDebug("packet received on closed state");
                 break;
             default:
                 SCLogDebug("packet received on default state");
@@ -4728,6 +4687,299 @@ static inline int StreamTcpValidateChecksum(Packet *p)
     return ret;
 }
 
+/** \internal
+ *  \brief check if a packet is a valid stream started
+ *  \retval bool true/false */
+static int TcpSessionPacketIsStreamStarter(const Packet *p)
+{
+    if (p->tcph->th_flags == TH_SYN) {
+        SCLogDebug("packet %"PRIu64" is a stream starter: %02x", p->pcap_cnt, p->tcph->th_flags);
+        return 1;
+    }
+
+    if (stream_config.midstream == TRUE || stream_config.async_oneside == TRUE) {
+        if (p->tcph->th_flags == (TH_SYN|TH_ACK)) {
+            SCLogDebug("packet %"PRIu64" is a midstream stream starter: %02x", p->pcap_cnt, p->tcph->th_flags);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/** \internal
+ *  \brief Check if Flow and TCP SSN allow this flow/tuple to be reused
+ *  \retval bool true yes reuse, false no keep tracking old ssn */
+static int TcpSessionReuseDoneEnoughSyn(const Packet *p, const Flow *f, const TcpSession *ssn)
+{
+    if (FlowGetPacketDirection(f, p) == TOSERVER) {
+        if (ssn == NULL) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p null. No reuse.", p->pcap_cnt, ssn);
+            return 0;
+        }
+        if (SEQ_EQ(ssn->client.isn, TCP_GET_SEQ(p))) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p. Packet SEQ == Stream ISN. Retransmission. Don't reuse.", p->pcap_cnt, ssn);
+            return 0;
+        }
+        if (ssn->state >= TCP_LAST_ACK) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p state >= TCP_LAST_ACK (%u). Reuse.", p->pcap_cnt, ssn, ssn->state);
+            return 1;
+        }
+        if (ssn->state == TCP_NONE) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p state == TCP_NONE (%u). Reuse.", p->pcap_cnt, ssn, ssn->state);
+            return 1;
+        }
+        if (ssn->state < TCP_LAST_ACK) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p state < TCP_LAST_ACK (%u). Don't reuse.", p->pcap_cnt, ssn, ssn->state);
+            return 0;
+        }
+
+    } else {
+        if (ssn == NULL) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p null. Reuse.", p->pcap_cnt, ssn);
+            return 1;
+        }
+        if (ssn->state >= TCP_LAST_ACK) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p state >= TCP_LAST_ACK (%u). Reuse.", p->pcap_cnt, ssn, ssn->state);
+            return 1;
+        }
+        if (ssn->state == TCP_NONE) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p state == TCP_NONE (%u). Reuse.", p->pcap_cnt, ssn, ssn->state);
+            return 1;
+        }
+        if (ssn->state < TCP_LAST_ACK) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p state < TCP_LAST_ACK (%u). Don't reuse.", p->pcap_cnt, ssn, ssn->state);
+            return 0;
+        }
+    }
+
+    SCLogDebug("default: how did we get here?");
+    return 0;
+}
+
+/** \internal
+ *  \brief check if ssn is done enough for reuse by syn/ack
+ *  \note should only be called if midstream is enabled
+ */
+static int TcpSessionReuseDoneEnoughSynAck(const Packet *p, const Flow *f, const TcpSession *ssn)
+{
+    if (FlowGetPacketDirection(f, p) == TOCLIENT) {
+        if (ssn == NULL) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p null. No reuse.", p->pcap_cnt, ssn);
+            return 0;
+        }
+        if (SEQ_EQ(ssn->server.isn, TCP_GET_SEQ(p))) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p. Packet SEQ == Stream ISN. Retransmission. Don't reuse.", p->pcap_cnt, ssn);
+            return 0;
+        }
+        if (ssn->state >= TCP_LAST_ACK) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p state >= TCP_LAST_ACK (%u). Reuse.", p->pcap_cnt, ssn, ssn->state);
+            return 1;
+        }
+        if (ssn->state == TCP_NONE) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p state == TCP_NONE (%u). Reuse.", p->pcap_cnt, ssn, ssn->state);
+            return 1;
+        }
+        if (ssn->state < TCP_LAST_ACK) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p state < TCP_LAST_ACK (%u). Don't reuse.", p->pcap_cnt, ssn, ssn->state);
+            return 0;
+        }
+
+    } else {
+        if (ssn == NULL) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p null. Reuse.", p->pcap_cnt, ssn);
+            return 1;
+        }
+        if (ssn->state >= TCP_LAST_ACK) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p state >= TCP_LAST_ACK (%u). Reuse.", p->pcap_cnt, ssn, ssn->state);
+            return 1;
+        }
+        if (ssn->state == TCP_NONE) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p state == TCP_NONE (%u). Reuse.", p->pcap_cnt, ssn, ssn->state);
+            return 1;
+        }
+        if (ssn->state < TCP_LAST_ACK) {
+            SCLogDebug("steam starter packet %"PRIu64", ssn %p state < TCP_LAST_ACK (%u). Don't reuse.", p->pcap_cnt, ssn, ssn->state);
+            return 0;
+        }
+    }
+
+    SCLogDebug("default: how did we get here?");
+    return 0;
+}
+
+/** \brief Check if SSN is done enough for reuse
+ *
+ *  Reuse means a new TCP session reuses the tuple (flow in suri)
+ *
+ *  \retval bool true if ssn can be reused, false if not */
+int TcpSessionReuseDoneEnough(const Packet *p, const Flow *f, const TcpSession *ssn)
+{
+    if (p->tcph->th_flags == TH_SYN) {
+        return TcpSessionReuseDoneEnoughSyn(p, f, ssn);
+    }
+
+    if (stream_config.midstream == TRUE || stream_config.async_oneside == TRUE) {
+        if (p->tcph->th_flags == (TH_SYN|TH_ACK)) {
+            return TcpSessionReuseDoneEnoughSynAck(p, f, ssn);
+        }
+    }
+
+    return 0;
+}
+
+int TcpSessionPacketSsnReuse(const Packet *p, const Flow *f, const void *tcp_ssn)
+{
+    if (p->proto == IPPROTO_TCP && p->tcph != NULL) {
+        if (TcpSessionPacketIsStreamStarter(p) == 1) {
+            if (TcpSessionReuseDoneEnough(p, f, tcp_ssn) == 1) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/** \brief Handle TCP reuse of tuple
+ *
+ *  Logic:
+ *  1. see if packet could trigger a new session
+ *  2. see if the flow/ssn is in a state where we want to support the reuse
+ *  3. disconnect packet from the old flow
+ *  -> at this point new packets can still find the old flow
+ *  -> as the flow's reference count != 0, it can't disappear
+ *  4. setup a new flow unconditionally
+ *  5. attach packet to new flow
+ *  6. tag old flow as FLOW_TCP_REUSED
+ *  -> NEW packets won't find it
+ *  -> existing packets in our queues may still reference it
+ *  7. dereference the old flow (reference cnt *may* now be 0,
+ *     if no other packets reference it)
+ *
+ *  The packets that still hold a reference to the old flow are updated
+ *  by HandleFlowReuseApplyToPacket()
+ */
+static void TcpSessionReuseHandle(Packet *p) {
+    if (likely(TcpSessionPacketIsStreamStarter(p) == 0))
+        return;
+
+    int reuse = 0;
+    FLOWLOCK_RDLOCK(p->flow);
+    reuse = TcpSessionReuseDoneEnough(p, p->flow, p->flow->protoctx);
+    if (!reuse) {
+        SCLogDebug("steam starter packet %"PRIu64", but state not "
+                   "ready to be reused", p->pcap_cnt);
+        FLOWLOCK_UNLOCK(p->flow);
+        return;
+    }
+
+    SCLogDebug("steam starter packet %"PRIu64", and state "
+            "ready to be reused", p->pcap_cnt);
+
+    /* ok, this packet needs a new flow */
+
+    /* first, get a reference to the old flow */
+    Flow *old_f = NULL;
+    FlowReference(&old_f, p->flow);
+
+    /* get some settings that we move over to the new flow */
+    FlowThreadId thread_id = old_f->thread_id;
+    int autofp_tmqh_flow_qid = SC_ATOMIC_GET(old_f->autofp_tmqh_flow_qid);
+
+    /* disconnect the packet from the old flow */
+    FlowHandlePacketUpdateRemove(p->flow, p);
+    FLOWLOCK_UNLOCK(p->flow);
+    FlowDeReference(&p->flow); // < can't disappear while usecnt >0
+
+    /* Can't tag flow as reused yet, would be a race condition:
+     * new packets will not get old flow because of FLOW_TCP_REUSED,
+     * so new flow may be created. This new flow could be handled in
+     * a different thread. */
+
+    /* Get a flow. It will be either a locked flow or NULL */
+    Flow *new_f = FlowGetFlowFromHashByPacket(p);
+    if (new_f == NULL) {
+        FlowDeReference(&old_f); // < can't disappear while usecnt >0
+        return;
+    }
+
+    /* update flow and packet */
+    FlowHandlePacketUpdate(new_f, p);
+    BUG_ON(new_f != p->flow);
+
+    /* copy flow balancing settings */
+    new_f->thread_id = thread_id;
+    SC_ATOMIC_SET(new_f->autofp_tmqh_flow_qid, autofp_tmqh_flow_qid);
+
+    FLOWLOCK_UNLOCK(new_f);
+
+    /* tag original flow that it's now unused */
+    FLOWLOCK_WRLOCK(old_f);
+    SCLogDebug("old flow %p tagged with FLOW_TCP_REUSED by packet %"PRIu64"!", old_f, p->pcap_cnt);
+    old_f->flags |= FLOW_TCP_REUSED;
+    FLOWLOCK_UNLOCK(old_f);
+    FlowDeReference(&old_f); // < can't disappear while usecnt >0
+
+    SCLogDebug("new flow %p set up for packet %"PRIu64"!", p->flow, p->pcap_cnt);
+}
+
+/** \brief Handle packets that reference the wrong flow because of TCP reuse
+ *
+ *  In the case of TCP reuse we can have many packets that were assigned
+ *  a flow by the capture/decode threads before the stream engine decided
+ *  that a new flow was needed for these packets.
+ *  When HandleFlowReuse creates a new flow, the packets already processed
+ *  by the flow engine will still reference the old flow.
+ *
+ *  This function detects this case and replaces the flow for those packets.
+ *  It's a fairly expensive operation, but it should be rare as it's only
+ *  done for packets that were already in the engine when the TCP reuse
+ *  case was handled. New packets are assigned the correct flow by the
+ *  flow engine.
+ */
+static void TcpSessionReuseHandleApplyToPacket(Packet *p)
+{
+    int need_flow_replace = 0;
+
+    FLOWLOCK_WRLOCK(p->flow);
+    if (p->flow->flags & FLOW_TCP_REUSED) {
+        SCLogDebug("packet %"PRIu64" attached to outdated flow and ssn", p->pcap_cnt);
+        need_flow_replace = 1;
+    }
+
+    if (likely(need_flow_replace == 0)) {
+        /* Work around a race condition: if HandleFlowReuse has inserted a new flow,
+         * it will not have seen both sides of the session yet. The packet we have here
+         * may be the first that got the flow directly from the hash right after the
+         * flow was added. In this case it won't have FLOW_PKT_ESTABLISHED flag set. */
+        if ((p->flow->flags & FLOW_TO_DST_SEEN) && (p->flow->flags & FLOW_TO_SRC_SEEN)) {
+            p->flowflags |= FLOW_PKT_ESTABLISHED;
+            SCLogDebug("packet %"PRIu64" / flow %p: p->flowflags |= FLOW_PKT_ESTABLISHED (%u/%u)", p->pcap_cnt, p->flow, p->flow->todstpktcnt, p->flow->tosrcpktcnt);
+        } else {
+            SCLogDebug("packet %"PRIu64" / flow %p: p->flowflags NOT FLOW_PKT_ESTABLISHED (%u/%u)", p->pcap_cnt, p->flow, p->flow->todstpktcnt, p->flow->tosrcpktcnt);
+        }
+        SCLogDebug("packet %"PRIu64" attached to regular flow %p and ssn", p->pcap_cnt, p->flow);
+        FLOWLOCK_UNLOCK(p->flow);
+        return;
+    }
+
+    /* disconnect packet from old flow */
+    FlowHandlePacketUpdateRemove(p->flow, p);
+    FLOWLOCK_UNLOCK(p->flow);
+    FlowDeReference(&p->flow); // < can't disappear while usecnt >0
+
+    /* find the new flow that does belong to this packet */
+    Flow *new_f = FlowLookupFlowFromHash(p);
+    if (new_f == NULL) {
+        // TODO reset packet flag wrt flow: direction, HAS_FLOW etc
+        p->flags &= ~PKT_HAS_FLOW;
+        return;
+    }
+    FlowHandlePacketUpdate(new_f, p);
+    BUG_ON(new_f != p->flow);
+    FLOWLOCK_UNLOCK(new_f);
+    SCLogDebug("packet %"PRIu64" switched over to new flow %p!", p->pcap_cnt, p->flow);
+}
+
 TmEcode StreamTcp (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
     StreamTcpThread *stt = (StreamTcpThread *)data;
@@ -4750,6 +5002,22 @@ TmEcode StreamTcp (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, Packe
         p->flags |= PKT_IGNORE_CHECKSUM;
     }
 
+    if (stt->runmode_flow_stream_async) {
+        /* "autofp" handling of TCP session/flow reuse */
+        if (!(p->flags & PKT_PSEUDO_STREAM_END)) {
+            /* apply previous reuses to this packet */
+            TcpSessionReuseHandleApplyToPacket(p);
+            if (p->flow == NULL)
+                return ret;
+
+            if (!(p->flowflags & FLOW_PKT_TOSERVER_FIRST)) {
+                /* after that, check for 'new' reuse */
+                TcpSessionReuseHandle(p);
+                if (p->flow == NULL)
+                    return ret;
+            }
+        }
+    }
     AppLayerProfilingReset(stt->ra_ctx->app_tctx);
 
     FLOWLOCK_WRLOCK(p->flow);
@@ -4790,9 +5058,6 @@ TmEcode StreamTcpThreadInit(ThreadVars *tv, void *initdata, void **data)
                                                         SC_PERF_TYPE_UINT64,
                                                         "NULL");
     stt->counter_tcp_no_flow = SCPerfTVRegisterCounter("tcp.no_flow", tv,
-                                                        SC_PERF_TYPE_UINT64,
-                                                        "NULL");
-    stt->counter_tcp_reused_ssn = SCPerfTVRegisterCounter("tcp.reused_ssn", tv,
                                                         SC_PERF_TYPE_UINT64,
                                                         "NULL");
     stt->counter_tcp_memuse = SCPerfTVRegisterCounter("tcp.memuse", tv,
@@ -4861,6 +5126,11 @@ TmEcode StreamTcpThreadInit(ThreadVars *tv, void *initdata, void **data)
     SCMutexUnlock(&ssn_pool_mutex);
     if (stt->ssn_pool_id < 0 || ssn_pool == NULL)
         SCReturnInt(TM_ECODE_FAILED);
+
+    /* see if need to enable the TCP reuse handling in the stream engine */
+    stt->runmode_flow_stream_async = RunmodeGetFlowStreamAsync();
+    SCLogDebug("Flow and Stream engine run %s",
+            stt->runmode_flow_stream_async ? "asynchronous" : "synchronous");
 
     SCReturnInt(TM_ECODE_OK);
 }
@@ -5699,6 +5969,7 @@ static int StreamTcpTest01 (void)
     Flow f;
     memset(p, 0, SIZE_OF_PACKET);
     memset (&f, 0, sizeof(Flow));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
     int ret = 0;
 
@@ -5726,6 +5997,7 @@ static int StreamTcpTest01 (void)
 end:
     StreamTcpFreeConfig(TRUE);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -5756,6 +6028,7 @@ static int StreamTcpTest02 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
     tcph.th_win = htons(5480);
     tcph.th_flags = TH_SYN;
@@ -5825,6 +6098,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -5852,6 +6126,7 @@ static int StreamTcpTest03 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
 
     StreamTcpInitConfig(TRUE);
@@ -5901,6 +6176,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -5928,6 +6204,7 @@ static int StreamTcpTest04 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
 
     StreamTcpInitConfig(TRUE);
@@ -5970,6 +6247,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -5998,6 +6276,7 @@ static int StreamTcpTest05 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
     int ret = 0;
 
@@ -6075,6 +6354,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -6104,6 +6384,7 @@ static int StreamTcpTest06 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
     int ret = 0;
 
@@ -6141,6 +6422,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -6175,6 +6457,7 @@ static int StreamTcpTest07 (void)
     memset(&tcpvars, 0, sizeof(TCPVars));
     memset(&ts, 0, sizeof(TCPOpt));
 
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
     int ret = 0;
 
@@ -6230,6 +6513,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -6265,6 +6549,7 @@ static int StreamTcpTest08 (void)
     memset(&tcpvars, 0, sizeof(TCPVars));
     memset(&ts, 0, sizeof(TCPOpt));
 
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
     int ret = 0;
 
@@ -6322,6 +6607,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -6352,6 +6638,7 @@ static int StreamTcpTest09 (void)
     memset(&stt, 0, sizeof(StreamTcpThread));
     memset(&tcph, 0, sizeof(TCPHdr));
 
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
     int ret = 0;
 
@@ -6401,6 +6688,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -6428,6 +6716,7 @@ static int StreamTcpTest10 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
 
     StreamTcpInitConfig(TRUE);
@@ -6503,6 +6792,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -6530,6 +6820,7 @@ static int StreamTcpTest11 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
 
     StreamTcpInitConfig(TRUE);
@@ -6606,6 +6897,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -6633,6 +6925,7 @@ static int StreamTcpTest12 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
 
     StreamTcpInitConfig(TRUE);
@@ -6701,6 +6994,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -6729,6 +7023,7 @@ static int StreamTcpTest13 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
 
     StreamTcpInitConfig(TRUE);
@@ -6809,6 +7104,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -6936,6 +7232,7 @@ static int StreamTcpTest14 (void)
     memset(&tcph, 0, sizeof (TCPHdr));
     memset(&addr, 0, sizeof(addr));
     memset(&ipv4h, 0, sizeof(ipv4h));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
     int ret = 0;
 
@@ -7074,6 +7371,7 @@ end:
     ConfRestoreContextBackup();
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -7101,6 +7399,7 @@ static int StreamTcp4WHSTest01 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
 
     StreamTcpInitConfig(TRUE);
@@ -7155,6 +7454,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -7183,6 +7483,7 @@ static int StreamTcp4WHSTest02 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
 
     StreamTcpInitConfig(TRUE);
@@ -7226,6 +7527,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -7254,6 +7556,7 @@ static int StreamTcp4WHSTest03 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
 
     StreamTcpInitConfig(TRUE);
@@ -7308,6 +7611,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -7342,6 +7646,7 @@ static int StreamTcpTest15 (void)
     memset(&tcph, 0, sizeof (TCPHdr));
     memset(&addr, 0, sizeof(addr));
     memset(&ipv4h, 0, sizeof(ipv4h));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
     int ret = 0;
 
@@ -7480,6 +7785,7 @@ end:
     ConfRestoreContextBackup();
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -7514,6 +7820,7 @@ static int StreamTcpTest16 (void)
     memset(&tcph, 0, sizeof (TCPHdr));
     memset(&addr, 0, sizeof(addr));
     memset(&ipv4h, 0, sizeof(ipv4h));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
     int ret = 0;
 
@@ -7652,6 +7959,7 @@ end:
     ConfRestoreContextBackup();
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -7687,6 +7995,7 @@ static int StreamTcpTest17 (void)
     memset(&tcph, 0, sizeof (TCPHdr));
     memset(&addr, 0, sizeof(addr));
     memset(&ipv4h, 0, sizeof(ipv4h));
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
     int ret = 0;
 
@@ -7825,6 +8134,7 @@ end:
     ConfRestoreContextBackup();
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -8115,6 +8425,7 @@ static int StreamTcpTest23(void)
     StreamMsgQueueSetMinChunkLen(FLOW_PKT_TOSERVER, 4096);
     StreamMsgQueueSetMinChunkLen(FLOW_PKT_TOCLIENT, 4096);
 
+    FLOW_INITIALIZE(&f);
     ssn.client.os_policy = OS_POLICY_BSD;
     f.protoctx = &ssn;
     p->src.family = AF_INET;
@@ -8172,6 +8483,7 @@ end:
         printf("smemuse.stream_memuse %"PRIu64"\n", SC_ATOMIC_GET(st_memuse));
     }
     SCFree(p);
+    FLOW_DESTROY(&f);
     return result;
 }
 
@@ -8202,6 +8514,7 @@ static int StreamTcpTest24(void)
     memset(&f, 0, sizeof (Flow));
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&tcph, 0, sizeof (TCPHdr));
+    FLOW_INITIALIZE(&f);
     ssn.client.os_policy = OS_POLICY_BSD;
     f.protoctx = &ssn;
     p->src.family = AF_INET;
@@ -8259,6 +8572,7 @@ end:
         printf("smemuse.stream_memuse %"PRIu64"\n", SC_ATOMIC_GET(st_memuse));
     }
     SCFree(p);
+    FLOW_DESTROY(&f);
     return result;
 }
 
@@ -8288,6 +8602,7 @@ static int StreamTcpTest25(void)
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
 
+    FLOW_INITIALIZE(&f);
     stt.ra_ctx = ra_ctx;
     p->flow = &f;
     tcph.th_win = htons(5480);
@@ -8359,6 +8674,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -8388,6 +8704,7 @@ static int StreamTcpTest26(void)
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
 
+    FLOW_INITIALIZE(&f);
     stt.ra_ctx = ra_ctx;
     p->flow = &f;
     tcph.th_win = htons(5480);
@@ -8455,6 +8772,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -8484,6 +8802,7 @@ static int StreamTcpTest27(void)
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
 
+    FLOW_INITIALIZE(&f);
     stt.ra_ctx = ra_ctx;
     p->flow = &f;
     tcph.th_win = htons(5480);
@@ -8551,6 +8870,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -8638,6 +8958,7 @@ static int StreamTcpTest29(void)
     uint8_t packet[1460] = "";
     int result = 1;
 
+    FLOW_INITIALIZE(&f);
     StreamTcpInitConfig(TRUE);
 
     /* prevent L7 from kicking in */
@@ -8779,6 +9100,7 @@ static int StreamTcpTest30(void)
                                     0x49, 0x4c };
     int result = 1;
 
+    FLOW_INITIALIZE(&f);
     StreamTcpInitConfig(TRUE);
 
     /* prevent L7 from kicking in */
@@ -8920,6 +9242,7 @@ static int StreamTcpTest31(void)
 
     StreamTcpInitConfig(TRUE);
 
+    FLOW_INITIALIZE(&f);
     /* prevent L7 from kicking in */
 
     ssn.client.os_policy = OS_POLICY_LINUX;
@@ -9060,6 +9383,7 @@ static int StreamTcpTest32(void)
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
 
+    FLOW_INITIALIZE(&f);
     stt.ra_ctx = ra_ctx;
     p.flow = &f;
     tcph.th_win = htons(5480);
@@ -9150,6 +9474,8 @@ static int StreamTcpTest33 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+
+    FLOW_INITIALIZE(&f);
     p.flow = &f;
     tcph.th_win = htons(5480);
     tcph.th_flags = TH_SYN;
@@ -9252,6 +9578,8 @@ static int StreamTcpTest34 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+
+    FLOW_INITIALIZE(&f);
     p.flow = &f;
     tcph.th_win = htons(5480);
     tcph.th_flags = TH_SYN|TH_PUSH;
@@ -9318,6 +9646,8 @@ static int StreamTcpTest35 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
+
+    FLOW_INITIALIZE(&f);
     p.flow = &f;
     tcph.th_win = htons(5480);
     tcph.th_flags = TH_SYN|TH_URG;
@@ -9383,6 +9713,7 @@ static int StreamTcpTest36(void)
     memset(&stt, 0, sizeof (StreamTcpThread));
     memset(&tcph, 0, sizeof (TCPHdr));
 
+    FLOW_INITIALIZE(&f);
     stt.ra_ctx = ra_ctx;
     p.flow = &f;
     tcph.th_win = htons(5480);
@@ -9570,6 +9901,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -9586,12 +9918,11 @@ static int StreamTcpTest38 (void)
     Flow f;
     ThreadVars tv;
     StreamTcpThread stt;
-    uint8_t payload[4];
+    uint8_t payload[128];
     TCPHdr tcph;
-    TcpReassemblyThreadCtx ra_ctx;
     PacketQueue pq;
 
-    memset(&ra_ctx, 0, sizeof(TcpReassemblyThreadCtx));
+    TcpReassemblyThreadCtx *ra_ctx = StreamTcpReassembleInitThreadCtx(NULL);
     memset (&f, 0, sizeof(Flow));
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
@@ -9603,12 +9934,13 @@ static int StreamTcpTest38 (void)
         return 0;
     memset(p, 0, SIZE_OF_PACKET);
 
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
     tcph.th_win = htons(5480);
     tcph.th_flags = TH_SYN;
     p->tcph = &tcph;
     p->flowflags = FLOW_PKT_TOSERVER;
-    stt.ra_ctx = &ra_ctx;
+    stt.ra_ctx = ra_ctx;
 
     StreamTcpInitConfig(TRUE);
     SCMutexLock(&f.m);
@@ -9658,8 +9990,50 @@ static int StreamTcpTest38 (void)
         goto end;
     }
 
-    p->tcph->th_ack = htonl(2984);
+    p->tcph->th_ack = htonl(1);
+    p->tcph->th_seq = htonl(1);
+    p->tcph->th_flags = TH_PUSH | TH_ACK;
+    p->flowflags = FLOW_PKT_TOCLIENT;
+
+    StreamTcpCreateTestPacket(payload, 0x41, 127, 128); /*AAA*/
+    p->payload = payload;
+    p->payload_len = 127;
+
+    if (StreamTcpPacket(&tv, p, &stt, &pq) == -1) {
+        printf("failed in processing packet in StreamTcpPacket\n");
+        goto end;
+    }
+
+    if (((TcpSession *)(p->flow->protoctx))->server.next_seq != 128) {
+        printf("the server.next_seq should be 128, but it is %"PRIu32"\n",
+                ((TcpSession *)(p->flow->protoctx))->server.next_seq);
+        goto end;
+    }
+
+    p->tcph->th_ack = htonl(256); // in window, but beyond next_seq
     p->tcph->th_seq = htonl(5);
+    p->tcph->th_flags = TH_PUSH | TH_ACK;
+    p->flowflags = FLOW_PKT_TOSERVER;
+
+    StreamTcpCreateTestPacket(payload, 0x41, 3, 4); /*AAA*/
+    p->payload = payload;
+    p->payload_len = 3;
+
+    if (StreamTcpPacket(&tv, p, &stt, &pq) == -1) {
+        printf("failed in processing packet in StreamTcpPacket\n");
+        goto end;
+    }
+
+    /* last_ack value should be 1, not 256, as the previous sent ACK value
+       is inside window, but beyond next_seq */
+    if (((TcpSession *)(p->flow->protoctx))->server.last_ack != 1) {
+        printf("the server.last_ack should be 1, but it is %"PRIu32"\n",
+                ((TcpSession *)(p->flow->protoctx))->server.last_ack);
+        goto end;
+    }
+
+    p->tcph->th_ack = htonl(128);
+    p->tcph->th_seq = htonl(8);
     p->tcph->th_flags = TH_PUSH | TH_ACK;
     p->flowflags = FLOW_PKT_TOSERVER;
 
@@ -9674,8 +10048,8 @@ static int StreamTcpTest38 (void)
 
     /* last_ack value should be 2984 as the previous sent ACK value is inside
        window */
-    if (((TcpSession *)(p->flow->protoctx))->server.last_ack != 2984) {
-        printf("the server.last_ack should be 2984, but it is %"PRIu32"\n",
+    if (((TcpSession *)(p->flow->protoctx))->server.last_ack != 128) {
+        printf("the server.last_ack should be 128, but it is %"PRIu32"\n",
                 ((TcpSession *)(p->flow->protoctx))->server.last_ack);
         goto end;
     }
@@ -9687,6 +10061,9 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
+    if (stt.ra_ctx != NULL)
+        StreamTcpReassembleFreeThreadCtx(stt.ra_ctx);
     return ret;
 }
 
@@ -9704,10 +10081,9 @@ static int StreamTcpTest39 (void)
     StreamTcpThread stt;
     uint8_t payload[4];
     TCPHdr tcph;
-    TcpReassemblyThreadCtx ra_ctx;
     PacketQueue pq;
 
-    memset(&ra_ctx, 0, sizeof(TcpReassemblyThreadCtx));
+    TcpReassemblyThreadCtx *ra_ctx = StreamTcpReassembleInitThreadCtx(NULL);
     memset (&f, 0, sizeof(Flow));
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (StreamTcpThread));
@@ -9719,13 +10095,14 @@ static int StreamTcpTest39 (void)
         return 0;
     memset(p, 0, SIZE_OF_PACKET);
 
+    FLOW_INITIALIZE(&f);
     p->flow = &f;
     tcph.th_win = htons(5480);
     tcph.th_flags = TH_SYN;
     p->tcph = &tcph;
     p->flowflags = FLOW_PKT_TOSERVER;
     int ret = 0;
-    stt.ra_ctx = &ra_ctx;
+    stt.ra_ctx = ra_ctx;
 
     StreamTcpInitConfig(TRUE);
 
@@ -9754,7 +10131,27 @@ static int StreamTcpTest39 (void)
         goto end;
     }
 
-    p->tcph->th_ack = htonl(2984);
+    p->tcph->th_ack = htonl(1);
+    p->tcph->th_seq = htonl(1);
+    p->tcph->th_flags = TH_PUSH | TH_ACK;
+    p->flowflags = FLOW_PKT_TOCLIENT;
+
+    StreamTcpCreateTestPacket(payload, 0x41, 3, 4); /*AAA*/
+    p->payload = payload;
+    p->payload_len = 3;
+
+    if (StreamTcpPacket(&tv, p, &stt, &pq) == -1) {
+        printf("failed in processing packet in StreamTcpPacket\n");
+        goto end;
+    }
+
+    if (((TcpSession *)(p->flow->protoctx))->server.next_seq != 4) {
+        printf("the server.next_seq should be 4, but it is %"PRIu32"\n",
+                ((TcpSession *)(p->flow->protoctx))->server.next_seq);
+        goto end;
+    }
+
+    p->tcph->th_ack = htonl(4);
     p->tcph->th_seq = htonl(2);
     p->tcph->th_flags = TH_PUSH | TH_ACK;
     p->flowflags = FLOW_PKT_TOSERVER;
@@ -9768,15 +10165,15 @@ static int StreamTcpTest39 (void)
         goto end;
     }
 
-    /* last_ack value should be 2984 as the previous sent ACK value is inside
+    /* last_ack value should be 4 as the previous sent ACK value is inside
        window */
-    if (((TcpSession *)(p->flow->protoctx))->server.last_ack != 2984) {
-        printf("the server.last_ack should be 2984, but it is %"PRIu32"\n",
+    if (((TcpSession *)(p->flow->protoctx))->server.last_ack != 4) {
+        printf("the server.last_ack should be 4, but it is %"PRIu32"\n",
                 ((TcpSession *)(p->flow->protoctx))->server.last_ack);
         goto end;
     }
 
-    p->tcph->th_seq = htonl(2984);
+    p->tcph->th_seq = htonl(4);
     p->tcph->th_ack = htonl(5);
     p->tcph->th_flags = TH_PUSH | TH_ACK;
     p->flowflags = FLOW_PKT_TOCLIENT;
@@ -9792,8 +10189,8 @@ static int StreamTcpTest39 (void)
 
     /* next_seq value should be 2987 as the previous sent ACK value is inside
        window */
-    if (((TcpSession *)(p->flow->protoctx))->server.next_seq != 2987) {
-        printf("the server.next_seq should be 2987, but it is %"PRIu32"\n",
+    if (((TcpSession *)(p->flow->protoctx))->server.next_seq != 7) {
+        printf("the server.next_seq should be 7, but it is %"PRIu32"\n",
                 ((TcpSession *)(p->flow->protoctx))->server.next_seq);
         goto end;
     }
@@ -9805,6 +10202,9 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
+    if (stt.ra_ctx != NULL)
+        StreamTcpReassembleFreeThreadCtx(stt.ra_ctx);
     return ret;
 }
 
@@ -9956,6 +10356,7 @@ static int StreamTcpTest42 (void)
 
     StreamTcpInitConfig(TRUE);
 
+    FLOW_INITIALIZE(&f);
     p->tcph = &tcph;
     tcph.th_win = htons(5480);
     p->flow = &f;
@@ -10021,6 +10422,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -10048,6 +10450,7 @@ static int StreamTcpTest43 (void)
 
     StreamTcpInitConfig(TRUE);
 
+    FLOW_INITIALIZE(&f);
     p->tcph = &tcph;
     tcph.th_win = htons(5480);
     p->flow = &f;
@@ -10113,6 +10516,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -10140,6 +10544,7 @@ static int StreamTcpTest44 (void)
 
     StreamTcpInitConfig(TRUE);
 
+    FLOW_INITIALIZE(&f);
     p->tcph = &tcph;
     tcph.th_win = htons(5480);
     p->flow = &f;
@@ -10200,6 +10605,7 @@ end:
     StreamTcpFreeConfig(TRUE);
     SCMutexUnlock(&f.m);
     SCFree(p);
+    FLOW_DESTROY(&f);
     return ret;
 }
 
@@ -10228,6 +10634,7 @@ static int StreamTcpTest45 (void)
     StreamTcpInitConfig(TRUE);
     stream_config.max_synack_queued = 2;
 
+    FLOW_INITIALIZE(&f);
     p->tcph = &tcph;
     tcph.th_win = htons(5480);
     p->flow = &f;
