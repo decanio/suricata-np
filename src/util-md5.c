@@ -22,6 +22,9 @@
 
 //#include "blapi.h"
 
+/* require NSS to utilize this */
+#ifdef HAVE_NSS 
+
 #define MD5_HASH_LEN 16
 #define MD5_BUFFER_SIZE 64
 #define MD5_END_BUFFER (MD5_BUFFER_SIZE - 8)
@@ -606,3 +609,5 @@ MD5_TraceState(SCMD5Context *cx)
 	PORT_SetError(PR_NOT_IMPLEMENTED_ERROR);
 }
 #endif
+
+#endif /* HAVE_NSS */
