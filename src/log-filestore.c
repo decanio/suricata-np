@@ -207,6 +207,9 @@ static void LogFilestoreLogCreateMetaFile(const Packet *p, const File *ff, char 
             fprintf(fp, "DST PORT:          %" PRIu16 "\n", dp);
         }
 
+        fprintf(fp, "APP PROTO:         %s\n",
+                AppProtoToString(p->flow->alproto));
+
         /* Only applicable to HTTP traffic */
         if (p->flow->alproto == ALPROTO_HTTP) {
             fprintf(fp, "HTTP URI:          ");
@@ -485,6 +488,7 @@ void TmModuleLogFilestoreRegister (void)
     tmm_modules[TMM_FILESTORE].RegisterTests = NULL;
     tmm_modules[TMM_FILESTORE].cap_flags = 0;
     tmm_modules[TMM_FILESTORE].flags = TM_FLAG_LOGAPI_TM;
+    tmm_modules[TMM_FILESTORE].priority = 10;
 
     OutputRegisterFiledataModule(MODULE_NAME, "file", LogFilestoreLogInitCtx,
             LogFilestoreLogger);

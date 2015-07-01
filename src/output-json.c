@@ -146,10 +146,6 @@ void TmModuleOutputJsonRegister (void)
 /* Default Sensor ID value */
 static int64_t sensor_id = -1; /* -1 = not defined */
 
-static enum JsonOutput json_out = ALERT_FILE;
-
-static enum JsonFormat format = COMPACT;
-
 /** \brief jsonify tcp flags field
  *  Only add 'true' fields in an attempt to keep things reasonably compact.
  */
@@ -345,10 +341,29 @@ int OutputJSONBuffer(json_t *js, LogFileCtx *file_ctx, MemBuffer *buffer)
         return TM_ECODE_OK;
 
     SCMutexLock(&file_ctx->fp_mutex);
-    if (json_out == ALERT_SYSLOG) {
-        syslog(alert_syslog_level, "%s", js_s);
-    } else if (json_out == ALERT_FILE || json_out == ALERT_UNIX_DGRAM || json_out == ALERT_UNIX_STREAM) {
-        MemBufferWriteString(buffer, "%s\n", js_s);
+    if (file_ctx->type == LOGFILE_TYPE_SYSLOG)
+    {
+        if (file_ctx->prefix != NULL)
+        {
+            syslog(alert_syslog_level, "%s%s", file_ctx->prefix, js_s);
+        }
+        else
+        {
+            syslog(alert_syslog_level, "%s", js_s);
+        }
+    }
+    else if (file_ctx->type == LOGFILE_TYPE_FILE ||
+               file_ctx->type == LOGFILE_TYPE_UNIX_DGRAM ||
+               file_ctx->type == LOGFILE_TYPE_UNIX_STREAM)
+    {
+        if (file_ctx->prefix != NULL)
+        {
+            MemBufferWriteString(buffer, "%s%s\n", file_ctx->prefix, js_s);
+        }
+        else
+        {
+            MemBufferWriteString(buffer, "%s\n", js_s);
+        }
         file_ctx->Write((const char *)MEMBUFFER_BUFFER(buffer),
             MEMBUFFER_OFFSET(buffer), file_ctx);
     }
@@ -443,13 +458,13 @@ OutputCtx *OutputJsonInitCtx(ConfNode *conf)
         if (output_s != NULL) {
             if (strcmp(output_s, "file") == 0 ||
                 strcmp(output_s, "regular") == 0) {
-                json_ctx->json_out = ALERT_FILE;
+                json_ctx->json_out = LOGFILE_TYPE_FILE;
             } else if (strcmp(output_s, "syslog") == 0) {
-                json_ctx->json_out = ALERT_SYSLOG;
+                json_ctx->json_out = LOGFILE_TYPE_SYSLOG;
             } else if (strcmp(output_s, "unix_dgram") == 0) {
-                json_ctx->json_out = ALERT_UNIX_DGRAM;
+                json_ctx->json_out = LOGFILE_TYPE_UNIX_DGRAM;
             } else if (strcmp(output_s, "unix_stream") == 0) {
-                json_ctx->json_out = ALERT_UNIX_STREAM;
+                json_ctx->json_out = LOGFILE_TYPE_UNIX_STREAM;
             } else {
                 SCLogError(SC_ERR_INVALID_ARGUMENT,
                            "Invalid JSON output option: %s", output_s);
@@ -457,8 +472,22 @@ OutputCtx *OutputJsonInitCtx(ConfNode *conf)
             }
         }
 
-        if (json_ctx->json_out == ALERT_FILE || json_ctx->json_out == ALERT_UNIX_DGRAM || json_ctx->json_out == ALERT_UNIX_STREAM) {
+        const char *prefix = ConfNodeLookupChildValue(conf, "prefix");
+        if (prefix != NULL)
+        {
+            json_ctx->file_ctx->prefix = SCStrdup(prefix);
+            if (json_ctx->file_ctx->prefix == NULL)
+            {
+                SCLogError(SC_ERR_MEM_ALLOC,
+                    "Failed to allocate memory for eve-log.prefix setting.");
+                exit(EXIT_FAILURE);
+            }
+        }
 
+        if (json_ctx->json_out == LOGFILE_TYPE_FILE ||
+            json_ctx->json_out == LOGFILE_TYPE_UNIX_DGRAM ||
+            json_ctx->json_out == LOGFILE_TYPE_UNIX_STREAM)
+        {
             if (SCConfLogOpenGeneric(conf, json_ctx->file_ctx, DEFAULT_LOG_FILENAME) < 0) {
                 LogFileFreeCtx(json_ctx->file_ctx);
                 SCFree(json_ctx);
@@ -479,7 +508,7 @@ OutputCtx *OutputJsonInitCtx(ConfNode *conf)
                     exit(EXIT_FAILURE);
                 }
             }
-        } else if (json_out == ALERT_SYSLOG) {
+        } else if (json_ctx->json_out == LOGFILE_TYPE_SYSLOG) {
             const char *facility_s = ConfNodeLookupChildValue(conf, "facility");
             if (facility_s == NULL) {
                 facility_s = DEFAULT_ALERT_SYSLOG_FACILITY_STR;
@@ -519,8 +548,7 @@ OutputCtx *OutputJsonInitCtx(ConfNode *conf)
             }
         }
 
-        format = json_ctx->format;
-        json_out = json_ctx->json_out;
+        json_ctx->file_ctx->type = json_ctx->json_out;
     }
 
     SCLogDebug("returning output_ctx %p", output_ctx);

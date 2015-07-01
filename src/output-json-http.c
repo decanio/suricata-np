@@ -327,7 +327,8 @@ void JsonHttpLogJSONExtended(json_t *js, htp_tx_t *tx)
     if (tx->response_status != NULL) {
         c = bstr_util_strdup_to_c(tx->response_status);
         if (c != NULL) {
-            json_object_set_new(js, "status", json_string(c));
+            unsigned int val = strtoul(c, NULL, 10);
+            json_object_set_new(js, "status", json_integer(val));
             SCFree(c);
         }
 
@@ -461,7 +462,7 @@ static void OutputHttpLogDeinitSub(OutputCtx *output_ctx)
 
 OutputCtx *OutputHttpLogInitSub(ConfNode *conf, OutputCtx *parent_ctx)
 {
-    AlertJsonThread *ajt = parent_ctx->data;
+    OutputJsonCtx *ojc = parent_ctx->data;
 
     LogHttpFileCtx *http_ctx = SCMalloc(sizeof(LogHttpFileCtx));
     if (unlikely(http_ctx == NULL))
@@ -474,7 +475,7 @@ OutputCtx *OutputHttpLogInitSub(ConfNode *conf, OutputCtx *parent_ctx)
         return NULL;
     }
 
-    http_ctx->file_ctx = ajt->file_ctx;
+    http_ctx->file_ctx = ojc->file_ctx;
     http_ctx->flags = LOG_HTTP_DEFAULT;
 
     if (conf) {

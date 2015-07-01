@@ -94,6 +94,7 @@
 #include "log-file.h"
 #include "output-json-file.h"
 #include "output-json-smtp.h"
+#include "output-json-stats.h"
 #include "log-filestore.h"
 #include "log-tcp-data.h"
 #include "log-stats.h"
@@ -130,6 +131,10 @@
 #include "flow-var.h"
 #include "flow-bit.h"
 #include "pkt-var.h"
+#include "host-bit.h"
+
+#include "ippair.h"
+#include "ippair-bit.h"
 
 #include "host.h"
 #include "unix-manager.h"
@@ -793,6 +798,8 @@ int g_ut_covered;
 
 void RegisterAllModules()
 {
+    /* commanders */
+    TmModuleUnixManagerRegister();
     /* managers */
     TmModuleFlowManagerRegister();
     TmModuleFlowRecyclerRegister();
@@ -885,6 +892,8 @@ void RegisterAllModules()
     /* flow/netflow */
     TmModuleJsonFlowLogRegister();
     TmModuleJsonNetFlowLogRegister();
+    /* json stats */
+    TmModuleJsonStatsLogRegister();
 
     /* log api */
     TmModulePacketLoggerRegister();
@@ -1470,14 +1479,14 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
 #endif
             else if (strcmp((long_opts[option_index]).name, "set") == 0) {
                 if (optarg != NULL) {
+                    /* Quick validation. */
                     char *val = strchr(optarg, '=');
                     if (val == NULL) {
                         SCLogError(SC_ERR_CMD_LINE,
                                 "Invalid argument for --set, must be key=val.");
                         exit(EXIT_FAILURE);
                     }
-                    *val++ = '\0';
-                    if (ConfSetFinal(optarg, val) != 1) {
+                    if (!ConfSetFromString(optarg, 1)) {
                         fprintf(stderr, "Failed to set configuration value %s.",
                                 optarg);
                         exit(EXIT_FAILURE);
@@ -2096,6 +2105,8 @@ static int PostConfLoadedSetup(SCInstance *suri)
 
     TagInitCtx();
     ThresholdInit();
+    HostBitInitCtx();
+    IPPairBitInitCtx();
 
     if (DetectAddressTestConfVars() < 0) {
         SCLogError(SC_ERR_INVALID_YAML_CONF_ENTRY,
@@ -2195,6 +2206,9 @@ int main(int argc, char **argv)
     GlobalInits();
     TimeInit();
     SupportFastPatternForSigMatchTypes();
+    if (suri.run_mode != RUNMODE_UNIX_SOCKET) {
+        StatsInit();
+    }
 
     if (conf_filename == NULL)
         conf_filename = DEFAULT_CONF_FILE;
@@ -2234,10 +2248,17 @@ int main(int argc, char **argv)
     NSS_NoDB_Init(NULL);
 #endif
 
+    if (suri.disabled_detect) {
+        /* disable raw reassembly */
+        (void)ConfSetFinal("stream.reassembly.raw", "false");
+    }
+
     HostInitConfig(HOST_VERBOSE);
     if (suri.run_mode != RUNMODE_UNIX_SOCKET) {
         FlowInitConfig(FLOW_VERBOSE);
         StreamTcpInitConfig(STREAM_VERBOSE);
+        IPPairInitConfig(IPPAIR_VERBOSE);
+        AppLayerRegisterGlobalCounters();
     }
 
     if (MagicInit() != 0)
@@ -2245,6 +2266,8 @@ int main(int argc, char **argv)
 
     DetectEngineCtx *de_ctx = NULL;
     if (!suri.disabled_detect) {
+        SCClassConfInit();
+        SCReferenceConfInit();
         SetupDelayedDetect(&suri);
         if (!suri.delayed_detect) {
             de_ctx = DetectEngineCtxInit();
@@ -2272,9 +2295,6 @@ int main(int argc, char **argv)
 
         DetectEngineAddToMaster(de_ctx);
     } else {
-        /* disable raw reassembly */
-        (void)ConfSetFinal("stream.reassembly.raw", "false");
-
         /* tell the app layer to consider only the log id */
         RegisterAppLayerGetActiveTxIdFunc(AppLayerTransactionGetActiveLogOnly);
     }
@@ -2289,7 +2309,7 @@ int main(int argc, char **argv)
 
     if (suri.run_mode != RUNMODE_UNIX_SOCKET) {
         RunModeInitializeOutputs();
-        SCPerfInitCounterApi();
+        StatsSetupPostConfig();
     }
 
     if (ParseInterfacesList(suri.run_mode, suri.pcap_dev) != TM_ECODE_OK) {
@@ -2320,7 +2340,7 @@ int main(int argc, char **argv)
         /* Spawn the flow manager thread */
         FlowManagerThreadSpawn();
         FlowRecyclerThreadSpawn();
-        SCPerfSpawnThreads();
+        StatsSpawnThreads();
     }
 
 #ifdef __SC_CUDA_SUPPORT__
@@ -2400,14 +2420,18 @@ int main(int argc, char **argv)
     UnixSocketKillSocketThread();
 
     if (suri.run_mode != RUNMODE_UNIX_SOCKET) {
-        /* First we need to kill the flow manager thread */
-        FlowKillFlowManagerThread();
+        /* First we need to disable the flow manager thread */
+        FlowDisableFlowManagerThread();
     }
+
 
     /* Disable packet acquisition first */
     TmThreadDisableReceiveThreads();
 
     if (suri.run_mode != RUNMODE_UNIX_SOCKET) {
+        /* we need a packet pool for FlowForceReassembly */
+        PacketPoolInit();
+
         FlowForceReassembly();
         /* kill receive threads when they have processed all
          * flow timeout packets */
@@ -2419,14 +2443,20 @@ int main(int argc, char **argv)
     /* before TmThreadKillThreads, as otherwise that kills it
      * but more slowly */
     if (suri.run_mode != RUNMODE_UNIX_SOCKET) {
-        FlowKillFlowRecyclerThread();
+        FlowDisableFlowRecyclerThread();
     }
 
     /* kill remaining threads */
     TmThreadKillThreads();
 
+
     if (suri.run_mode != RUNMODE_UNIX_SOCKET) {
-        SCPerfReleaseResources();
+        /* destroy the packet pool for flow reassembly after all
+         * the other threads are gone. */
+        PacketPoolDestroy();
+
+        StatsReleaseResources();
+        IPPairShutdown();
         FlowShutdown();
         StreamTcpFreeConfig(STREAM_VERBOSE);
     }
@@ -2466,7 +2496,10 @@ int main(int argc, char **argv)
     if (suri.run_mode != RUNMODE_UNIX_SOCKET) {
         DefragDestroy();
     }
-    PacketPoolDestroy();
+    if (!suri.disabled_detect) {
+        SCReferenceConfDeinit();
+        SCClassConfDeinit();
+    }
     MagicDeinit();
     TmqhCleanup();
     TmModuleRunDeInit();

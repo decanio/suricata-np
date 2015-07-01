@@ -307,14 +307,10 @@ TmEcode ReceiveNFLOGThreadInit(ThreadVars *tv, void *initdata, void **data)
     }
 
 #ifdef PACKET_STATISTICS
-    ntv->capture_kernel_packets = SCPerfTVRegisterCounter("capture.kernel_packets",
-                                                           ntv->tv,
-                                                           SC_PERF_TYPE_UINT64,
-                                                           "NULL");
-    ntv->capture_kernel_drops = SCPerfTVRegisterCounter("capture.kernel_drops",
-                                                        ntv->tv,
-                                                        SC_PERF_TYPE_UINT64,
-                                                        "NULL");
+    ntv->capture_kernel_packets = StatsRegisterCounter("capture.kernel_packets",
+                                                       ntv->tv);
+    ntv->capture_kernel_drops = StatsRegisterCounter("capture.kernel_drops",
+                                                     ntv->tv);
 #endif
 
     char *active_runmode = RunmodeGetActive();
@@ -465,7 +461,7 @@ TmEcode ReceiveNFLOGLoop(ThreadVars *tv, void *data, void *slot)
             SCLogWarning(SC_ERR_NFLOG_HANDLE_PKT,
                          "nflog_handle_packet error %" PRId32 "", ret);
 
-        SCPerfSyncCountersIfSignalled(tv);
+        StatsSyncCountersIfSignalled(tv);
     }
 
     SCReturnInt(TM_ECODE_OK);
@@ -503,10 +499,7 @@ TmEcode DecodeNFLOG(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, Pack
     IPV6Hdr *ip6h = (IPV6Hdr *)GET_PKT_DATA(p);
     DecodeThreadVars *dtv = (DecodeThreadVars *)data;
 
-    SCPerfCounterIncr(dtv->counter_pkts, tv->sc_perf_pca);
-    SCPerfCounterAddUI64(dtv->counter_bytes, tv->sc_perf_pca, GET_PKT_LEN(p));
-    SCPerfCounterAddUI64(dtv->counter_avg_pkt_size, tv->sc_perf_pca, GET_PKT_LEN(p));
-    SCPerfCounterSetUI64(dtv->counter_max_pkt_size, tv->sc_perf_pca, GET_PKT_LEN(p));
+    DecodeUpdatePacketCounters(tv, dtv, p);
 
     if (IPV4_GET_RAW_VER(ip4h) == 4) {
         SCLogDebug("IPv4 packet");

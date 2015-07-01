@@ -60,6 +60,28 @@
 
 #define DNS_RECORD_TYPE_ANY     255
 
+#define DNS_RCODE_NOERROR       0
+#define DNS_RCODE_FORMERR       1
+#define DNS_RCODE_SERVFAIL      2
+#define DNS_RCODE_NXDOMAIN      3
+#define DNS_RCODE_NOTIMP        4
+#define DNS_RCODE_REFUSED       5
+#define DNS_RCODE_YXDOMAIN      6
+#define DNS_RCODE_YXRRSET       7
+#define DNS_RCODE_NXRRSET       8
+#define DNS_RCODE_NOTAUTH       9
+#define DNS_RCODE_NOTZONE       10
+// Support for OPT RR from RFC6891 will be needed to
+// parse RCODE values over 15
+#define DNS_RCODE_BADVERS       16
+#define DNS_RCODE_BADSIG        16
+#define DNS_RCODE_BADKEY        17
+#define DNS_RCODE_BADTIME       18
+#define DNS_RCODE_BADMODE       19
+#define DNS_RCODE_BADNAME       20
+#define DNS_RCODE_BADALG        21
+#define DNS_RCODE_BADTRUNC      22
+
 enum {
     DNS_DECODER_EVENT_UNSOLLICITED_RESPONSE,
     DNS_DECODER_EVENT_MALFORMED_DATA,
@@ -139,7 +161,7 @@ typedef struct DNSTransaction_ {
     uint8_t replied;                                /**< bool indicating request is
                                                          replied to. */
     uint8_t reply_lost;
-    uint8_t no_such_name;                           /**< server said "no such name" */
+    uint8_t rcode;                                  /**< response code (e.g. "no error" / "no such name") */
     uint8_t recursion_desired;                      /**< server said "recursion desired" */
 
     TAILQ_HEAD(, DNSQueryEntry_) query_list;        /**< list for query/queries */
@@ -161,6 +183,8 @@ typedef struct DNSState_ {
     uint32_t unreplied_cnt;                 /**< number of unreplied requests in a row */
     uint32_t memuse;                        /**< state memuse, for comparing with
                                                  state-memcap settings */
+    uint64_t tx_with_detect_state_cnt;
+
     uint16_t events;
     uint16_t givenup;
 
@@ -182,8 +206,9 @@ void DNSConfigSetGlobalMemcap(uint64_t value);
 void DNSIncrMemcap(uint32_t size, DNSState *state);
 void DNSDecrMemcap(uint32_t size, DNSState *state);
 int DNSCheckMemcap(uint32_t want, DNSState *state);
-void DNSMemcapGetCounters(uint64_t *memuse, uint64_t *memcap_state,
-                          uint64_t *memcap_global);
+uint64_t DNSMemcapGetMemuseCounter(void);
+uint64_t DNSMemcapGetMemcapStateCounter(void);
+uint64_t DNSMemcapGetMemcapGlobalCounter(void);
 
 void RegisterDNSParsers(void);
 void DNSParserTests(void);
@@ -201,8 +226,9 @@ int DNSGetAlstateProgressCompletionStatus(uint8_t direction);
 void DNSStateTransactionFree(void *state, uint64_t tx_id);
 DNSTransaction *DNSTransactionFindByTxId(const DNSState *dns_state, const uint16_t tx_id);
 
+int DNSStateHasTxDetectState(void *alstate);
 DetectEngineState *DNSGetTxDetectState(void *vtx);
-int DNSSetTxDetectState(void *vtx, DetectEngineState *s);
+int DNSSetTxDetectState(void *alstate, void *vtx, DetectEngineState *s);
 
 void DNSSetEvent(DNSState *s, uint8_t e);
 void *DNSStateAlloc(void);
@@ -228,5 +254,6 @@ uint16_t DNSUdpResponseGetNameByOffset(const uint8_t * const input, const uint32
         const uint16_t offset, uint8_t *fqdn, const size_t fqdn_size);
 
 void DNSCreateTypeString(uint16_t type, char *str, size_t str_size);
+void DNSCreateRcodeString(uint8_t rcode, char *str, size_t str_size);
 
 #endif /* __APP_LAYER_DNS_COMMON_H__ */

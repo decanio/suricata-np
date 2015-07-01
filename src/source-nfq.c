@@ -131,6 +131,8 @@ typedef struct NFQThreadVars_
     char *data; /** Per function and thread data */
     int datalen; /** Length of per function and thread data */
 
+    CaptureStats stats;
+
 } NFQThreadVars;
 /* shared vars for all for nfq queues and threads */
 static NFQGlobalVars nfq_g;
@@ -755,9 +757,11 @@ TmEcode ReceiveNFQThreadDeinit(ThreadVars *t, void *data)
 
 TmEcode VerdictNFQThreadInit(ThreadVars *tv, void *initdata, void **data)
 {
+    NFQThreadVars *ntv = (NFQThreadVars *) initdata;
 
-    *data = (void *)initdata;
+    CaptureStatsSetup(tv, &ntv->stats);
 
+    *data = (void *)ntv;
     return TM_ECODE_OK;
 }
 
@@ -1003,7 +1007,7 @@ TmEcode ReceiveNFQLoop(ThreadVars *tv, void *data, void *slot)
         }
         NFQRecvPkt(nq, ntv);
 
-        SCPerfSyncCountersIfSignalled(tv);
+        StatsSyncCountersIfSignalled(tv);
     }
     SCReturnInt(TM_ECODE_OK);
 }
@@ -1169,6 +1173,10 @@ TmEcode NFQSetVerdict(Packet *p)
  */
 TmEcode VerdictNFQ(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
 {
+    NFQThreadVars *ntv = (NFQThreadVars *)data;
+    /* update counters */
+    CaptureStatsUpdate(tv, &ntv->stats, p);
+
     int ret;
     /* if this is a tunnel packet we check if we are ready to verdict
      * already. */
@@ -1223,15 +1231,7 @@ TmEcode DecodeNFQ(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, Packet
     if (p->flags & PKT_PSEUDO_STREAM_END)
         return TM_ECODE_OK;
 
-    SCPerfCounterIncr(dtv->counter_pkts, tv->sc_perf_pca);
-    SCPerfCounterAddUI64(dtv->counter_bytes, tv->sc_perf_pca, GET_PKT_LEN(p));
-    SCPerfCounterAddUI64(dtv->counter_avg_pkt_size, tv->sc_perf_pca, GET_PKT_LEN(p));
-    SCPerfCounterSetUI64(dtv->counter_max_pkt_size, tv->sc_perf_pca, GET_PKT_LEN(p));
-#if 0
-    SCPerfCounterAddDouble(dtv->counter_bytes_per_sec, tv->sc_perf_pca, GET_PKT_LEN(p));
-    SCPerfCounterAddDouble(dtv->counter_mbit_per_sec, tv->sc_perf_pca,
-                           (GET_PKT_LEN(p) * 8)/1000000.0);
-#endif
+    DecodeUpdatePacketCounters(tv, dtv, p);
 
     if (IPV4_GET_RAW_VER(ip4h) == 4) {
         SCLogDebug("IPv4 packet");

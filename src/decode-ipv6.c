@@ -60,12 +60,12 @@ static void DecodeIPv4inIPv6(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, u
     }
     if (IP_GET_RAW_VER(pkt) == 4) {
         if (pq != NULL) {
-            Packet *tp = PacketTunnelPktSetup(tv, dtv, p, pkt, plen, IPPROTO_IP, pq);
+            Packet *tp = PacketTunnelPktSetup(tv, dtv, p, pkt, plen, DECODE_TUNNEL_IPV4, pq);
             if (tp != NULL) {
                 PKT_SET_SRC(tp, PKT_SRC_DECODER_IPV6);
                 /* add the tp to the packet queue. */
                 PacketEnqueue(pq,tp);
-                SCPerfCounterIncr(dtv->counter_ipv4inipv6, tv->sc_perf_pca);
+                StatsIncr(tv, dtv->counter_ipv4inipv6);
                 return;
             }
         }
@@ -88,11 +88,11 @@ static int DecodeIP6inIP6(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint
     }
     if (IP_GET_RAW_VER(pkt) == 6) {
         if (unlikely(pq != NULL)) {
-            Packet *tp = PacketTunnelPktSetup(tv, dtv, p, pkt, plen, IPPROTO_IPV6, pq);
+            Packet *tp = PacketTunnelPktSetup(tv, dtv, p, pkt, plen, DECODE_TUNNEL_IPV6, pq);
             if (tp != NULL) {
                 PKT_SET_SRC(tp, PKT_SRC_DECODER_IPV6);
                 PacketEnqueue(pq,tp);
-                SCPerfCounterIncr(dtv->counter_ipv6inipv6, tv->sc_perf_pca);
+                StatsIncr(tv, dtv->counter_ipv6inipv6);
             }
         }
     } else {
@@ -601,7 +601,7 @@ int DecodeIPV6(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt, u
 {
     int ret;
 
-    SCPerfCounterIncr(dtv->counter_ipv6, tv->sc_perf_pca);
+    StatsIncr(tv, dtv->counter_ipv6);
 
     /* do the actual decoding */
     ret = DecodeIPV6Packet (tv, dtv, p, pkt, len);

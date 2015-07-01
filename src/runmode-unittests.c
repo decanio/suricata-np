@@ -51,6 +51,7 @@
 #include "detect-engine-state.h"
 #include "detect-engine-tag.h"
 #include "detect-engine-modbus.h"
+#include "detect-engine-filedata-smtp.h"
 #include "detect-fast-pattern.h"
 #include "flow.h"
 #include "flow-timeout.h"
@@ -60,6 +61,9 @@
 #include "pkt-var.h"
 
 #include "host.h"
+#include "host-bit.h"
+#include "ippair.h"
+#include "ippair-bit.h"
 #include "unix-manager.h"
 
 #include "app-layer-detect-proto.h"
@@ -165,10 +169,14 @@ void RunUnittests(int list_unittests, char *regex_arg)
     SCProtoNameInit();
 
     TagInitCtx();
+    SCReferenceConfInit();
+    SCClassConfInit();
 
     RegisterAllModules();
 
     DetectEngineRegisterAppInspectionEngines();
+
+    HostBitInitCtx();
 
     StorageFinalize();
    /* test and initialize the unittesting subsystem */
@@ -193,7 +201,9 @@ void RunUnittests(int list_unittests, char *regex_arg)
     ByteRegisterTests();
     MpmRegisterTests();
     FlowBitRegisterTests();
-    SCPerfRegisterTests();
+    HostBitRegisterTests();
+    IPPairBitRegisterTests();
+    StatsRegisterTests();
     DecodePPPRegisterTests();
     DecodeVLANRegisterTests();
     HTPParserRegisterTests();
@@ -214,6 +224,7 @@ void RunUnittests(int list_unittests, char *regex_arg)
     TmqhFlowRegisterTests();
     FlowRegisterTests();
     HostRegisterUnittests();
+    IPPairRegisterUnittests();
     SCSigRegisterSignatureOrderingTests();
     SCRadixRegisterTests();
     DefragRegisterTests();
@@ -253,6 +264,7 @@ void RunUnittests(int list_unittests, char *regex_arg)
     DetectEngineHttpHRHRegisterTests();
     DetectEngineInspectModbusRegisterTests();
     DetectEngineRegisterTests();
+    DetectEngineSMTPFiledataRegisterTests();
     SCLogRegisterTests();
     MagicRegisterTests();
     UtilMiscRegisterTests();

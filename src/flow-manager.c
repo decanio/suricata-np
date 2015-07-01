@@ -63,6 +63,7 @@
 
 #include "host-timeout.h"
 #include "defrag-timeout.h"
+#include "ippair-timeout.h"
 
 #include "output-flow.h"
 
@@ -97,12 +98,12 @@ typedef struct FlowTimeoutCounters_ {
 } FlowTimeoutCounters;
 
 /**
- * \brief Used to kill flow manager thread(s).
+ * \brief Used to disable flow manager thread(s).
  *
  * \todo Kinda hackish since it uses the tv name to identify flow manager
  *       thread.  We need an all weather identification scheme.
  */
-void FlowKillFlowManagerThread(void)
+void FlowDisableFlowManagerThread(void)
 {
     ThreadVars *tv = NULL;
     int cnt = 0;
@@ -120,35 +121,32 @@ void FlowKillFlowManagerThread(void)
     while (tv != NULL) {
         if (strcasecmp(tv->name, "FlowManagerThread") == 0) {
             TmThreadsSetFlag(tv, THV_KILL);
-            TmThreadsSetFlag(tv, THV_DEINIT);
             cnt++;
-        }
-        tv = tv->next;
-    }
 
-    /* wake up threads, another try */
-    for (u = 0; u < flowmgr_number; u++)
-        SCCtrlCondSignal(&flow_manager_ctrl_cond);
+            /* value in seconds */
+#define THREAD_KILL_MAX_WAIT_TIME 60
+            /* value in microseconds */
+#define WAIT_TIME 100
 
-    tv = tv_root[TVT_MGMT];
-    while (tv != NULL) {
-        if (strcasecmp(tv->name, "FlowManagerThread") == 0) {
-            /* be sure it has shut down */
-            while (!TmThreadsCheckFlag(tv, THV_CLOSED)) {
-                usleep(100);
+            double total_wait_time = 0;
+            while (!TmThreadsCheckFlag(tv, THV_RUNNING_DONE)) {
+                usleep(WAIT_TIME);
+                total_wait_time += WAIT_TIME / 1000000.0;
+                if (total_wait_time > THREAD_KILL_MAX_WAIT_TIME) {
+                    SCLogError(SC_ERR_FATAL, "Engine unable to "
+                            "disable detect thread - \"%s\".  "
+                            "Killing engine", tv->name);
+                    exit(EXIT_FAILURE);
+                }
             }
         }
         tv = tv->next;
     }
-
-
-    /* not possible, unless someone decides to rename FlowManagerThread */
-    if (cnt == 0) {
-        SCMutexUnlock(&tv_root_lock);
-        abort();
-    }
-
     SCMutexUnlock(&tv_root_lock);
+
+    /* wake up threads, another try */
+    for (u = 0; u < flowmgr_number; u++)
+        SCCtrlCondSignal(&flow_manager_ctrl_cond);
 
     /* reset count, so we can kill and respawn (unix socket) */
     SC_ATOMIC_SET(flowmgr_cnt, 0);
@@ -287,6 +285,10 @@ static uint32_t FlowManagerHashRowTimeout(Flow *f, struct timeval *ts,
             continue;
         }
 
+        /* before grabbing the flow lock, make sure we have at least
+         * 3 packets in the pool */
+        PacketPoolWaitForN(3);
+
         FLOWLOCK_WRLOCK(f);
 
         Flow *next_flow = f->hprev;
@@ -378,6 +380,10 @@ static uint32_t FlowTimeoutHash(struct timeval *ts, uint32_t try_cnt,
 
     for (idx = hash_min; idx < hash_max; idx++) {
         FlowBucket *fb = &flow_hash[idx];
+
+        /* before grabbing the row lock, make sure we have at least
+         * 9 packets in the pool */
+        PacketPoolWaitForN(9);
 
         if (FBLOCK_TRYLOCK(fb) != 0)
             continue;
@@ -491,7 +497,6 @@ typedef struct FlowManagerThreadData_ {
     uint16_t flow_mgr_cnt_clo;
     uint16_t flow_mgr_cnt_new;
     uint16_t flow_mgr_cnt_est;
-    uint16_t flow_mgr_memuse;
     uint16_t flow_mgr_spare;
     uint16_t flow_emerg_mode_enter;
     uint16_t flow_emerg_mode_over;
@@ -526,22 +531,13 @@ static TmEcode FlowManagerThreadInit(ThreadVars *t, void *initdata, void **data)
     /* pass thread data back to caller */
     *data = ftd;
 
-    ftd->flow_mgr_cnt_clo = SCPerfTVRegisterCounter("flow_mgr.closed_pruned", t,
-            SC_PERF_TYPE_UINT64, "NULL");
-    ftd->flow_mgr_cnt_new = SCPerfTVRegisterCounter("flow_mgr.new_pruned", t,
-            SC_PERF_TYPE_UINT64, "NULL");
-    ftd->flow_mgr_cnt_est = SCPerfTVRegisterCounter("flow_mgr.est_pruned", t,
-            SC_PERF_TYPE_UINT64, "NULL");
-    ftd->flow_mgr_memuse = SCPerfTVRegisterCounter("flow.memuse", t,
-            SC_PERF_TYPE_UINT64, "NULL");
-    ftd->flow_mgr_spare = SCPerfTVRegisterCounter("flow.spare", t,
-            SC_PERF_TYPE_UINT64, "NULL");
-    ftd->flow_emerg_mode_enter = SCPerfTVRegisterCounter("flow.emerg_mode_entered", t,
-            SC_PERF_TYPE_UINT64, "NULL");
-    ftd->flow_emerg_mode_over = SCPerfTVRegisterCounter("flow.emerg_mode_over", t,
-            SC_PERF_TYPE_UINT64, "NULL");
-    ftd->flow_tcp_reuse = SCPerfTVRegisterCounter("flow.tcp_reuse", t,
-            SC_PERF_TYPE_UINT64, "NULL");
+    ftd->flow_mgr_cnt_clo = StatsRegisterCounter("flow_mgr.closed_pruned", t);
+    ftd->flow_mgr_cnt_new = StatsRegisterCounter("flow_mgr.new_pruned", t);
+    ftd->flow_mgr_cnt_est = StatsRegisterCounter("flow_mgr.est_pruned", t);
+    ftd->flow_mgr_spare = StatsRegisterCounter("flow.spare", t);
+    ftd->flow_emerg_mode_enter = StatsRegisterCounter("flow.emerg_mode_entered", t);
+    ftd->flow_emerg_mode_over = StatsRegisterCounter("flow.emerg_mode_over", t);
+    ftd->flow_tcp_reuse = StatsRegisterCounter("flow.tcp_reuse", t);
 
     PacketPoolInit();
     return TM_ECODE_OK;
@@ -577,15 +573,9 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
     int flow_update_delay_nsec = FLOW_NORMAL_MODE_UPDATE_DELAY_NSEC;
 /* VJ leaving disabled for now, as hosts are only used by tags and the numbers
  * are really low. Might confuse ppl
-    uint16_t flow_mgr_host_prune = SCPerfTVRegisterCounter("hosts.pruned", th_v,
-            SC_PERF_TYPE_UINT64,
-            "NULL");
-    uint16_t flow_mgr_host_active = SCPerfTVRegisterCounter("hosts.active", th_v,
-            SC_PERF_TYPE_Q_NORMAL,
-            "NULL");
-    uint16_t flow_mgr_host_spare = SCPerfTVRegisterCounter("hosts.spare", th_v,
-            SC_PERF_TYPE_Q_NORMAL,
-            "NULL");
+    uint16_t flow_mgr_host_prune = StatsRegisterCounter("hosts.pruned", th_v);
+    uint16_t flow_mgr_host_active = StatsRegisterCounter("hosts.active", th_v);
+    uint16_t flow_mgr_host_spare = StatsRegisterCounter("hosts.spare", th_v);
 */
     memset(&ts, 0, sizeof(ts));
 
@@ -607,7 +597,7 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
 
                 SCLogDebug("Flow emergency mode entered...");
 
-                SCPerfCounterIncr(ftd->flow_emerg_mode_enter, th_v->sc_perf_pca);
+                StatsIncr(th_v, ftd->flow_emerg_mode_enter);
             }
         }
 
@@ -634,26 +624,25 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
             DefragTimeoutHash(&ts);
             //uint32_t hosts_pruned =
             HostTimeoutHash(&ts);
+            IPPairTimeoutHash(&ts);
         }
 /*
-        SCPerfCounterAddUI64(flow_mgr_host_prune, th_v->sc_perf_pca, (uint64_t)hosts_pruned);
+        StatsAddUI64(th_v, flow_mgr_host_prune, (uint64_t)hosts_pruned);
         uint32_t hosts_active = HostGetActiveCount();
-        SCPerfCounterSetUI64(flow_mgr_host_active, th_v->sc_perf_pca, (uint64_t)hosts_active);
+        StatsSetUI64(th_v, flow_mgr_host_active, (uint64_t)hosts_active);
         uint32_t hosts_spare = HostGetSpareCount();
-        SCPerfCounterSetUI64(flow_mgr_host_spare, th_v->sc_perf_pca, (uint64_t)hosts_spare);
+        StatsSetUI64(th_v, flow_mgr_host_spare, (uint64_t)hosts_spare);
 */
-        SCPerfCounterAddUI64(ftd->flow_mgr_cnt_clo, th_v->sc_perf_pca, (uint64_t)counters.clo);
-        SCPerfCounterAddUI64(ftd->flow_mgr_cnt_new, th_v->sc_perf_pca, (uint64_t)counters.new);
-        SCPerfCounterAddUI64(ftd->flow_mgr_cnt_est, th_v->sc_perf_pca, (uint64_t)counters.est);
-        long long unsigned int flow_memuse = SC_ATOMIC_GET(flow_memuse);
-        SCPerfCounterSetUI64(ftd->flow_mgr_memuse, th_v->sc_perf_pca, (uint64_t)flow_memuse);
-        SCPerfCounterAddUI64(ftd->flow_tcp_reuse, th_v->sc_perf_pca, (uint64_t)counters.tcp_reuse);
+        StatsAddUI64(th_v, ftd->flow_mgr_cnt_clo, (uint64_t)counters.clo);
+        StatsAddUI64(th_v, ftd->flow_mgr_cnt_new, (uint64_t)counters.new);
+        StatsAddUI64(th_v, ftd->flow_mgr_cnt_est, (uint64_t)counters.est);
+        StatsAddUI64(th_v, ftd->flow_tcp_reuse, (uint64_t)counters.tcp_reuse);
 
         uint32_t len = 0;
         FQLOCK_LOCK(&flow_spare_q);
         len = flow_spare_q.len;
         FQLOCK_UNLOCK(&flow_spare_q);
-        SCPerfCounterSetUI64(ftd->flow_mgr_spare, th_v->sc_perf_pca, (uint64_t)len);
+        StatsSetUI64(th_v, ftd->flow_mgr_spare, (uint64_t)len);
 
         /* Don't fear, FlowManagerThread is here...
          * clear emergency bit if we have at least xx flows pruned. */
@@ -677,7 +666,7 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
                           "%% flows at the queue", (uintmax_t)ts.tv_sec,
                           (uintmax_t)ts.tv_usec, len * 100 / flow_config.prealloc);
 
-                SCPerfCounterIncr(ftd->flow_emerg_mode_over, th_v->sc_perf_pca);
+                StatsIncr(th_v, ftd->flow_emerg_mode_over);
             } else {
                 flow_update_delay_sec = FLOW_EMERG_MODE_UPDATE_DELAY_SEC;
                 flow_update_delay_nsec = FLOW_EMERG_MODE_UPDATE_DELAY_NSEC;
@@ -685,7 +674,7 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
         }
 
         if (TmThreadsCheckFlag(th_v, THV_KILL)) {
-            SCPerfSyncCounters(th_v);
+            StatsSyncCounters(th_v);
             break;
         }
 
@@ -698,7 +687,7 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
 
         SCLogDebug("woke up... %s", SC_ATOMIC_GET(flow_flags) & FLOW_EMERGENCY ? "emergency":"");
 
-        SCPerfSyncCountersIfSignalled(th_v);
+        StatsSyncCountersIfSignalled(th_v);
     }
 
     FlowHashDebugDeinit();
@@ -708,6 +697,12 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
               established_cnt, closing_cnt);
 
     return TM_ECODE_OK;
+}
+
+static uint64_t FlowGetMemuse(void)
+{
+    uint64_t flow_memuse = SC_ATOMIC_GET(flow_memuse);
+    return flow_memuse;
 }
 
 /** \brief spawn the flow manager thread */
@@ -726,6 +721,8 @@ void FlowManagerThreadSpawn()
     SCLogInfo("using %u flow manager threads", flowmgr_number);
     SCCtrlCondInit(&flow_manager_ctrl_cond, NULL);
     SCCtrlMutexInit(&flow_manager_ctrl_mutex, NULL);
+
+    StatsRegisterGlobalCounter("flow.memuse", FlowGetMemuse);
 
     uint32_t u;
     for (u = 0; u < flowmgr_number; u++) {
@@ -837,7 +834,7 @@ static TmEcode FlowRecycler(ThreadVars *th_v, void *thread_data)
         SCLogDebug("%u flows to recycle", len);
 
         if (TmThreadsCheckFlag(th_v, THV_KILL)) {
-            SCPerfSyncCounters(th_v);
+            StatsSyncCounters(th_v);
             break;
         }
 
@@ -850,7 +847,7 @@ static TmEcode FlowRecycler(ThreadVars *th_v, void *thread_data)
 
         SCLogDebug("woke up...");
 
-        SCPerfSyncCountersIfSignalled(th_v);
+        StatsSyncCountersIfSignalled(th_v);
     }
 
     SCLogInfo("%"PRIu64" flows processed", recycled_cnt);
@@ -911,14 +908,14 @@ void FlowRecyclerThreadSpawn()
 }
 
 /**
- * \brief Used to kill flow recycler thread(s).
+ * \brief Used to disable flow recycler thread(s).
  *
  * \note this should only be called when the flow manager is already gone
  *
  * \todo Kinda hackish since it uses the tv name to identify flow recycler
  *       thread.  We need an all weather identification scheme.
  */
-void FlowKillFlowRecyclerThread(void)
+void FlowDisableFlowRecyclerThread(void)
 {
     ThreadVars *tv = NULL;
     int cnt = 0;
@@ -945,8 +942,24 @@ void FlowKillFlowRecyclerThread(void)
     while (tv != NULL) {
         if (strcasecmp(tv->name, "FlowRecyclerThread") == 0) {
             TmThreadsSetFlag(tv, THV_KILL);
-            TmThreadsSetFlag(tv, THV_DEINIT);
             cnt++;
+
+            /* value in seconds */
+#define THREAD_KILL_MAX_WAIT_TIME 60
+            /* value in microseconds */
+#define WAIT_TIME 100
+
+            double total_wait_time = 0;
+            while (!TmThreadsCheckFlag(tv, THV_RUNNING_DONE)) {
+                usleep(WAIT_TIME);
+                total_wait_time += WAIT_TIME / 1000000.0;
+                if (total_wait_time > THREAD_KILL_MAX_WAIT_TIME) {
+                    SCLogError(SC_ERR_FATAL, "Engine unable to "
+                            "disable detect thread - \"%s\".  "
+                            "Killing engine", tv->name);
+                    exit(EXIT_FAILURE);
+                }
+            }
         }
         tv = tv->next;
     }
@@ -954,24 +967,6 @@ void FlowKillFlowRecyclerThread(void)
     /* wake up threads, another try */
     for (u = 0; u < flowrec_number; u++)
         SCCtrlCondSignal(&flow_recycler_ctrl_cond);
-
-    tv = tv_root[TVT_MGMT];
-    while (tv != NULL) {
-        if (strcasecmp(tv->name, "FlowRecyclerThread") == 0) {
-            /* be sure it has shut down */
-            while (!TmThreadsCheckFlag(tv, THV_CLOSED)) {
-                usleep(100);
-            }
-        }
-        tv = tv->next;
-    }
-
-
-    /* not possible, unless someone decides to rename FlowManagerThread */
-    if (cnt == 0) {
-        SCMutexUnlock(&tv_root_lock);
-        abort();
-    }
 
     SCMutexUnlock(&tv_root_lock);
 
@@ -1233,7 +1228,10 @@ static int FlowMgrTest04 (void)
 static int FlowMgrTest05 (void)
 {
     int result = 0;
+    extern intmax_t max_pending_packets;
+    max_pending_packets = 128;
 
+    PacketPoolInit();
     FlowInitConfig(FLOW_QUIET);
     FlowConfig backup;
     memcpy(&backup, &flow_config, sizeof(FlowConfig));
@@ -1271,7 +1269,7 @@ static int FlowMgrTest05 (void)
 
     memcpy(&flow_config, &backup, sizeof(FlowConfig));
     FlowShutdown();
-
+    PacketPoolDestroy();
     return result;
 }
 #endif /* UNITTESTS */

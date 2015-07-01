@@ -155,6 +155,10 @@ struct DetectEngineEvents_ {
     /* RAW EVENTS */
     { "ipraw.invalid_ip_version",IPRAW_INVALID_IPV, },
 
+    /* LINKTYPE NULL EVENTS */
+    { "ltnull.pkt_too_small", LTNULL_PKT_TOO_SMALL, },
+    { "ltnull.unsupported_type", LTNULL_UNSUPPORTED_TYPE, },
+
     /* STREAM EVENTS */
     { "stream.3whs_ack_in_wrong_dir", STREAM_3WHS_ACK_IN_WRONG_DIR, },
     { "stream.3whs_async_wrong_seq", STREAM_3WHS_ASYNC_WRONG_SEQ, },
@@ -238,6 +242,11 @@ struct DetectEngineEvents_ {
     { "mpls.bad_label_implicit_null", MPLS_BAD_LABEL_IMPLICIT_NULL, },
     { "mpls.bad_label_reserved", MPLS_BAD_LABEL_RESERVED, },
     { "mpls.unknown_payload_type", MPLS_UNKNOWN_PAYLOAD_TYPE, },
+
+    /* ERSPAN events */
+    { "erspan.header_too_small", ERSPAN_HEADER_TOO_SMALL, },
+    { "erspan.unsupported_version", ERSPAN_UNSUPPORTED_VERSION, },
+    { "erspan.too_many_vlan_layers", ERSPAN_TOO_MANY_VLAN_LAYERS, },
 
     { NULL, 0 },
 };

@@ -142,6 +142,8 @@ enum
  *  normal packet we assume 3whs to be completed. Only used for SYN/ACK resend
  *  event. */
 #define STREAMTCP_FLAG_3WHS_CONFIRMED               0x1000
+/** App Layer tracking/reassembly is disabled */
+#define STREAMTCP_FLAG_APP_LAYER_DISABLED           0x2000
 
 /*
  * Per STREAM flags
@@ -155,8 +157,7 @@ enum
 #define STREAMTCP_STREAM_FLAG_KEEPALIVE         0x0004
 /** Stream has reached it's reassembly depth, all further packets are ignored */
 #define STREAMTCP_STREAM_FLAG_DEPTH_REACHED     0x0008
-/** Stream has sent a FIN/RST */
-#define STREAMTCP_STREAM_FLAG_CLOSE_INITIATED   0x0010
+// vacancy
 /** Stream supports TIMESTAMP -- used to set ssn STREAMTCP_FLAG_TIMESTAMP
  *  flag. */
 #define STREAMTCP_STREAM_FLAG_TIMESTAMP         0x0020
@@ -237,5 +238,9 @@ typedef struct TcpSession_ {
     ((stream)->flags & STREAMTCP_STREAM_FLAG_APPPROTO_DETECTION_COMPLETED)
 #define StreamTcpResetStreamFlagAppProtoDetectionCompleted(stream) \
     ((stream)->flags &= ~STREAMTCP_STREAM_FLAG_APPPROTO_DETECTION_COMPLETED);
+#define StreamTcpDisableAppLayerReassembly(ssn) do { \
+        SCLogDebug("setting STREAMTCP_FLAG_APP_LAYER_DISABLED on ssn %p", ssn); \
+        ((ssn)->flags |= STREAMTCP_FLAG_APP_LAYER_DISABLED); \
+    } while (0);
 
 #endif /* __STREAM_TCP_PRIVATE_H__ */

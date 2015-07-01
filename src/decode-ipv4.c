@@ -519,7 +519,7 @@ static int DecodeIPV4Packet(Packet *p, uint8_t *pkt, uint16_t len)
 
 int DecodeIPV4(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt, uint16_t len, PacketQueue *pq)
 {
-    SCPerfCounterIncr(dtv->counter_ipv4, tv->sc_perf_pca);
+    StatsIncr(tv, dtv->counter_ipv4);
 
     SCLogDebug("pkt %p len %"PRIu16"", pkt, len);
 
@@ -583,7 +583,7 @@ int DecodeIPV4(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt, u
                     /* spawn off tunnel packet */
                     Packet *tp = PacketTunnelPktSetup(tv, dtv, p, pkt + IPV4_GET_HLEN(p),
                             IPV4_GET_IPLEN(p) - IPV4_GET_HLEN(p),
-                            IPV4_GET_IPPROTO(p), pq);
+                            DECODE_TUNNEL_IPV6, pq);
                     if (tp != NULL) {
                         PKT_SET_SRC(tp, PKT_SRC_DECODER_IPV4);
                         PacketEnqueue(pq,tp);

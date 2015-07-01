@@ -48,6 +48,7 @@ enum {
     SMTP_DECODER_EVENT_MIME_LONG_ENC_LINE,
     SMTP_DECODER_EVENT_MIME_LONG_HEADER_NAME,
     SMTP_DECODER_EVENT_MIME_LONG_HEADER_VALUE,
+    SMTP_DECODER_EVENT_MIME_BOUNDARY_TOO_LONG,
 };
 
 typedef struct SMTPTransaction_ {
@@ -66,6 +67,15 @@ typedef struct SMTPTransaction_ {
 
     TAILQ_ENTRY(SMTPTransaction_) next;
 } SMTPTransaction;
+
+typedef struct SMTPConfig {
+
+    int decode_mime;
+    MimeDecConfig mime_config;
+    uint32_t content_limit;
+    uint32_t content_inspect_min_size;
+    uint32_t content_inspect_window;
+} SMTPConfig;
 
 typedef struct SMTPState_ {
     SMTPTransaction *curr_tx;
@@ -128,6 +138,11 @@ typedef struct SMTPState_ {
 
 } SMTPState;
 
+/* Create SMTP config structure */
+extern SMTPConfig smtp_config;
+
+int SMTPProcessDataChunk(const uint8_t *chunk, uint32_t len, MimeDecParseState *state);
+void *SMTPStateAlloc(void);
 void RegisterSMTPParsers(void);
 void SMTPParserRegisterTests(void);
 

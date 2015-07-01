@@ -483,8 +483,8 @@ static int NetmapClose(NetmapDevice *dev)
  */
 static inline void NetmapDumpCounters(NetmapThreadVars *ntv)
 {
-    SCPerfCounterAddUI64(ntv->capture_kernel_packets, ntv->tv->sc_perf_pca, ntv->pkts);
-    SCPerfCounterAddUI64(ntv->capture_kernel_drops, ntv->tv->sc_perf_pca, ntv->drops);
+    StatsAddUI64(ntv->tv, ntv->capture_kernel_packets, ntv->pkts);
+    StatsAddUI64(ntv->tv, ntv->capture_kernel_drops, ntv->drops);
     (void) SC_ATOMIC_ADD(ntv->livedev->drop, ntv->drops);
     (void) SC_ATOMIC_ADD(ntv->livedev->pkts, ntv->pkts);
     ntv->drops = 0;
@@ -554,14 +554,10 @@ static TmEcode ReceiveNetmapThreadInit(ThreadVars *tv, void *initdata, void **da
     }
 
     /* basic counters */
-    ntv->capture_kernel_packets = SCPerfTVRegisterCounter("capture.kernel_packets",
-            ntv->tv,
-            SC_PERF_TYPE_UINT64,
-            "NULL");
-    ntv->capture_kernel_drops = SCPerfTVRegisterCounter("capture.kernel_drops",
-            ntv->tv,
-            SC_PERF_TYPE_UINT64,
-            "NULL");
+    ntv->capture_kernel_packets = StatsRegisterCounter("capture.kernel_packets",
+            ntv->tv);
+    ntv->capture_kernel_drops = StatsRegisterCounter("capture.kernel_drops",
+            ntv->tv);
 
     char const *active_runmode = RunmodeGetActive();
     if (active_runmode && !strcmp("workers", active_runmode)) {
@@ -830,11 +826,11 @@ static TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
         }
 
         NetmapDumpCounters(ntv);
-        SCPerfSyncCountersIfSignalled(tv);
+        StatsSyncCountersIfSignalled(tv);
     }
 
     SCFree(fds);
-    SCPerfSyncCountersIfSignalled(tv);
+    StatsSyncCountersIfSignalled(tv);
     SCReturnInt(TM_ECODE_OK);
 }
 
@@ -851,8 +847,8 @@ static void ReceiveNetmapThreadExitStats(ThreadVars *tv, void *data)
     NetmapDumpCounters(ntv);
     SCLogInfo("(%s) Kernel: Packets %" PRIu64 ", dropped %" PRIu64 ", bytes %" PRIu64 "",
               tv->name,
-              (uint64_t) SCPerfGetLocalCounterValue(ntv->capture_kernel_packets, tv->sc_perf_pca),
-              (uint64_t) SCPerfGetLocalCounterValue(ntv->capture_kernel_drops, tv->sc_perf_pca),
+              StatsGetLocalCounterValue(tv, ntv->capture_kernel_packets),
+              StatsGetLocalCounterValue(tv, ntv->capture_kernel_drops),
               ntv->bytes);
 }
 
@@ -934,10 +930,7 @@ static TmEcode DecodeNetmap(ThreadVars *tv, Packet *p, void *data, PacketQueue *
         SCReturnInt(TM_ECODE_OK);
 
     /* update counters */
-    SCPerfCounterIncr(dtv->counter_pkts, tv->sc_perf_pca);
-    SCPerfCounterAddUI64(dtv->counter_bytes, tv->sc_perf_pca, GET_PKT_LEN(p));
-    SCPerfCounterAddUI64(dtv->counter_avg_pkt_size, tv->sc_perf_pca, GET_PKT_LEN(p));
-    SCPerfCounterSetUI64(dtv->counter_max_pkt_size, tv->sc_perf_pca, GET_PKT_LEN(p));
+    DecodeUpdatePacketCounters(tv, dtv, p);
 
     DecodeEthernet(tv, dtv, p, GET_PKT_DATA(p), GET_PKT_LEN(p), pq);
 

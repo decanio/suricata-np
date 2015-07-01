@@ -124,6 +124,7 @@ enum {
     HTTP_DECODER_EVENT_HEADER_HOST_INVALID,
     HTTP_DECODER_EVENT_METHOD_DELIM_NON_COMPLIANT,
     HTTP_DECODER_EVENT_URI_DELIM_NON_COMPLIANT,
+    HTTP_DECODER_EVENT_REQUEST_LINE_LEADING_WHITESPACE,
 
     /* suricata errors/warnings */
     HTTP_DECODER_EVENT_MULTIPART_GENERIC_ERROR,
@@ -156,6 +157,7 @@ typedef struct HTPCfgRec_ {
     uint32_t            response_inspect_window;
     int                 randomize;
     int                 randomize_range;
+    int                 http_body_inline;
 } HTPCfgRec;
 
 /** Struct used to hold chunks of a body on a request */
@@ -247,6 +249,7 @@ typedef struct HtpState_ {
     uint16_t flags;
     uint16_t events;
     uint16_t htp_messages_offset; /**< offset into conn->messages list */
+    uint64_t tx_with_detect_state_cnt;
 } HtpState;
 
 /** part of the engine needs the request body (e.g. http_client_body keyword) */

@@ -78,6 +78,7 @@
 #define DE_STATE_FLAG_APP_EVENT_INSPECT   (1 << 18)
 #define DE_STATE_FLAG_MODBUS_INSPECT	  (1 << 19)
 #define DE_STATE_FLAG_HRL_INSPECT	      (1 << 20)
+#define DE_STATE_FLAG_FD_SMTP_INSPECT     (1 << 21)
 
 /* state flags */
 #define DETECT_ENGINE_STATE_FLAG_FILE_STORE_DISABLED 0x0001
@@ -99,10 +100,8 @@
  * the HAS_NEW_STATE flag, while if we don't have a new tx, we set
  * NO_NEW_STATE, to avoid getting the sig reinspected for the already
  * inspected tx. */
-typedef enum {
-    DE_STATE_MATCH_HAS_NEW_STATE = 0,
-    DE_STATE_MATCH_NO_NEW_STATE,
-} DeStateMatchResult;
+#define DE_STATE_MATCH_HAS_NEW_STATE 0x00
+#define DE_STATE_MATCH_NO_NEW_STATE  0x80
 
 /* TX BASED (inspect engines) */
 

@@ -146,6 +146,10 @@ enum {
     /* RAW EVENTS */
     IPRAW_INVALID_IPV,              /**< invalid ip version in ip raw */
 
+    /* LINKTYPE NULL EVENTS */
+    LTNULL_PKT_TOO_SMALL,           /**< pkt too small for lt:null */
+    LTNULL_UNSUPPORTED_TYPE,        /**< pkt has a type that the decoder doesn't support */
+
     /* STREAM EVENTS */
     STREAM_3WHS_ACK_IN_WRONG_DIR,
     STREAM_3WHS_ASYNC_WRONG_SEQ,
@@ -235,6 +239,11 @@ enum {
     MPLS_BAD_LABEL_IMPLICIT_NULL,
     MPLS_BAD_LABEL_RESERVED,
     MPLS_UNKNOWN_PAYLOAD_TYPE,
+
+    /* ERSPAN events */
+    ERSPAN_HEADER_TOO_SMALL,
+    ERSPAN_UNSUPPORTED_VERSION,
+    ERSPAN_TOO_MANY_VLAN_LAYERS,
 
     /* should always be last! */
     DECODE_EVENT_MAX,

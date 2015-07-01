@@ -55,10 +55,6 @@ struct AppLayerThreadCtx_ {
     /* App layer parser thread context, from AppLayerParserThreadCtxAlloc(). */
     AppLayerParserThreadCtx *alp_tctx;
 
-    uint16_t counter_dns_memuse;
-    uint16_t counter_dns_memcap_state;
-    uint16_t counter_dns_memcap_global;
-
 #ifdef PROFILING
     uint64_t ticks_start;
     uint64_t ticks_end;
@@ -70,23 +66,13 @@ struct AppLayerThreadCtx_ {
 #endif
 };
 
-/** \todo move this into the DNS code. Problem is that there we can't
- *        access AppLayerThreadCtx internals. */
-static void DNSUpdateCounters(ThreadVars *tv, AppLayerThreadCtx *app_tctx)
-{
-    uint64_t memuse = 0, memcap_state = 0, memcap_global = 0;
-
-    DNSMemcapGetCounters(&memuse, &memcap_state, &memcap_global);
-
-    SCPerfCounterSetUI64(app_tctx->counter_dns_memuse,
-                         tv->sc_perf_pca, memuse);
-    SCPerfCounterSetUI64(app_tctx->counter_dns_memcap_state,
-                         tv->sc_perf_pca, memcap_state);
-    SCPerfCounterSetUI64(app_tctx->counter_dns_memcap_global,
-                         tv->sc_perf_pca, memcap_global);
-}
-
 /***** L7 layer dispatchers *****/
+
+static void DisableAppLayer(Flow *f)
+{
+    SCLogDebug("disable app layer for flow %p", f);
+    StreamTcpDisableAppLayer(f);
+}
 
 int AppLayerHandleTCPData(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx,
                           Packet *p, Flow *f,
@@ -107,8 +93,8 @@ int AppLayerHandleTCPData(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx,
     uint8_t first_data_dir;
 
     SCLogDebug("data_len %u flags %02X", data_len, flags);
-    if (f->flags & FLOW_NO_APPLAYER_INSPECTION) {
-        SCLogDebug("FLOW_AL_NO_APPLAYER_INSPECTION is set");
+    if (ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED) {
+        SCLogDebug("STREAMTCP_FLAG_APP_LAYER_DISABLED is set");
         goto end;
     }
 
@@ -221,9 +207,7 @@ int AppLayerHandleTCPData(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx,
                     }
                 }
                 if (ret < 0) {
-                    FlowSetSessionNoApplayerInspectionFlag(f);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->client);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->server);
+                    DisableAppLayer(f);
                     goto failure;
                 }
             }
@@ -250,9 +234,7 @@ int AppLayerHandleTCPData(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx,
                 if (first_data_dir && !(first_data_dir & ssn->data_first_seen_dir)) {
                     AppLayerDecoderEventsSetEventRaw(&p->app_layer_events,
                                                      APPLAYER_WRONG_DIRECTION_FIRST_DATA);
-                    FlowSetSessionNoApplayerInspectionFlag(f);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->server);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->client);
+                    DisableAppLayer(f);
                     /* Set a value that is neither STREAM_TOSERVER, nor STREAM_TOCLIENT */
                     ssn->data_first_seen_dir = APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER;
                     goto failure;
@@ -301,9 +283,7 @@ int AppLayerHandleTCPData(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx,
                 if (FLOW_IS_PM_DONE(f, STREAM_TOSERVER) && FLOW_IS_PP_DONE(f, STREAM_TOSERVER)) {
                     SCLogDebug("midstream end pd %p", ssn);
                     /* midstream and toserver detection failed: give up */
-                    FlowSetSessionNoApplayerInspectionFlag(f);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->server);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->client);
+                    DisableAppLayer(f);
                     ssn->data_first_seen_dir = APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER;
                     goto end;
                 }
@@ -330,9 +310,7 @@ int AppLayerHandleTCPData(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx,
                 if ((ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) &&
                     (first_data_dir) && !(first_data_dir & flags))
                 {
-                    FlowSetSessionNoApplayerInspectionFlag(f);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->server);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->client);
+                    DisableAppLayer(f);
                     goto failure;
                 }
 
@@ -374,26 +352,20 @@ int AppLayerHandleTCPData(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx,
 
                 if (FLOW_IS_PM_DONE(f, STREAM_TOSERVER) && FLOW_IS_PP_DONE(f, STREAM_TOSERVER) &&
                     FLOW_IS_PM_DONE(f, STREAM_TOCLIENT) && FLOW_IS_PP_DONE(f, STREAM_TOCLIENT)) {
-                    FlowSetSessionNoApplayerInspectionFlag(f);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->server);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->client);
+                    DisableAppLayer(f);
                     ssn->data_first_seen_dir = APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER;
 
                 } else if (FLOW_IS_PM_DONE(f, STREAM_TOSERVER) && FLOW_IS_PP_DONE(f, STREAM_TOSERVER) &&
                         size_ts > 100000 && size_tc == 0)
                 {
-                    FlowSetSessionNoApplayerInspectionFlag(f);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->server);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->client);
+                    DisableAppLayer(f);
                     ssn->data_first_seen_dir = APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER;
                     AppLayerDecoderEventsSetEventRaw(&p->app_layer_events,
                                                      APPLAYER_PROTO_DETECTION_SKIPPED);
                 } else if (FLOW_IS_PM_DONE(f, STREAM_TOCLIENT) && FLOW_IS_PP_DONE(f, STREAM_TOCLIENT) &&
                         size_tc > 100000 && size_ts == 0)
                 {
-                    FlowSetSessionNoApplayerInspectionFlag(f);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->server);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->client);
+                    DisableAppLayer(f);
                     ssn->data_first_seen_dir = APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER;
                     AppLayerDecoderEventsSetEventRaw(&p->app_layer_events,
                                                      APPLAYER_PROTO_DETECTION_SKIPPED);
@@ -404,9 +376,7 @@ int AppLayerHandleTCPData(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx,
                            FLOW_IS_PP_DONE(f, STREAM_TOSERVER) && !(FLOW_IS_PM_DONE(f, STREAM_TOSERVER)) &&
                            FLOW_IS_PM_DONE(f, STREAM_TOCLIENT) && FLOW_IS_PP_DONE(f, STREAM_TOCLIENT))
                 {
-                    FlowSetSessionNoApplayerInspectionFlag(f);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->server);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->client);
+                    DisableAppLayer(f);
                     ssn->data_first_seen_dir = APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER;
                     AppLayerDecoderEventsSetEventRaw(&p->app_layer_events,
                                                      APPLAYER_PROTO_DETECTION_SKIPPED);
@@ -417,9 +387,7 @@ int AppLayerHandleTCPData(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx,
                            FLOW_IS_PP_DONE(f, STREAM_TOCLIENT) && !(FLOW_IS_PM_DONE(f, STREAM_TOCLIENT)) &&
                            FLOW_IS_PM_DONE(f, STREAM_TOSERVER) && FLOW_IS_PP_DONE(f, STREAM_TOSERVER))
                 {
-                    FlowSetSessionNoApplayerInspectionFlag(f);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->server);
-                    StreamTcpSetStreamFlagAppProtoDetectionCompleted(&ssn->client);
+                    DisableAppLayer(f);
                     ssn->data_first_seen_dir = APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER;
                     AppLayerDecoderEventsSetEventRaw(&p->app_layer_events,
                                                      APPLAYER_PROTO_DETECTION_SKIPPED);
@@ -449,11 +417,6 @@ int AppLayerHandleTCPData(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx,
         }
     }
 
-    /** \fixme a bit hacky but will be improved in 2.1 */
-    if (*alproto == ALPROTO_HTTP)
-        HTPMemuseCounter(tv, ra_ctx);
-    else if (*alproto == ALPROTO_DNS)
-        DNSUpdateCounters(tv, app_tctx);
     goto end;
  failure:
     r = -1;
@@ -478,7 +441,6 @@ int AppLayerHandleUdp(ThreadVars *tv, AppLayerThreadCtx *tctx, Packet *p, Flow *
     SCEnter();
 
     int r = 0;
-    AppProto alproto;
 
     FLOWLOCK_WRLOCK(f);
 
@@ -533,13 +495,10 @@ int AppLayerHandleUdp(ThreadVars *tv, AppLayerThreadCtx *tctx, Packet *p, Flow *
                        "for l7");
         }
     }
-    alproto = f->alproto;
 
     FLOWLOCK_UNLOCK(f);
     PACKET_PROFILING_APP_STORE(tctx, p);
 
-    if (alproto == ALPROTO_DNS)
-        DNSUpdateCounters(tv, tctx);
     SCReturnInt(r);
 }
 
@@ -616,16 +575,6 @@ AppLayerThreadCtx *AppLayerGetCtxThread(ThreadVars *tv)
     if ((app_tctx->alp_tctx = AppLayerParserThreadCtxAlloc()) == NULL)
         goto error;
 
-    /* tv is allowed to be NULL in unittests */
-    if (tv != NULL) {
-        app_tctx->counter_dns_memuse = SCPerfTVRegisterCounter("dns.memuse", tv,
-                SC_PERF_TYPE_UINT64, "NULL");
-        app_tctx->counter_dns_memcap_state = SCPerfTVRegisterCounter("dns.memcap_state", tv,
-                SC_PERF_TYPE_UINT64, "NULL");
-        app_tctx->counter_dns_memcap_global = SCPerfTVRegisterCounter("dns.memcap_global", tv,
-                SC_PERF_TYPE_UINT64, "NULL");
-    }
-
     goto done;
  error:
     AppLayerDestroyCtxThread(app_tctx);
@@ -658,6 +607,17 @@ void AppLayerProfilingResetInternal(AppLayerThreadCtx *app_tctx)
 void AppLayerProfilingStoreInternal(AppLayerThreadCtx *app_tctx, Packet *p)
 {
     PACKET_PROFILING_APP_STORE(app_tctx, p);
+}
+
+/** \brief HACK to work around our broken unix manager (re)init loop
+ */
+void AppLayerRegisterGlobalCounters(void)
+{
+    StatsRegisterGlobalCounter("dns.memuse", DNSMemcapGetMemuseCounter);
+    StatsRegisterGlobalCounter("dns.memcap_state", DNSMemcapGetMemcapStateCounter);
+    StatsRegisterGlobalCounter("dns.memcap_global", DNSMemcapGetMemcapGlobalCounter);
+    StatsRegisterGlobalCounter("http.memuse", HTPMemuseGlobalCounter);
+    StatsRegisterGlobalCounter("http.memcap", HTPMemcapGlobalCounter);
 }
 
 /***** Unittests *****/
@@ -720,7 +680,7 @@ static int AppLayerTest01(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -744,7 +704,7 @@ static int AppLayerTest01(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -768,7 +728,7 @@ static int AppLayerTest01(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -804,7 +764,7 @@ static int AppLayerTest01(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -870,7 +830,7 @@ static int AppLayerTest01(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -894,7 +854,7 @@ static int AppLayerTest01(void)
                 f.alproto_tc != ALPROTO_HTTP ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -960,7 +920,7 @@ static int AppLayerTest02(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -984,7 +944,7 @@ static int AppLayerTest02(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -1008,7 +968,7 @@ static int AppLayerTest02(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -1033,7 +993,7 @@ static int AppLayerTest02(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -1057,7 +1017,7 @@ static int AppLayerTest02(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -1093,7 +1053,7 @@ static int AppLayerTest02(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -1159,7 +1119,7 @@ static int AppLayerTest02(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -1183,7 +1143,7 @@ static int AppLayerTest02(void)
                 f.alproto_tc != ALPROTO_HTTP ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -1249,7 +1209,7 @@ static int AppLayerTest03(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -1272,7 +1232,7 @@ static int AppLayerTest03(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -1296,7 +1256,7 @@ static int AppLayerTest03(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -1332,7 +1292,7 @@ static int AppLayerTest03(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -1398,7 +1358,7 @@ static int AppLayerTest03(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -1422,7 +1382,7 @@ static int AppLayerTest03(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || !FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -1488,7 +1448,7 @@ static int AppLayerTest04(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -1511,7 +1471,7 @@ static int AppLayerTest04(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -1535,7 +1495,7 @@ static int AppLayerTest04(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -1571,7 +1531,7 @@ static int AppLayerTest04(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -1596,7 +1556,7 @@ static int AppLayerTest04(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -1620,7 +1580,7 @@ static int AppLayerTest04(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 4 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || !FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -1686,7 +1646,7 @@ static int AppLayerTest04(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 4 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || !FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -1710,7 +1670,7 @@ static int AppLayerTest04(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || !FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -1776,7 +1736,7 @@ static int AppLayerTest05(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -1800,7 +1760,7 @@ static int AppLayerTest05(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -1824,7 +1784,7 @@ static int AppLayerTest05(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -1860,7 +1820,7 @@ static int AppLayerTest05(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -1926,7 +1886,7 @@ static int AppLayerTest05(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -1950,7 +1910,7 @@ static int AppLayerTest05(void)
                 f.alproto_tc != ALPROTO_HTTP ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -2016,7 +1976,7 @@ static int AppLayerTest06(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -2040,7 +2000,7 @@ static int AppLayerTest06(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -2064,7 +2024,7 @@ static int AppLayerTest06(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -2130,7 +2090,7 @@ static int AppLayerTest06(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOCLIENT) {
@@ -2166,7 +2126,7 @@ static int AppLayerTest06(void)
                 f.alproto_tc != ALPROTO_HTTP ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-        !(f.flags & FLOW_NO_APPLAYER_INSPECTION) ||
+        !(ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -2232,7 +2192,7 @@ static int AppLayerTest07(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -2256,7 +2216,7 @@ static int AppLayerTest07(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -2280,7 +2240,7 @@ static int AppLayerTest07(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -2316,7 +2276,7 @@ static int AppLayerTest07(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -2382,7 +2342,7 @@ static int AppLayerTest07(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -2406,7 +2366,7 @@ static int AppLayerTest07(void)
                 f.alproto_tc != ALPROTO_HTTP ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-        (f.flags & FLOW_NO_APPLAYER_INSPECTION) ||
+        (ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -2472,7 +2432,7 @@ static int AppLayerTest08(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -2496,7 +2456,7 @@ static int AppLayerTest08(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -2520,7 +2480,7 @@ static int AppLayerTest08(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -2556,7 +2516,7 @@ static int AppLayerTest08(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -2622,7 +2582,7 @@ static int AppLayerTest08(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -2646,11 +2606,11 @@ static int AppLayerTest08(void)
                 f.alproto_tc != ALPROTO_DCERPC ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-        !(f.flags & FLOW_NO_APPLAYER_INSPECTION) ||
+        !(ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
-        printf("failure 6\n");
+        printf("failure 6 %04x\n", ssn->flags);
         goto end;
     }
 
@@ -2714,7 +2674,7 @@ static int AppLayerTest09(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -2738,7 +2698,7 @@ static int AppLayerTest09(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -2762,7 +2722,7 @@ static int AppLayerTest09(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -2788,7 +2748,7 @@ static int AppLayerTest09(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -2812,7 +2772,7 @@ static int AppLayerTest09(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -2822,7 +2782,7 @@ static int AppLayerTest09(void)
 
     /* full request */
     uint8_t request2[] = {
-        0x44, 0x44, 0x45, 0x20, 0x2f, 0x69, 0x6e, 0x64 };
+        0x44, 0x44, 0x45, 0x20, 0x2f, 0x69, 0x6e, 0x64, 0xff };
     p->tcph->th_ack = htonl(1);
     p->tcph->th_seq = htonl(9);
     p->tcph->th_flags = TH_PUSH | TH_ACK;
@@ -2838,7 +2798,7 @@ static int AppLayerTest09(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -2889,7 +2849,7 @@ static int AppLayerTest09(void)
         0x72, 0x6b, 0x73, 0x21, 0x3c, 0x2f, 0x68, 0x31,
         0x3e, 0x3c, 0x2f, 0x62, 0x6f, 0x64, 0x79, 0x3e,
         0x3c, 0x2f, 0x68, 0x74, 0x6d, 0x6c, 0x3e };
-    p->tcph->th_ack = htonl(17);
+    p->tcph->th_ack = htonl(18);
     p->tcph->th_seq = htonl(1);
     p->tcph->th_flags = TH_PUSH | TH_ACK;
     p->flowflags = FLOW_PKT_TOCLIENT;
@@ -2904,7 +2864,7 @@ static int AppLayerTest09(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -2914,7 +2874,7 @@ static int AppLayerTest09(void)
 
     /* response ack */
     p->tcph->th_ack = htonl(328);
-    p->tcph->th_seq = htonl(17);
+    p->tcph->th_seq = htonl(18);
     p->tcph->th_flags = TH_ACK;
     p->flowflags = FLOW_PKT_TOSERVER;
     p->payload_len = 0;
@@ -2928,7 +2888,7 @@ static int AppLayerTest09(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-        !(f.flags & FLOW_NO_APPLAYER_INSPECTION) ||
+        !(ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || !FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -2995,7 +2955,7 @@ static int AppLayerTest10(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -3019,7 +2979,7 @@ static int AppLayerTest10(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -3043,7 +3003,7 @@ static int AppLayerTest10(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -3054,7 +3014,7 @@ static int AppLayerTest10(void)
     /* full request */
     uint8_t request1[] = {
         0x47, 0x47, 0x49, 0x20, 0x2f, 0x69, 0x6e, 0x64,
-        0x47, 0x47, 0x49, 0x20, 0x2f, 0x69, 0x6e, 0x64 };
+        0x47, 0x47, 0x49, 0x20, 0x2f, 0x69, 0x6e, 0x64, 0xff };
     p->tcph->th_ack = htonl(1);
     p->tcph->th_seq = htonl(1);
     p->tcph->th_flags = TH_PUSH | TH_ACK;
@@ -3070,7 +3030,7 @@ static int AppLayerTest10(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -3079,7 +3039,7 @@ static int AppLayerTest10(void)
     }
 
     /* response - request ack */
-    p->tcph->th_ack = htonl(17);
+    p->tcph->th_ack = htonl(18);
     p->tcph->th_seq = htonl(1);
     p->tcph->th_flags = TH_PUSH | TH_ACK;
     p->flowflags = FLOW_PKT_TOCLIENT;
@@ -3094,7 +3054,7 @@ static int AppLayerTest10(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -3145,7 +3105,7 @@ static int AppLayerTest10(void)
         0x72, 0x6b, 0x73, 0x21, 0x3c, 0x2f, 0x68, 0x31,
         0x3e, 0x3c, 0x2f, 0x62, 0x6f, 0x64, 0x79, 0x3e,
         0x3c, 0x2f, 0x68, 0x74, 0x6d, 0x6c, 0x3e };
-    p->tcph->th_ack = htonl(17);
+    p->tcph->th_ack = htonl(18);
     p->tcph->th_seq = htonl(1);
     p->tcph->th_flags = TH_PUSH | TH_ACK;
     p->flowflags = FLOW_PKT_TOCLIENT;
@@ -3160,7 +3120,7 @@ static int AppLayerTest10(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -3170,7 +3130,7 @@ static int AppLayerTest10(void)
 
     /* response ack */
     p->tcph->th_ack = htonl(328);
-    p->tcph->th_seq = htonl(17);
+    p->tcph->th_seq = htonl(18);
     p->tcph->th_flags = TH_ACK;
     p->flowflags = FLOW_PKT_TOSERVER;
     p->payload_len = 0;
@@ -3184,7 +3144,7 @@ static int AppLayerTest10(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-        !(f.flags & FLOW_NO_APPLAYER_INSPECTION) ||
+        !(ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || !FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {
@@ -3252,7 +3212,7 @@ static int AppLayerTest11(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -3276,7 +3236,7 @@ static int AppLayerTest11(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -3300,7 +3260,7 @@ static int AppLayerTest11(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != 0) {
@@ -3311,7 +3271,7 @@ static int AppLayerTest11(void)
     /* full request */
     uint8_t request1[] = {
         0x47, 0x47, 0x49, 0x20, 0x2f, 0x69, 0x6e, 0x64,
-        0x47, 0x47, 0x49, 0x20, 0x2f, 0x69, 0x6e, 0x64 };
+        0x47, 0x47, 0x49, 0x20, 0x2f, 0x69, 0x6e, 0x64, 0xff };
     p->tcph->th_ack = htonl(1);
     p->tcph->th_seq = htonl(1);
     p->tcph->th_flags = TH_PUSH | TH_ACK;
@@ -3327,7 +3287,7 @@ static int AppLayerTest11(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -3336,7 +3296,7 @@ static int AppLayerTest11(void)
     }
 
     /* response - request ack */
-    p->tcph->th_ack = htonl(17);
+    p->tcph->th_ack = htonl(18);
     p->tcph->th_seq = htonl(1);
     p->tcph->th_flags = TH_PUSH | TH_ACK;
     p->flowflags = FLOW_PKT_TOCLIENT;
@@ -3351,7 +3311,7 @@ static int AppLayerTest11(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -3362,7 +3322,7 @@ static int AppLayerTest11(void)
     /* full response - request ack */
     uint8_t response1[] = {
         0x55, 0x74, 0x54, 0x50, };
-    p->tcph->th_ack = htonl(17);
+    p->tcph->th_ack = htonl(18);
     p->tcph->th_seq = htonl(1);
     p->tcph->th_flags = TH_PUSH | TH_ACK;
     p->flowflags = FLOW_PKT_TOCLIENT;
@@ -3377,7 +3337,7 @@ static int AppLayerTest11(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -3387,7 +3347,7 @@ static int AppLayerTest11(void)
 
     /* response ack from request */
     p->tcph->th_ack = htonl(5);
-    p->tcph->th_seq = htonl(17);
+    p->tcph->th_seq = htonl(18);
     p->tcph->th_flags = TH_ACK;
     p->flowflags = FLOW_PKT_TOSERVER;
     p->payload_len = 0;
@@ -3401,7 +3361,7 @@ static int AppLayerTest11(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || !FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -3451,7 +3411,7 @@ static int AppLayerTest11(void)
         0x72, 0x6b, 0x73, 0x21, 0x3c, 0x2f, 0x68, 0x31,
         0x3e, 0x3c, 0x2f, 0x62, 0x6f, 0x64, 0x79, 0x3e,
         0x3c, 0x2f, 0x68, 0x74, 0x6d, 0x6c, 0x3e };
-    p->tcph->th_ack = htonl(17);
+    p->tcph->th_ack = htonl(18);
     p->tcph->th_seq = htonl(5);
     p->tcph->th_flags = TH_PUSH | TH_ACK;
     p->flowflags = FLOW_PKT_TOCLIENT;
@@ -3466,7 +3426,7 @@ static int AppLayerTest11(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-                f.flags & FLOW_NO_APPLAYER_INSPECTION ||
+                ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || !FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != STREAM_TOSERVER) {
@@ -3476,7 +3436,7 @@ static int AppLayerTest11(void)
 
     /* response ack from request */
     p->tcph->th_ack = htonl(328);
-    p->tcph->th_seq = htonl(17);
+    p->tcph->th_seq = htonl(18);
     p->tcph->th_flags = TH_ACK;
     p->flowflags = FLOW_PKT_TOSERVER;
     p->payload_len = 0;
@@ -3490,7 +3450,7 @@ static int AppLayerTest11(void)
                 f.alproto_tc != ALPROTO_UNKNOWN ||
                 f.data_al_so_far[0] != 0 ||
                 f.data_al_so_far[1] != 0 ||
-        !(f.flags & FLOW_NO_APPLAYER_INSPECTION) ||
+        !(ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOSERVER) || !FLOW_IS_PP_DONE(&f, STREAM_TOSERVER) ||
         !FLOW_IS_PM_DONE(&f, STREAM_TOCLIENT) || !FLOW_IS_PP_DONE(&f, STREAM_TOCLIENT) ||
         ssn->data_first_seen_dir != APP_LAYER_DATA_ALREADY_SENT_TO_APP_LAYER) {

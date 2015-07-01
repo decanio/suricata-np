@@ -55,6 +55,14 @@
 #include "conf.h"
 
 #include "util-mem.h"
+#include "util-misc.h"
+
+/* content-limit default value */
+#define FILEDATA_CONTENT_LIMIT 1000
+/* content-inspect-min-size default value */
+#define FILEDATA_CONTENT_INSPECT_MIN_SIZE 1000
+/* content-inspect-window default value */
+#define FILEDATA_CONTENT_INSPECT_WINDOW 1000
 
 #define SMTP_MAX_REQUEST_AND_REPLY_LINE_LENGTH 510
 
@@ -133,6 +141,8 @@ SCEnumCharMap smtp_decoder_event_table[ ] = {
       SMTP_DECODER_EVENT_MIME_LONG_HEADER_NAME },
     { "MIME_LONG_HEADER_VALUE",
       SMTP_DECODER_EVENT_MIME_LONG_HEADER_VALUE },
+    { "MIME_LONG_BOUNDARY",
+      SMTP_DECODER_EVENT_MIME_BOUNDARY_TOO_LONG },
 
     { NULL,                      -1 },
 };
@@ -209,15 +219,8 @@ SCEnumCharMap smtp_reply_map[ ] = {
     {  NULL,  -1 },
 };
 
-typedef struct SMTPConfig {
-
-    int decode_mime;
-    MimeDecConfig mime_config;
-
-} SMTPConfig;
-
 /* Create SMTP config structure */
-static SMTPConfig smtp_config = { 0, { 0, 0, 0, 0 } };
+SMTPConfig smtp_config = { 0, { 0, 0, 0, 0 }, 0, 0, 0};
 
 /**
  * \brief Configure SMTP Mime Decoder by parsing out mime section of YAML
@@ -230,6 +233,9 @@ static void SMTPConfigure(void) {
     SCEnter();
     int ret = 0, val;
     intmax_t imval;
+    uint32_t content_limit = 0;
+    uint32_t content_inspect_min_size = 0;
+    uint32_t content_inspect_window = 0;
 
     ConfNode *config = ConfGetNode("app-layer.protocols.smtp.mime");
     if (config != NULL) {
@@ -263,6 +269,38 @@ static void SMTPConfigure(void) {
     /* Pass mime config data to MimeDec API */
     MimeDecSetConfig(&smtp_config.mime_config);
 
+    ConfNode *t = ConfGetNode("app-layer.protocols.smtp.inspected-tracker");
+    ConfNode *p = NULL;
+
+    if (t == NULL)
+        return;
+
+    TAILQ_FOREACH(p, &t->head, next) {
+        if (strcasecmp("content-limit", p->name) == 0) {
+            if (ParseSizeStringU32(p->val, &content_limit) < 0) {
+                SCLogWarning(SC_ERR_SIZE_PARSE, "Error parsing content-limit "
+                             "from conf file - %s. Killing engine", p->val);
+                content_limit = FILEDATA_CONTENT_LIMIT;
+            }
+        }
+
+        if (strcasecmp("content-inspect-min-size", p->name) == 0) {
+            if (ParseSizeStringU32(p->val, &content_inspect_min_size) < 0) {
+                SCLogWarning(SC_ERR_SIZE_PARSE, "Error parsing content-inspect-min-size-limit "
+                             "from conf file - %s. Killing engine", p->val);
+                content_inspect_min_size = FILEDATA_CONTENT_INSPECT_MIN_SIZE;
+            }
+        }
+
+        if (strcasecmp("content-inspect-window", p->name) == 0) {
+            if (ParseSizeStringU32(p->val, &content_inspect_window) < 0) {
+                SCLogWarning(SC_ERR_SIZE_PARSE, "Error parsing content-inspect-window "
+                             "from conf file - %s. Killing engine", p->val);
+                content_inspect_window = FILEDATA_CONTENT_INSPECT_WINDOW;
+            }
+        }
+    }
+
     SCReturn;
 }
 
@@ -289,7 +327,7 @@ static SMTPTransaction *SMTPTransactionCreate(void)
     return tx;
 }
 
-static int ProcessDataChunk(const uint8_t *chunk, uint32_t len,
+int SMTPProcessDataChunk(const uint8_t *chunk, uint32_t len,
         MimeDecParseState *state) {
 
     int ret = MIME_DEC_OK;
@@ -753,6 +791,9 @@ static int SMTPProcessCommandDATA(SMTPState *state, Flow *f,
             if (msg->anomaly_flags & ANOM_MALFORMED_MSG) {
                 SMTPSetEvent(state, SMTP_DECODER_EVENT_MIME_MALFORMED_MSG);
             }
+            if (msg->anomaly_flags & ANOM_LONG_BOUNDARY) {
+                SMTPSetEvent(state, SMTP_DECODER_EVENT_MIME_BOUNDARY_TOO_LONG);
+            }
         }
         state->curr_tx->done = 1;
         SCLogDebug("marked tx as done");
@@ -960,7 +1001,7 @@ static int SMTPProcessRequest(SMTPState *state, Flow *f,
                    SCMemcmpLowercase("data", state->current_line, 4) == 0) {
             state->current_command = SMTP_COMMAND_DATA;
             if (smtp_config.decode_mime) {
-                tx->mime_state = MimeDecInitParser(f, ProcessDataChunk);
+                tx->mime_state = MimeDecInitParser(f, SMTPProcessDataChunk);
                 if (tx->mime_state == NULL) {
                     SCLogError(SC_ERR_MEM_ALLOC, "MimeDecInitParser() failed to "
                             "allocate data");
@@ -1024,6 +1065,12 @@ static int SMTPParse(int direction, Flow *f, SMTPState *state,
 {
     SCEnter();
 
+    if (input == NULL && AppLayerParserStateIssetFlag(pstate, APP_LAYER_PARSER_EOF)) {
+        SCReturnInt(1);
+    } else if (input == NULL || input_len == 0) {
+        SCReturnInt(-1);
+    }
+
     state->input = input;
     state->input_len = input_len;
     state->direction = direction;
@@ -1075,7 +1122,7 @@ static int SMTPParseServerRecord(Flow *f, void *alstate,
  * \internal
  * \brief Function to allocate SMTP state memory.
  */
-static void *SMTPStateAlloc(void)
+void *SMTPStateAlloc(void)
 {
     SMTPState *smtp_state = SCMalloc(sizeof(SMTPState));
     if (unlikely(smtp_state == NULL))
@@ -1126,8 +1173,9 @@ static void SMTPTransactionFree(SMTPTransaction *tx, SMTPState *state)
     /* Free list of MIME message recursively */
     MimeDecFreeEntity(tx->msg_head);
 
-    if (tx->decoder_events != NULL) {
+    if (tx->decoder_events != NULL)
         AppLayerDecoderEventsFreeEvents(&tx->decoder_events);
+
     if (tx->de_state != NULL)
         DetectEngineStateFree(tx->de_state);
 #if 0
@@ -1136,7 +1184,6 @@ static void SMTPTransactionFree(SMTPTransaction *tx, SMTPState *state)
         else
             smtp_state->events = 0;
 #endif
-    }
     SCFree(tx);
 }
 
@@ -1340,7 +1387,7 @@ static DetectEngineState *SMTPGetTxDetectState(void *vtx)
     return tx->de_state;
 }
 
-static int SMTPSetTxDetectState(void *vtx, DetectEngineState *s)
+static int SMTPSetTxDetectState(void *state, void *vtx, DetectEngineState *s)
 {
     SMTPTransaction *tx = (SMTPTransaction *)vtx;
     tx->de_state = s;
@@ -1374,7 +1421,7 @@ void RegisterSMTPParsers(void)
 
         AppLayerParserRegisterGetEventInfo(IPPROTO_TCP, ALPROTO_SMTP, SMTPStateGetEventInfo);
         AppLayerParserRegisterGetEventsFunc(IPPROTO_TCP, ALPROTO_SMTP, SMTPGetEvents);
-        AppLayerParserRegisterDetectStateFuncs(IPPROTO_TCP, ALPROTO_SMTP,
+        AppLayerParserRegisterDetectStateFuncs(IPPROTO_TCP, ALPROTO_SMTP, NULL,
                                                SMTPGetTxDetectState, SMTPSetTxDetectState);
 
         AppLayerParserRegisterLocalStorageFunc(IPPROTO_TCP, ALPROTO_SMTP, SMTPLocalStorageAlloc,
@@ -1581,7 +1628,7 @@ int SMTPParserTest01(void)
     }
 
     if (!(f.flags & FLOW_NOPAYLOAD_INSPECTION) ||
-        !(f.flags & FLOW_NO_APPLAYER_INSPECTION) ||
+        !(ssn.flags & STREAMTCP_FLAG_APP_LAYER_DISABLED) ||
         !(((TcpSession *)f.protoctx)->server.flags & STREAMTCP_STREAM_FLAG_NOREASSEMBLY) ||
         !(((TcpSession *)f.protoctx)->client.flags & STREAMTCP_STREAM_FLAG_NOREASSEMBLY)) {
         goto end;
@@ -2866,7 +2913,7 @@ int SMTPParserTest05(void)
     }
 
     if ((f.flags & FLOW_NOPAYLOAD_INSPECTION) ||
-        (f.flags & FLOW_NO_APPLAYER_INSPECTION) ||
+        (ssn.flags & STREAMTCP_FLAG_APP_LAYER_DISABLED) ||
         (((TcpSession *)f.protoctx)->server.flags & STREAMTCP_STREAM_FLAG_NOREASSEMBLY) ||
         (((TcpSession *)f.protoctx)->client.flags & STREAMTCP_STREAM_FLAG_NOREASSEMBLY)) {
         goto end;
@@ -4598,7 +4645,7 @@ int SMTPProcessDataChunkTest01(void){
     f.flags = FLOW_FILE_NO_STORE_TS;
     MimeDecParseState *state = MimeDecInitParser(&f, NULL);
     int ret;
-    ret = ProcessDataChunk(NULL, 0, state);
+    ret = SMTPProcessDataChunk(NULL, 0, state);
 
     return ret;
 }
@@ -4655,7 +4702,7 @@ int SMTPProcessDataChunkTest02(void){
     ((MimeDecEntity *)state->stack->top->data)->ctnt_flags = CTNT_IS_ATTACHMENT;
     state->body_begin = 1;
     int ret;
-    ret = ProcessDataChunk((uint8_t *)mimemsg, sizeof(mimemsg), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg, sizeof(mimemsg), state);
 
 
     return ret;
@@ -4685,31 +4732,31 @@ int SMTPProcessDataChunkTest03(void){
     int ret;
 
     state->body_begin = 1;
-    ret = ProcessDataChunk((uint8_t *)mimemsg, sizeof(mimemsg), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg, sizeof(mimemsg), state);
     if(ret) goto end;
     state->body_begin = 0;
-    ret = ProcessDataChunk((uint8_t *)mimemsg2, sizeof(mimemsg2), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg2, sizeof(mimemsg2), state);
     if(ret) goto end;
-    ret = ProcessDataChunk((uint8_t *)mimemsg3, sizeof(mimemsg3), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg3, sizeof(mimemsg3), state);
     if(ret) goto end;
-    ret = ProcessDataChunk((uint8_t *)mimemsg4, sizeof(mimemsg4), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg4, sizeof(mimemsg4), state);
     if(ret) goto end;
-    ret = ProcessDataChunk((uint8_t *)mimemsg5, sizeof(mimemsg5), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg5, sizeof(mimemsg5), state);
     if(ret) goto end;
-    ret = ProcessDataChunk((uint8_t *)mimemsg6, sizeof(mimemsg6), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg6, sizeof(mimemsg6), state);
     if(ret) goto end;
-    ret = ProcessDataChunk((uint8_t *)mimemsg7, sizeof(mimemsg7), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg7, sizeof(mimemsg7), state);
     if(ret) goto end;
-    ret = ProcessDataChunk((uint8_t *)mimemsg8, sizeof(mimemsg8), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg8, sizeof(mimemsg8), state);
     if(ret) goto end;
-    ret = ProcessDataChunk((uint8_t *)mimemsg9, sizeof(mimemsg9), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg9, sizeof(mimemsg9), state);
     if(ret) goto end;
-    ret = ProcessDataChunk((uint8_t *)mimemsg10, sizeof(mimemsg10), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg10, sizeof(mimemsg10), state);
     if(ret) goto end;
-    ret = ProcessDataChunk((uint8_t *)mimemsg11, sizeof(mimemsg11), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg11, sizeof(mimemsg11), state);
     if(ret) goto end;
     state->body_end = 1;
-    ret = ProcessDataChunk((uint8_t *)mimemsg12, sizeof(mimemsg12), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg12, sizeof(mimemsg12), state);
     if(ret) goto end;
 
     end:
@@ -4738,20 +4785,20 @@ int SMTPProcessDataChunkTest04(void){
     int ret = MIME_DEC_OK;
 
     state->body_begin = 1;
-    if(ProcessDataChunk((uint8_t *)mimemsg, sizeof(mimemsg), state) != 0) goto end;
-    if(ProcessDataChunk((uint8_t *)mimemsg2, sizeof(mimemsg2), state) != 0) goto end;
-    if(ProcessDataChunk((uint8_t *)mimemsg3, sizeof(mimemsg3), state) != 0) goto end;
-    if(ProcessDataChunk((uint8_t *)mimemsg4, sizeof(mimemsg4), state) != 0) goto end;
-    if(ProcessDataChunk((uint8_t *)mimemsg5, sizeof(mimemsg5), state) != 0) goto end;
-    if(ProcessDataChunk((uint8_t *)mimemsg6, sizeof(mimemsg6), state) != 0) goto end;
-    if(ProcessDataChunk((uint8_t *)mimemsg7, sizeof(mimemsg7), state) != 0) goto end;
+    if(SMTPProcessDataChunk((uint8_t *)mimemsg, sizeof(mimemsg), state) != 0) goto end;
+    if(SMTPProcessDataChunk((uint8_t *)mimemsg2, sizeof(mimemsg2), state) != 0) goto end;
+    if(SMTPProcessDataChunk((uint8_t *)mimemsg3, sizeof(mimemsg3), state) != 0) goto end;
+    if(SMTPProcessDataChunk((uint8_t *)mimemsg4, sizeof(mimemsg4), state) != 0) goto end;
+    if(SMTPProcessDataChunk((uint8_t *)mimemsg5, sizeof(mimemsg5), state) != 0) goto end;
+    if(SMTPProcessDataChunk((uint8_t *)mimemsg6, sizeof(mimemsg6), state) != 0) goto end;
+    if(SMTPProcessDataChunk((uint8_t *)mimemsg7, sizeof(mimemsg7), state) != 0) goto end;
     state->body_begin = 0;
     state->body_end = 1;
-    if(ProcessDataChunk((uint8_t *)mimemsg8, sizeof(mimemsg8), state) != 0) goto end;
+    if(SMTPProcessDataChunk((uint8_t *)mimemsg8, sizeof(mimemsg8), state) != 0) goto end;
     state->body_end = 0;
-    if(ProcessDataChunk((uint8_t *)mimemsg9, sizeof(mimemsg9), state) != 0) goto end;
-    if(ProcessDataChunk((uint8_t *)mimemsg10, sizeof(mimemsg10), state) != 0) goto end;
-    if(ProcessDataChunk((uint8_t *)mimemsg11, sizeof(mimemsg11), state) != 0) goto end;
+    if(SMTPProcessDataChunk((uint8_t *)mimemsg9, sizeof(mimemsg9), state) != 0) goto end;
+    if(SMTPProcessDataChunk((uint8_t *)mimemsg10, sizeof(mimemsg10), state) != 0) goto end;
+    if(SMTPProcessDataChunk((uint8_t *)mimemsg11, sizeof(mimemsg11), state) != 0) goto end;
 
     end:
     return ret;
@@ -4774,7 +4821,7 @@ int SMTPProcessDataChunkTest05(void){
     state->body_begin = 1;
     int ret;
     uint64_t file_size = 0;
-    ret = ProcessDataChunk((uint8_t *)mimemsg, sizeof(mimemsg), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg, sizeof(mimemsg), state);
     state->body_begin = 0;
     if(ret){goto end;}
     SMTPState *smtp_state = (SMTPState *)((Flow *)state->data)->alstate;
@@ -4785,7 +4832,7 @@ int SMTPProcessDataChunkTest05(void){
     FileDisableStoring(&f, STREAM_TOSERVER);
     FileDisableMagic(&f, STREAM_TOSERVER);
     FileDisableMd5(&f, STREAM_TOSERVER);
-    ret = ProcessDataChunk((uint8_t *)mimemsg, sizeof(mimemsg), state);
+    ret = SMTPProcessDataChunk((uint8_t *)mimemsg, sizeof(mimemsg), state);
     if(ret){goto end;}
     printf("%u\t%u\n", (uint32_t) file->size, (uint32_t) file_size);
     if(file->size == file_size){

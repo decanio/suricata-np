@@ -48,7 +48,7 @@ int DecodeGRE(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt, ui
     uint16_t header_len = GRE_HDR_LEN;
     GRESreHdr *gsre = NULL;
 
-    SCPerfCounterIncr(dtv->counter_gre, tv->sc_perf_pca);
+    StatsIncr(tv, dtv->counter_gre);
 
     if(len < GRE_HDR_LEN)    {
         ENGINE_SET_INVALID_EVENT(p, GRE_PKT_TOO_SMALL);
@@ -201,7 +201,7 @@ int DecodeGRE(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt, ui
             {
                 if (pq != NULL) {
                     Packet *tp = PacketTunnelPktSetup(tv, dtv, p, pkt + header_len,
-                            len - header_len, IPPROTO_IP, pq);
+                            len - header_len, DECODE_TUNNEL_IPV4, pq);
                     if (tp != NULL) {
                         PKT_SET_SRC(tp, PKT_SRC_DECODER_GRE);
                         PacketEnqueue(pq,tp);
@@ -214,7 +214,7 @@ int DecodeGRE(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt, ui
             {
                 if (pq != NULL) {
                     Packet *tp = PacketTunnelPktSetup(tv, dtv, p, pkt + header_len,
-                            len - header_len, PPP_OVER_GRE, pq);
+                            len - header_len, DECODE_TUNNEL_PPP, pq);
                     if (tp != NULL) {
                         PKT_SET_SRC(tp, PKT_SRC_DECODER_GRE);
                         PacketEnqueue(pq,tp);
@@ -227,7 +227,7 @@ int DecodeGRE(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt, ui
             {
                 if (pq != NULL) {
                     Packet *tp = PacketTunnelPktSetup(tv, dtv, p, pkt + header_len,
-                            len - header_len, IPPROTO_IPV6, pq);
+                            len - header_len, DECODE_TUNNEL_IPV6, pq);
                     if (tp != NULL) {
                         PKT_SET_SRC(tp, PKT_SRC_DECODER_GRE);
                         PacketEnqueue(pq,tp);
@@ -240,7 +240,7 @@ int DecodeGRE(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt, ui
             {
                 if (pq != NULL) {
                     Packet *tp = PacketTunnelPktSetup(tv, dtv, p, pkt + header_len,
-                            len - header_len, VLAN_OVER_GRE, pq);
+                            len - header_len, DECODE_TUNNEL_VLAN, pq);
                     if (tp != NULL) {
                         PKT_SET_SRC(tp, PKT_SRC_DECODER_GRE);
                         PacketEnqueue(pq,tp);
@@ -248,6 +248,19 @@ int DecodeGRE(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt, ui
                 }
                 break;
             }
+
+        case ETHERNET_TYPE_ERSPAN:
+        {
+            if (pq != NULL) {
+                Packet *tp = PacketTunnelPktSetup(tv, dtv, p, pkt + header_len,
+                        len - header_len, DECODE_TUNNEL_ERSPAN, pq);
+                if (tp != NULL) {
+                    PKT_SET_SRC(tp, PKT_SRC_DECODER_GRE);
+                    PacketEnqueue(pq,tp);
+                }
+            }
+            break;
+        }
 
         default:
             return TM_ECODE_OK;

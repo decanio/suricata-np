@@ -106,8 +106,9 @@ typedef struct AppLayerParserProtoCtx_
     int (*StateGetEventInfo)(const char *event_name,
                              int *event_id, AppLayerEventType *event_type);
 
+    int (*StateHasTxDetectState)(void *alstate);
     DetectEngineState *(*GetTxDetectState)(void *tx);
-    int (*SetTxDetectState)(void *tx, DetectEngineState *);
+    int (*SetTxDetectState)(void *alstate, void *tx, DetectEngineState *);
 
     /* Indicates the direction the parser is ready to see the data
      * the first time for a flow.  Values accepted -
@@ -472,11 +473,13 @@ void AppLayerParserRegisterGetEventInfo(uint8_t ipproto, AppProto alproto,
 }
 
 void AppLayerParserRegisterDetectStateFuncs(uint8_t ipproto, AppProto alproto,
+        int (*StateHasTxDetectState)(void *alstate),
         DetectEngineState *(*GetTxDetectState)(void *tx),
-        int (*SetTxDetectState)(void *tx, DetectEngineState *))
+        int (*SetTxDetectState)(void *alstate, void *tx, DetectEngineState *))
 {
     SCEnter();
 
+    alp_ctx.ctxs[FlowGetProtoMapping(ipproto)][alproto].StateHasTxDetectState = StateHasTxDetectState;
     alp_ctx.ctxs[FlowGetProtoMapping(ipproto)][alproto].GetTxDetectState = GetTxDetectState;
     alp_ctx.ctxs[FlowGetProtoMapping(ipproto)][alproto].SetTxDetectState = SetTxDetectState;
 
@@ -804,6 +807,16 @@ int AppLayerParserSupportsTxDetectState(uint8_t ipproto, AppProto alproto)
     return FALSE;
 }
 
+int AppLayerParserHasTxDetectState(uint8_t ipproto, AppProto alproto, void *alstate)
+{
+    int r;
+    SCEnter();
+    if (alp_ctx.ctxs[FlowGetProtoMapping(ipproto)][alproto].StateHasTxDetectState == NULL)
+        return -ENOSYS;
+    r = alp_ctx.ctxs[FlowGetProtoMapping(ipproto)][alproto].StateHasTxDetectState(alstate);
+    SCReturnInt(r);
+}
+
 DetectEngineState *AppLayerParserGetTxDetectState(uint8_t ipproto, AppProto alproto, void *tx)
 {
     SCEnter();
@@ -812,13 +825,14 @@ DetectEngineState *AppLayerParserGetTxDetectState(uint8_t ipproto, AppProto alpr
     SCReturnPtr(s, "DetectEngineState");
 }
 
-int AppLayerParserSetTxDetectState(uint8_t ipproto, AppProto alproto, void *tx, DetectEngineState *s)
+int AppLayerParserSetTxDetectState(uint8_t ipproto, AppProto alproto,
+                                   void *alstate, void *tx, DetectEngineState *s)
 {
     int r;
     SCEnter();
     if ((alp_ctx.ctxs[FlowGetProtoMapping(ipproto)][alproto].GetTxDetectState(tx) != NULL))
         SCReturnInt(-EBUSY);
-    r = alp_ctx.ctxs[FlowGetProtoMapping(ipproto)][alproto].SetTxDetectState(tx, s);
+    r = alp_ctx.ctxs[FlowGetProtoMapping(ipproto)][alproto].SetTxDetectState(alstate, tx, s);
     SCReturnInt(r);
 }
 
@@ -876,7 +890,7 @@ int AppLayerParserParse(AppLayerParserThreadCtx *alp_tctx, Flow *f, AppProto alp
     }
 
     /* invoke the recursive parser, but only on data. We may get empty msgs on EOF */
-    if (input_len > 0) {
+    if (input_len > 0 || (flags & STREAM_EOF)) {
         /* invoke the parser */
         if (p->Parser[(flags & STREAM_TOSERVER) ? 0 : 1](f, alstate, pstate,
                 input, input_len,
@@ -890,17 +904,20 @@ int AppLayerParserParse(AppLayerParserThreadCtx *alp_tctx, Flow *f, AppProto alp
     if (pstate->flags & APP_LAYER_PARSER_NO_INSPECTION) {
         AppLayerParserSetEOF(pstate);
         FlowSetNoPayloadInspectionFlag(f);
-        FlowSetSessionNoApplayerInspectionFlag(f);
 
-        /* Set the no reassembly flag for both the stream in this TcpSession */
-        if (f->proto == IPPROTO_TCP && pstate->flags & APP_LAYER_PARSER_NO_REASSEMBLY) {
-            /* Used only if it's TCP */
-            TcpSession *ssn = f->protoctx;
-            if (ssn != NULL) {
-                StreamTcpSetSessionNoReassemblyFlag(ssn,
-                                                    flags & STREAM_TOCLIENT ? 1 : 0);
-                StreamTcpSetSessionNoReassemblyFlag(ssn,
-                                                    flags & STREAM_TOSERVER ? 1 : 0);
+        if (f->proto == IPPROTO_TCP) {
+            StreamTcpDisableAppLayer(f);
+
+            /* Set the no reassembly flag for both the stream in this TcpSession */
+            if (pstate->flags & APP_LAYER_PARSER_NO_REASSEMBLY) {
+                /* Used only if it's TCP */
+                TcpSession *ssn = f->protoctx;
+                if (ssn != NULL) {
+                    StreamTcpSetSessionNoReassemblyFlag(ssn,
+                            flags & STREAM_TOCLIENT ? 1 : 0);
+                    StreamTcpSetSessionNoReassemblyFlag(ssn,
+                            flags & STREAM_TOSERVER ? 1 : 0);
+                }
             }
         }
     }
@@ -931,7 +948,9 @@ int AppLayerParserParse(AppLayerParserThreadCtx *alp_tctx, Flow *f, AppProto alp
  error:
     /* Set the no app layer inspection flag for both
      * the stream in this Flow */
-    FlowSetSessionNoApplayerInspectionFlag(f);
+    if (f->proto == IPPROTO_TCP) {
+        StreamTcpDisableAppLayer(f);
+    }
     AppLayerParserSetEOF(pstate);
     SCReturnInt(-1);
 }
@@ -1266,7 +1285,7 @@ static int AppLayerParserTest01(void)
     }
     SCMutexUnlock(&f->m);
 
-    if (!(f->flags & FLOW_NO_APPLAYER_INSPECTION)) {
+    if (!(ssn.flags & STREAMTCP_FLAG_APP_LAYER_DISABLED)) {
         printf("flag should have been set, but is not: ");
         goto end;
     }

@@ -90,7 +90,7 @@ enum DetectSigmatchListEnum {
     /* list for http_client_body keyword and the ones relative to it */
     DETECT_SM_LIST_HCBDMATCH,
     /* list for http_server_body keyword and the ones relative to it */
-    DETECT_SM_LIST_HSBDMATCH,
+    DETECT_SM_LIST_FILEDATA,
     /* list for http_header keyword and the ones relative to it */
     DETECT_SM_LIST_HHDMATCH,
     /* list for http_raw_header keyword and the ones relative to it */
@@ -165,9 +165,6 @@ typedef struct DetectAddress_ {
     /** address data for this group */
     Address ip;
     Address ip2;
-//    uint8_t family; /**< address family, AF_INET (IPv4) or AF_INET6 (IPv6) */
-//    uint32_t ip[4]; /**< the address, or lower end of a range */
-//    uint32_t ip2[4]; /**< higher end of a range */
 
     /** ptr to the next address (dst addr in that case) or to the src port */
     union {
@@ -344,7 +341,7 @@ typedef struct IPOnlyCIDRItem_ {
  * Should never be dereferenced without casting to something else.
  */
 typedef struct SigMatchCtx_ {
-  int foo;
+    int foo;
 } SigMatchCtx;
 
 /** \brief a single match condition for a signature */
@@ -366,30 +363,19 @@ typedef struct SigMatchData_ {
 
 /** \brief Signature container */
 typedef struct Signature_ {
-    union {
-        struct {
-            /* coccinelle: Signature:flags:SIG_FLAG */
-            uint32_t flags;
-            AppProto alproto;
-            uint16_t dsize_low;
-        };
-        uint64_t hdr_copy1;
-    };
-    union {
-        struct {
-            uint16_t dsize_high;
-            uint16_t mpm_pattern_id_div_8;
-        };
-        uint32_t hdr_copy2;
-    };
-    union {
-        struct {
-            uint8_t mpm_pattern_id_mod_8;
-            SignatureMask mask;
-            SigIntId num; /**< signature number, internal id */
-        };
-        uint32_t hdr_copy3;
-    };
+    /* coccinelle: Signature:flags:SIG_FLAG */
+    uint32_t flags;
+
+    AppProto alproto;
+
+    uint16_t dsize_low;
+    uint16_t dsize_high;
+
+    uint16_t mpm_pattern_id_div_8;
+    uint8_t mpm_pattern_id_mod_8;
+
+    SignatureMask mask;
+    SigIntId num; /**< signature number, internal id */
 
     /** inline -- action */
     uint8_t action;
@@ -500,8 +486,7 @@ typedef struct DetectEngineIPOnlyThreadCtx_ {
     uint32_t sig_match_size;  /* size in bytes of the array */
 } DetectEngineIPOnlyThreadCtx;
 
-/** \brief IP only rules matching ctx.
- *  \todo a radix tree would be great here */
+/** \brief IP only rules matching ctx. */
 typedef struct DetectEngineIPOnlyCtx_ {
     /* lookup hashes */
     HashListTable *ht16_src, *ht16_dst;
@@ -650,17 +635,6 @@ typedef struct DetectEngineCtx_ {
     uint16_t max_uniq_toserver_dst_groups;
     uint16_t max_uniq_toserver_sp_groups;
     uint16_t max_uniq_toserver_dp_groups;
-/*
-    uint16_t max_uniq_small_toclient_src_groups;
-    uint16_t max_uniq_small_toclient_dst_groups;
-    uint16_t max_uniq_small_toclient_sp_groups;
-    uint16_t max_uniq_small_toclient_dp_groups;
-
-    uint16_t max_uniq_small_toserver_src_groups;
-    uint16_t max_uniq_small_toserver_dst_groups;
-    uint16_t max_uniq_small_toserver_sp_groups;
-    uint16_t max_uniq_small_toserver_dp_groups;
-*/
 
     /* specify the configuration for mpm context factory */
     uint8_t sgh_mpm_context;
@@ -705,6 +679,7 @@ typedef struct DetectEngineCtx_ {
     int32_t sgh_mpm_context_hrhhd;
     int32_t sgh_mpm_context_app_proto_detect;
     int32_t sgh_mpm_context_dnsquery;
+    int32_t sgh_mpm_context_smtp;
 
     /* the max local id used amongst all sigs */
     int32_t byte_extract_max_local_id;
@@ -767,6 +742,13 @@ typedef struct HttpReassembledBody_ {
     uint64_t offset;        /**< data offset */
 } HttpReassembledBody;
 
+typedef struct FiledataReassembledBody_ {
+    uint8_t *buffer;
+    uint32_t buffer_size;   /**< size of the buffer itself */
+    uint32_t buffer_len;    /**< data len in the buffer */
+    uint64_t offset;        /**< data offset */
+} FiledataReassembledBody;
+
 #define DETECT_FILESTORE_MAX 15
 /** \todo review how many we actually need here */
 #define DETECT_SMSG_PMQ_NUM 256
@@ -811,6 +793,11 @@ typedef struct DetectEngineThreadCtx_ {
     uint16_t hhd_buffers_size;
     uint16_t hhd_buffers_list_len;
     uint64_t hhd_start_tx_id;
+
+    FiledataReassembledBody *smtp;
+    uint64_t smtp_start_tx_id;
+    uint16_t smtp_buffers_size;
+    uint16_t smtp_buffers_list_len;
 
     /** id for alert counter */
     uint16_t counter_alerts;
@@ -950,13 +937,10 @@ typedef struct SigTableElmt_ {
 #define SIG_GROUP_HEAD_HAVEFILEMD5      (1 << 21)
 #define SIG_GROUP_HEAD_HAVEFILESIZE     (1 << 22)
 #define SIG_GROUP_HEAD_MPM_DNSQUERY     (1 << 23)
+#define SIG_GROUP_HEAD_MPM_FD_SMTP      (1 << 24)
 
 typedef struct SigGroupHeadInitData_ {
-    /* list of content containers
-     * XXX move into a separate data struct
-     * with only a ptr to it. Saves some memory
-     * after initialization
-     */
+    /* list of content containers */
     uint8_t *content_array;
     uint32_t content_size;
     uint8_t *uri_content_array;
@@ -964,8 +948,6 @@ typedef struct SigGroupHeadInitData_ {
     uint8_t *stream_content_array;
     uint32_t stream_content_size;
 
-    /* "Normal" detection uses these only at init, but ip-only
-     * uses it during runtime as well, thus not in init... */
     uint8_t *sig_array; /**< bit array of sig nums (internal id's) */
     uint32_t sig_size; /**< size in bytes */
 
@@ -1012,6 +994,7 @@ typedef struct SigGroupHead_ {
     MpmCtx *mpm_hhhd_ctx_ts;
     MpmCtx *mpm_hrhhd_ctx_ts;
     MpmCtx *mpm_dnsquery_ctx_ts;
+    MpmCtx *mpm_smtp_filedata_ctx_ts;
 
     MpmCtx *mpm_proto_tcp_ctx_tc;
     MpmCtx *mpm_proto_udp_ctx_tc;
@@ -1063,6 +1046,14 @@ typedef struct DetectEngineMasterCtx_ {
     DetectEngineCtx *free_list;
 } DetectEngineMasterCtx;
 
+/** \brief Signature loader statistics */
+typedef struct SigFileLoaderStat_ {
+    int bad_files;
+    int total_files;
+    int good_sigs_total;
+    int bad_sigs_total;
+} SigFileLoaderStat;
+
 /** Remember to add the options in SignatureIsIPOnly() at detect.c otherwise it wont be part of a signature group */
 
 enum {
@@ -1106,6 +1097,7 @@ enum {
     DETECT_PKTVAR,
     DETECT_NOALERT,
     DETECT_FLOWBITS,
+    DETECT_HOSTBITS,
     DETECT_IPV4_CSUM,
     DETECT_TCPV4_CSUM,
     DETECT_TCPV6_CSUM,
@@ -1182,6 +1174,8 @@ enum {
 
     DETECT_AL_DNS_QUERY,
     DETECT_AL_MODBUS,
+
+    DETECT_XBITS,
 
     /* make sure this stays last */
     DETECT_TBLSIZE,

@@ -73,7 +73,7 @@ typedef enum ThresholdRuleType {
  *  suppress gen_id 1, sig_id 2000328
  *  suppress gen_id 1, sig_id 2000328, track by_src, ip fe80::/10
 */
-#define DETECT_SUPPRESS_REGEX "^,\\s*track\\s*(by_dst|by_src)\\s*,\\s*ip\\s*([\\da-fA-F.:/]+)*\\s*$"
+#define DETECT_SUPPRESS_REGEX "^,\\s*track\\s*(by_dst|by_src|by_either)\\s*,\\s*ip\\s*([\\[\\],\\$\\da-zA-Z.:/_]+)*\\s*$"
 
 /* Default path for the threshold.config file */
 #if defined OS_WIN32 || defined __CYGWIN__
@@ -296,16 +296,10 @@ static int SetupSuppressRule(DetectEngineCtx *de_ctx, uint32_t id, uint32_t gid,
             de->seconds = parsed_seconds;
             de->new_action = parsed_new_action;
             de->timeout = parsed_timeout;
-            de->addr = NULL;
 
             if (parsed_track != TRACK_RULE) {
-                de->addr = DetectAddressInit();
-                if (de->addr == NULL) {
-                    SCLogError(SC_ERR_MEM_ALLOC, "Can't init DetectAddress");
-                    goto error;
-                }
-                if (DetectAddressParseString(de->addr, (char *)th_ip) < 0) {
-                    SCLogError(SC_ERR_INVALID_IP_NETBLOCK, "Can't add %s to address group", th_ip);
+                if (DetectAddressParse((const DetectEngineCtx *)de_ctx, &de->addrs, (char *)th_ip) != 0) {
+                    SCLogError(SC_ERR_INVALID_IP_NETBLOCK, "failed to parse %s", th_ip);
                     goto error;
                 }
             }
@@ -347,16 +341,10 @@ static int SetupSuppressRule(DetectEngineCtx *de_ctx, uint32_t id, uint32_t gid,
             de->seconds = parsed_seconds;
             de->new_action = parsed_new_action;
             de->timeout = parsed_timeout;
-            de->addr = NULL;
 
             if (parsed_track != TRACK_RULE) {
-                de->addr = DetectAddressInit();
-                if (de->addr == NULL) {
-                    SCLogError(SC_ERR_MEM_ALLOC, "Can't init DetectAddress");
-                    goto error;
-                }
-                if (DetectAddressParseString(de->addr, (char *)th_ip) < 0) {
-                    SCLogError(SC_ERR_INVALID_IP_NETBLOCK, "Can't add %s to address group", th_ip);
+                if (DetectAddressParse((const DetectEngineCtx *)de_ctx, &de->addrs, (char *)th_ip) != 0) {
+                    SCLogError(SC_ERR_INVALID_IP_NETBLOCK, "failed to parse %s", th_ip);
                     goto error;
                 }
             }
@@ -400,13 +388,8 @@ static int SetupSuppressRule(DetectEngineCtx *de_ctx, uint32_t id, uint32_t gid,
             de->new_action = parsed_new_action;
             de->timeout = parsed_timeout;
 
-            de->addr = DetectAddressInit();
-            if (de->addr == NULL) {
-                SCLogError(SC_ERR_MEM_ALLOC, "Can't init DetectAddress");
-                goto error;
-            }
-            if (DetectAddressParseString(de->addr, (char *)th_ip) < 0) {
-                SCLogError(SC_ERR_INVALID_IP_NETBLOCK, "Can't add %s to address group", th_ip);
+            if (DetectAddressParse((const DetectEngineCtx *)de_ctx, &de->addrs, (char *)th_ip) != 0) {
+                SCLogError(SC_ERR_INVALID_IP_NETBLOCK, "failed to parse %s", th_ip);
                 goto error;
             }
 
@@ -427,8 +410,7 @@ end:
     return 0;
 error:
     if (de != NULL) {
-        if (de->addr != NULL)
-            DetectAddressFree(de->addr);
+        DetectAddressHeadCleanup(&de->addrs);
         SCFree(de);
     }
     return -1;
@@ -485,7 +467,6 @@ static int SetupThresholdRule(DetectEngineCtx *de_ctx, uint32_t id, uint32_t gid
             de->seconds = parsed_seconds;
             de->new_action = parsed_new_action;
             de->timeout = parsed_timeout;
-            de->addr = NULL;
 
             sm = SigMatchAlloc();
             if (sm == NULL) {
@@ -549,7 +530,6 @@ static int SetupThresholdRule(DetectEngineCtx *de_ctx, uint32_t id, uint32_t gid
                 de->seconds = parsed_seconds;
                 de->new_action = parsed_new_action;
                 de->timeout = parsed_timeout;
-                de->addr = NULL;
 
                 sm = SigMatchAlloc();
                 if (sm == NULL) {
@@ -640,7 +620,6 @@ static int SetupThresholdRule(DetectEngineCtx *de_ctx, uint32_t id, uint32_t gid
             de->seconds = parsed_seconds;
             de->new_action = parsed_new_action;
             de->timeout = parsed_timeout;
-            de->addr = NULL;
 
             sm = SigMatchAlloc();
             if (sm == NULL) {
@@ -675,8 +654,7 @@ end:
     return 0;
 error:
     if (de != NULL) {
-        if (de->addr != NULL)
-            DetectAddressFree(de->addr);
+        DetectAddressHeadCleanup(&de->addrs);
         SCFree(de);
     }
     return -1;
@@ -689,9 +667,10 @@ static int ParseThresholdRule(DetectEngineCtx *de_ctx, char *rawstr,
     uint8_t *ret_parsed_new_action,
     const char **ret_th_ip)
 {
-    const char *th_rule_type = NULL;
-    const char *th_gid = NULL;
-    const char *th_sid = NULL;
+    char th_rule_type[32];
+    char th_gid[16];
+    char th_sid[16];
+    char rule_extend[1024];
     const char *th_type = NULL;
     const char *th_track = NULL;
     const char *th_count = NULL;
@@ -699,7 +678,6 @@ static int ParseThresholdRule(DetectEngineCtx *de_ctx, char *rawstr,
     const char *th_new_action= NULL;
     const char *th_timeout = NULL;
     const char *th_ip = NULL;
-    const char *rule_extend = NULL;
 
     uint8_t parsed_type = 0;
     uint8_t parsed_track = 0;
@@ -724,39 +702,39 @@ static int ParseThresholdRule(DetectEngineCtx *de_ctx, char *rawstr,
     }
 
     /* retrieve the classtype name */
-    ret = pcre_get_substring((char *)rawstr, ov, 30, 1, &th_rule_type);
+    ret = pcre_copy_substring((char *)rawstr, ov, 30, 1, th_rule_type, sizeof(th_rule_type));
     if (ret < 0) {
-        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_get_substring failed");
+        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_copy_substring failed");
         goto error;
     }
 
     /* retrieve the classtype name */
-    ret = pcre_get_substring((char *)rawstr, ov, 30, 2, &th_gid);
+    ret = pcre_copy_substring((char *)rawstr, ov, 30, 2, th_gid, sizeof(th_gid));
     if (ret < 0) {
-        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_get_substring failed");
+        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_copy_substring failed");
         goto error;
     }
 
-    ret = pcre_get_substring((char *)rawstr, ov, 30, 3, &th_sid);
+    ret = pcre_copy_substring((char *)rawstr, ov, 30, 3, th_sid, sizeof(th_sid));
     if (ret < 0) {
-        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_get_substring failed");
+        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_copy_substring failed");
         goto error;
     }
 
-    ret = pcre_get_substring((char *)rawstr, ov, 30, 4, &rule_extend);
+    ret = pcre_copy_substring((char *)rawstr, ov, 30, 4, rule_extend, sizeof(rule_extend));
     if (ret < 0) {
-        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_get_substring failed");
+        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_copy_substring failed");
         goto error;
     }
 
     /* get type of rule */
-    if (strncasecmp(th_rule_type,"event_filter",strlen("event_filter")) == 0) {
+    if (strcasecmp(th_rule_type,"event_filter") == 0) {
         rule_type = THRESHOLD_TYPE_EVENT_FILTER;
-    } else if (strncasecmp(th_rule_type,"threshold",strlen("threshold")) == 0) {
+    } else if (strcasecmp(th_rule_type,"threshold") == 0) {
         rule_type = THRESHOLD_TYPE_THRESHOLD;
-    } else if (strncasecmp(th_rule_type,"rate",strlen("rate")) == 0) {
+    } else if (strcasecmp(th_rule_type,"rate_filter") == 0) {
         rule_type = THRESHOLD_TYPE_RATE;
-    } else if (strncasecmp(th_rule_type,"suppress",strlen("suppress")) == 0) {
+    } else if (strcasecmp(th_rule_type,"suppress") == 0) {
         rule_type = THRESHOLD_TYPE_SUPPRESS;
     } else {
         SCLogError(SC_ERR_INVALID_VALUE, "rule type %s is unknown", th_rule_type);
@@ -957,6 +935,9 @@ static int ParseThresholdRule(DetectEngineCtx *de_ctx, char *rawstr,
                     parsed_track = TRACK_DST;
                 else if (strcasecmp(th_track,"by_src") == 0)
                     parsed_track = TRACK_SRC;
+                else if (strcasecmp(th_track,"by_either") == 0) {
+                    parsed_track = TRACK_EITHER;
+                }
                 else {
                     SCLogError(SC_ERR_INVALID_VALUE, "Invalid track parameter %s in %s", th_track, rule_extend);
                     goto error;
@@ -984,12 +965,6 @@ static int ParseThresholdRule(DetectEngineCtx *de_ctx, char *rawstr,
     *ret_th_ip = th_ip;
     return 0;
 error:
-    if (th_rule_type != NULL)
-        SCFree((char *)th_rule_type);
-    if (th_sid != NULL)
-        SCFree((char *)th_sid);
-    if (th_gid != NULL)
-        SCFree((char *)th_gid);
     if (th_track != NULL)
         SCFree((char *)th_track);
     if (th_count != NULL)
@@ -1000,8 +975,6 @@ error:
         SCFree((char *)th_type);
     if (th_ip != NULL)
         SCFree((char *)th_ip);
-    if (rule_extend != NULL)
-        SCFree((char *)rule_extend);
     return -1;
 }
 

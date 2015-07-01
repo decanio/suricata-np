@@ -56,6 +56,7 @@
 #include "util-unittest-helper.h"
 #include "app-layer.h"
 #include "app-layer-htp.h"
+#include "app-layer-htp-mem.h"
 #include "app-layer-protos.h"
 
 #include "conf.h"
@@ -89,6 +90,132 @@ static inline int HSBDCreateSpace(DetectEngineThreadCtx *det_ctx, uint16_t size)
     return 0;
 }
 
+static void HSBDGetBufferForTXInIDSMode(DetectEngineThreadCtx *det_ctx,
+                                        HtpState *htp_state, HtpBodyChunk *cur,
+                                        HtpTxUserData *htud, int index)
+{
+    int first = 1;
+    while (cur != NULL) {
+        /* see if we can filter out chunks */
+        if (htud->response_body.body_inspected > 0) {
+            if (cur->stream_offset < htud->response_body.body_inspected) {
+                if ((htud->response_body.body_inspected - cur->stream_offset) > htp_state->cfg->response_inspect_window) {
+                    cur = cur->next;
+                    continue;
+                } else {
+                    /* include this one */
+                }
+            } else {
+                /* include this one */
+            }
+        }
+
+        if (first) {
+            det_ctx->hsbd[index].offset = cur->stream_offset;
+            first = 0;
+        }
+
+        /* see if we need to grow the buffer */
+        if (det_ctx->hsbd[index].buffer == NULL || (det_ctx->hsbd[index].buffer_len + cur->len) > det_ctx->hsbd[index].buffer_size) {
+            void *ptmp;
+            uint32_t newsize = det_ctx->hsbd[index].buffer_size + (cur->len * 2);
+
+            if ((ptmp = HTPRealloc(det_ctx->hsbd[index].buffer, det_ctx->hsbd[index].buffer_size, newsize)) == NULL) {
+                HTPFree(det_ctx->hsbd[index].buffer, det_ctx->hsbd[index].buffer_size);
+                det_ctx->hsbd[index].buffer = NULL;
+                det_ctx->hsbd[index].buffer_size = 0;
+                det_ctx->hsbd[index].buffer_len = 0;
+                return;
+            }
+            det_ctx->hsbd[index].buffer = ptmp;
+            det_ctx->hsbd[index].buffer_size = newsize;
+        }
+        memcpy(det_ctx->hsbd[index].buffer + det_ctx->hsbd[index].buffer_len, cur->data, cur->len);
+        det_ctx->hsbd[index].buffer_len += cur->len;
+
+        cur = cur->next;
+    }
+
+    /* update inspected tracker */
+    htud->response_body.body_inspected = htud->response_body.last->stream_offset + htud->response_body.last->len;
+}
+
+#define MAX_WINDOW 10*1024*1024
+static void HSBDGetBufferForTXInIPSMode(DetectEngineThreadCtx *det_ctx,
+                                        HtpState *htp_state, HtpBodyChunk *cur,
+                                        HtpTxUserData *htud, int index)
+{
+    uint32_t window_size = 0;
+
+    /* how much from before body_inspected will we consider? */
+    uint32_t cfg_win =
+        htud->response_body.body_inspected >= htp_state->cfg->response_inspect_min_size ?
+            htp_state->cfg->response_inspect_window :
+            htp_state->cfg->response_inspect_min_size;
+
+    /* but less if we don't have that much before body_inspected */
+    if ((htud->response_body.body_inspected - htud->response_body.first->stream_offset) < cfg_win) {
+        cfg_win = htud->response_body.body_inspected - htud->response_body.first->stream_offset;
+    }
+    window_size = (htud->response_body.content_len_so_far - htud->response_body.body_inspected) + cfg_win;
+    if (window_size > MAX_WINDOW) {
+        SCLogDebug("weird: body size is %uk", window_size/1024);
+        window_size = MAX_WINDOW;
+    }
+
+    if (det_ctx->hsbd[index].buffer == NULL || window_size > det_ctx->hsbd[index].buffer_size) {
+        void *ptmp;
+
+        if ((ptmp = HTPRealloc(det_ctx->hsbd[index].buffer, det_ctx->hsbd[index].buffer_size, window_size)) == NULL) {
+            HTPFree(det_ctx->hsbd[index].buffer, det_ctx->hsbd[index].buffer_size);
+            det_ctx->hsbd[index].buffer = NULL;
+            det_ctx->hsbd[index].buffer_size = 0;
+            det_ctx->hsbd[index].buffer_len = 0;
+            return;
+        }
+        det_ctx->hsbd[index].buffer = ptmp;
+        det_ctx->hsbd[index].buffer_size = window_size;
+    }
+
+    uint32_t left_edge = htud->response_body.body_inspected - cfg_win;
+
+    int first = 1;
+    while (cur != NULL) {
+        if (first) {
+            det_ctx->hsbd[index].offset = cur->stream_offset;
+            first = 0;
+        }
+
+        /* entirely before our window */
+        if ((cur->stream_offset + cur->len) <= left_edge) {
+            cur = cur->next;
+            continue;
+        } else {
+            uint32_t offset = 0;
+            if (cur->stream_offset < left_edge && (cur->stream_offset + cur->len) > left_edge) {
+                offset = left_edge - cur->stream_offset;
+                BUG_ON(offset > cur->len);
+            }
+
+            /* unusual: if window isn't big enough, we just give up */
+            if (det_ctx->hsbd[index].buffer_len + (cur->len - offset) > window_size) {
+                htud->response_body.body_inspected = cur->stream_offset;
+                SCReturn;
+            }
+
+            BUG_ON(det_ctx->hsbd[index].buffer_len + (cur->len - offset) > window_size);
+
+            memcpy(det_ctx->hsbd[index].buffer + det_ctx->hsbd[index].buffer_len, cur->data + offset, cur->len - offset);
+            det_ctx->hsbd[index].buffer_len += (cur->len - offset);
+            det_ctx->hsbd[index].offset -= offset;
+        }
+
+        cur = cur->next;
+    }
+
+    /* update inspected tracker to point before the current window */
+    htud->response_body.body_inspected = htud->response_body.content_len_so_far;
+}
 
 static uint8_t *DetectEngineHSBDGetBufferForTX(htp_tx_t *tx, uint64_t tx_id,
                                                DetectEngineCtx *de_ctx,
@@ -104,14 +231,17 @@ static uint8_t *DetectEngineHSBDGetBufferForTX(htp_tx_t *tx, uint64_t tx_id,
     *stream_start_offset = 0;
 
     if (det_ctx->hsbd_buffers_list_len == 0) {
-        if (HSBDCreateSpace(det_ctx, 1) < 0)
-            goto end;
-        index = 0;
+        /* get the inspect id to use as a 'base id' */
+        uint64_t base_inspect_id = AppLayerParserGetTransactionInspectId(f->alparser, flags);
+        BUG_ON(base_inspect_id > tx_id);
+        /* see how many space we need for the current tx_id */
+        uint16_t txs = (tx_id - base_inspect_id) + 1;
 
-        if (det_ctx->hsbd_buffers_list_len == 0) {
-            det_ctx->hsbd_start_tx_id = tx_id;
-        }
-        det_ctx->hsbd_buffers_list_len++;
+        if (HSBDCreateSpace(det_ctx, txs) < 0)
+            goto end;
+        index = (tx_id - base_inspect_id);
+        det_ctx->hsbd_start_tx_id = base_inspect_id;
+        det_ctx->hsbd_buffers_list_len = txs;
     } else {
         if ((tx_id - det_ctx->hsbd_start_tx_id) < det_ctx->hsbd_buffers_list_len) {
             if (det_ctx->hsbd[(tx_id - det_ctx->hsbd_start_tx_id)].buffer_len != 0) {
@@ -120,13 +250,11 @@ static uint8_t *DetectEngineHSBDGetBufferForTX(htp_tx_t *tx, uint64_t tx_id,
                 return det_ctx->hsbd[(tx_id - det_ctx->hsbd_start_tx_id)].buffer;
             }
         } else {
-            if (HSBDCreateSpace(det_ctx, (tx_id - det_ctx->hsbd_start_tx_id) + 1) < 0)
+            uint16_t txs = (tx_id - det_ctx->hsbd_start_tx_id) + 1;
+            if (HSBDCreateSpace(det_ctx, txs) < 0)
                 goto end;
 
-            if (det_ctx->hsbd_buffers_list_len == 0) {
-                det_ctx->hsbd_start_tx_id = tx_id;
-            }
-            det_ctx->hsbd_buffers_list_len++;
+            det_ctx->hsbd_buffers_list_len = txs;
         }
         index = (tx_id - det_ctx->hsbd_start_tx_id);
     }
@@ -157,62 +285,23 @@ static uint8_t *DetectEngineHSBDGetBufferForTX(htp_tx_t *tx, uint64_t tx_id,
               flags & STREAM_EOF ? "true" : "false",
                (AppLayerParserGetStateProgress(IPPROTO_TCP, ALPROTO_HTTP, tx, STREAM_TOCLIENT) > HTP_RESPONSE_BODY) ? "true" : "false");
 
-    /* inspect the body if the transfer is complete or we have hit
-     * our body size limit */
-    if ((htp_state->cfg->response_body_limit == 0 ||
-         htud->response_body.content_len_so_far < htp_state->cfg->response_body_limit) &&
-        htud->response_body.content_len_so_far < htp_state->cfg->response_inspect_min_size &&
-        !(AppLayerParserGetStateProgress(IPPROTO_TCP, ALPROTO_HTTP, tx, STREAM_TOCLIENT) > HTP_RESPONSE_BODY) &&
-        !(flags & STREAM_EOF)) {
-        SCLogDebug("we still haven't seen the entire response body.  "
-                   "Let's defer body inspection till we see the "
-                   "entire body.");
-        goto end;
+    if (!htp_state->cfg->http_body_inline) {
+        /* inspect the body if the transfer is complete or we have hit
+        * our body size limit */
+        if ((htp_state->cfg->response_body_limit == 0 ||
+             htud->response_body.content_len_so_far < htp_state->cfg->response_body_limit) &&
+            htud->response_body.content_len_so_far < htp_state->cfg->response_inspect_min_size &&
+            !(AppLayerParserGetStateProgress(IPPROTO_TCP, ALPROTO_HTTP, tx, STREAM_TOCLIENT) > HTP_RESPONSE_BODY) &&
+            !(flags & STREAM_EOF)) {
+            SCLogDebug("we still haven't seen the entire response body.  "
+                       "Let's defer body inspection till we see the "
+                       "entire body.");
+            goto end;
+        }
+        HSBDGetBufferForTXInIDSMode(det_ctx, htp_state, cur, htud, index);
+    } else {
+        HSBDGetBufferForTXInIPSMode(det_ctx, htp_state, cur, htud, index);
     }
-
-    int first = 1;
-    while (cur != NULL) {
-        /* see if we can filter out chunks */
-        if (htud->response_body.body_inspected > 0) {
-            if (cur->stream_offset < htud->response_body.body_inspected) {
-                if ((htud->response_body.body_inspected - cur->stream_offset) > htp_state->cfg->response_inspect_window) {
-                    cur = cur->next;
-                    continue;
-                } else {
-                    /* include this one */
-                }
-            } else {
-                /* include this one */
-            }
-        }
-
-        if (first) {
-            det_ctx->hsbd[index].offset = cur->stream_offset;
-            first = 0;
-        }
-
-        /* see if we need to grow the buffer */
-        if (det_ctx->hsbd[index].buffer == NULL || (det_ctx->hsbd[index].buffer_len + cur->len) > det_ctx->hsbd[index].buffer_size) {
-            void *ptmp;
-            det_ctx->hsbd[index].buffer_size += cur->len * 2;
-
-            if ((ptmp = SCRealloc(det_ctx->hsbd[index].buffer, det_ctx->hsbd[index].buffer_size)) == NULL) {
-                SCFree(det_ctx->hsbd[index].buffer);
-                det_ctx->hsbd[index].buffer = NULL;
-                det_ctx->hsbd[index].buffer_size = 0;
-                det_ctx->hsbd[index].buffer_len = 0;
-                goto end;
-            }
-            det_ctx->hsbd[index].buffer = ptmp;
-        }
-        memcpy(det_ctx->hsbd[index].buffer + det_ctx->hsbd[index].buffer_len, cur->data, cur->len);
-        det_ctx->hsbd[index].buffer_len += cur->len;
-
-        cur = cur->next;
-    }
-
-    /* update inspected tracker */
-    htud->response_body.body_inspected = htud->response_body.last->stream_offset + htud->response_body.last->len;
 
     buffer = det_ctx->hsbd[index].buffer;
     *buffer_len = det_ctx->hsbd[index].buffer_len;
@@ -266,7 +355,7 @@ int DetectEngineInspectHttpServerBody(ThreadVars *tv,
     det_ctx->buffer_offset = 0;
     det_ctx->discontinue_matching = 0;
     det_ctx->inspection_recursion_counter = 0;
-    int r = DetectEngineContentInspection(de_ctx, det_ctx, s, s->sm_lists[DETECT_SM_LIST_HSBDMATCH],
+    int r = DetectEngineContentInspection(de_ctx, det_ctx, s, s->sm_lists[DETECT_SM_LIST_FILEDATA],
                                           f,
                                           buffer,
                                           buffer_len,
@@ -299,6 +388,123 @@ void DetectEngineCleanHSBDBuffers(DetectEngineThreadCtx *det_ctx)
 /***********************************Unittests**********************************/
 
 #ifdef UNITTESTS
+
+struct TestSteps {
+    const uint8_t *input;
+    size_t input_size;      /**< if 0 strlen will be used */
+    int direction;          /**< STREAM_TOSERVER, STREAM_TOCLIENT */
+    int expect;
+};
+
+static int RunTest(struct TestSteps *steps, const char *sig, const char *yaml)
+{
+    TcpSession ssn;
+    Flow f;
+    Packet *p = NULL;
+    ThreadVars th_v;
+    DetectEngineCtx *de_ctx = NULL;
+    DetectEngineThreadCtx *det_ctx = NULL;
+    int result = 0;
+    int i = 0;
+    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
+    memset(&th_v, 0, sizeof(th_v));
+    memset(&f, 0, sizeof(f));
+    memset(&ssn, 0, sizeof(ssn));
+
+    if (yaml) {
+        ConfCreateContextBackup();
+        ConfInit();
+        HtpConfigCreateBackup();
+
+        ConfYamlLoadString(yaml, strlen(yaml));
+        HTPConfigure();
+        EngineModeSetIPS();
+    }
+
+    StreamTcpInitConfig(TRUE);
+
+    de_ctx = DetectEngineCtxInit();
+    if (de_ctx == NULL)
+        goto end;
+
+    FLOW_INITIALIZE(&f);
+    f.protoctx = (void *)&ssn;
+    f.proto = IPPROTO_TCP;
+    f.flags |= FLOW_IPV4;
+    f.alproto = ALPROTO_HTTP;
+
+    SCLogDebug("sig %s", sig);
+    DetectEngineAppendSig(de_ctx, (char *)sig);
+
+    de_ctx->flags |= DE_QUIET;
+
+    if (de_ctx->sig_list == NULL)
+        goto end;
+
+    SigGroupBuild(de_ctx);
+    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
+
+    struct TestSteps *b = steps;
+    i = 0;
+    while (b->input != NULL) {
+        SCLogDebug("chunk %p %d", b, i);
+        p = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
+        if (p == NULL)
+            goto end;
+        p->flow = &f;
+        p->flowflags = (b->direction == STREAM_TOSERVER) ? FLOW_PKT_TOSERVER : FLOW_PKT_TOCLIENT;
+        p->flowflags |= FLOW_PKT_ESTABLISHED;
+        p->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
+
+        SCMutexLock(&f.m);
+        int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_HTTP, b->direction,
+                (uint8_t *)b->input,
+                b->input_size ? b->input_size : strlen((const char *)b->input));
+        if (r != 0) {
+            printf("toserver chunk %d returned %" PRId32 ", expected 0: ", i+1, r);
+            result = 0;
+            SCMutexUnlock(&f.m);
+            goto end;
+        }
+        SCMutexUnlock(&f.m);
+
+        /* do detect */
+        SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
+
+        int match = PacketAlertCheck(p, 1);
+        if (b->expect != match) {
+            printf("rule matching mismatch: ");
+            goto end;
+        }
+
+        UTHFreePackets(&p, 1);
+        p = NULL;
+        b++;
+        i++;
+    }
+    result = 1;
+
+ end:
+    if (alp_tctx != NULL)
+        AppLayerParserThreadCtxFree(alp_tctx);
+    if (de_ctx != NULL)
+        SigGroupCleanup(de_ctx);
+    if (de_ctx != NULL)
+        SigCleanSignatures(de_ctx);
+    if (de_ctx != NULL)
+        DetectEngineCtxFree(de_ctx);
+
+    StreamTcpFreeConfig(TRUE);
+    FLOW_DESTROY(&f);
+    UTHFreePackets(&p, 1);
+
+    if (yaml) {
+        HtpConfigRestoreBackup();
+        ConfRestoreContextBackup();
+        EngineModeSetIDS();
+    }
+    return result;
+}
 
 static int DetectEngineHttpServerBodyTest01(void)
 {
@@ -3630,6 +3836,585 @@ end:
     return result;
 }
 
+static int DetectEngineHttpServerBodyFileDataTest04(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 6\r\n"
+            "\r\n"
+            "ab",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"cd",
+            0, STREAM_TOCLIENT, 1 },
+        {   (const uint8_t *)"ef",
+            0, STREAM_TOCLIENT, 0 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"abcd\"; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
+
+static int DetectEngineHttpServerBodyFileDataTest05(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 6\r\n"
+            "\r\n"
+            "ab",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"cd",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"ef",
+            0, STREAM_TOCLIENT, 1 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"abcdef\"; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
+
+static int DetectEngineHttpServerBodyFileDataTest06(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 6\r\n"
+            "\r\n"
+            "ab",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"cd",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"ef",
+            0, STREAM_TOCLIENT, 1 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"bcdef\"; offset:1; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
+
+static int DetectEngineHttpServerBodyFileDataTest07(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 13\r\n"
+            "\r\n"
+            "ab",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"cd",
+            0, STREAM_TOCLIENT, 1 },
+        {   (const uint8_t *)"123456789",
+            0, STREAM_TOCLIENT, 0 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"bc\"; offset:1; depth:2; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
+
+static int DetectEngineHttpServerBodyFileDataTest08(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 14\r\n"
+            "\r\n"
+            "ab",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"cd",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"1234567890",
+            0, STREAM_TOCLIENT, 1 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"d123456789\"; offset:3; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
+
+static int DetectEngineHttpServerBodyFileDataTest09(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 13\r\n"
+            "\r\n"
+            "ab",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"cd",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"123456789",
+            0, STREAM_TOCLIENT, 1 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"abcd12\"; depth:6; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
+
+static int DetectEngineHttpServerBodyFileDataTest10(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 5\r\n"
+            "\r\n"
+            "ab",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"c",
+            0, STREAM_TOCLIENT, 1 },
+        {   (const uint8_t *)"de",
+            0, STREAM_TOCLIENT, 0 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"abc\"; depth:3; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
+
+static int DetectEngineHttpServerBodyFileDataTest11(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 5\r\n"
+            "\r\n"
+            "ab",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"c",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"de",
+            0, STREAM_TOCLIENT, 1 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"bcde\"; offset:1; depth:4; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
+
+static int DetectEngineHttpServerBodyFileDataTest12(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 13\r\n"
+            "\r\n"
+            "a",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"b",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"c",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"d",
+            0, STREAM_TOCLIENT, 1 },
+        {   (const uint8_t *)"efghijklm",
+            0, STREAM_TOCLIENT, 0 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"abcd\"; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
+
+static int DetectEngineHttpServerBodyFileDataTest13(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 13\r\n"
+            "\r\n"
+            "a",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"b",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"c",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"d",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"efghijklm",
+            0, STREAM_TOCLIENT, 1 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"abcdefghijklm\"; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
+
+static int DetectEngineHttpServerBodyFileDataTest14(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 20\r\n"
+            "\r\n"
+            "1234567890",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"abcdefghi",
+            0, STREAM_TOCLIENT, 1 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"890abcdefghi\"; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
+
+static int DetectEngineHttpServerBodyFileDataTest15(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 20\r\n"
+            "\r\n"
+            "1234567890",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"abcdefghi",
+            0, STREAM_TOCLIENT, 0 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"7890ab\"; depth:6; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
+
+static int DetectEngineHttpServerBodyFileDataTest16(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 20\r\n"
+            "\r\n"
+            "aaaab",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"bbbbc",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"ccccd",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"dddde",
+            0, STREAM_TOCLIENT, 0 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"aabb\"; depth:4; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
+
+static int DetectEngineHttpServerBodyFileDataTest17(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 20\r\n"
+            "\r\n"
+            "aaaab",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"bbbbc",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"ccccd",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"dddde",
+            0, STREAM_TOCLIENT, 0 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"bbbc\"; depth:4; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
+
+static int DetectEngineHttpServerBodyFileDataTest18(void)
+{
+
+    const char yaml[] = "\
+%YAML 1.1\n\
+---\n\
+libhtp:\n\
+\n\
+  default-config:\n\
+\n\
+    http-body-inline: yes\n\
+    response-body-minimal-inspect-size: 6\n\
+    response-body-inspect-window: 3\n\
+";
+
+    struct TestSteps steps[] = {
+        {   (const uint8_t *)"GET /index.html HTTP/1.0\r\n"
+            "Host: www.openinfosecfoundation.org\r\n"
+            "User-Agent: Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1.7) Gecko/20091221 Firefox/3.5.7\r\n"
+            "\r\n",
+            0, STREAM_TOSERVER, 0 },
+        {   (const uint8_t *)"HTTP/1.0 200 ok\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 20\r\n"
+            "\r\n"
+            "aaaab",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"bbbbc",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"ccccd",
+            0, STREAM_TOCLIENT, 0 },
+        {   (const uint8_t *)"dddde",
+            0, STREAM_TOCLIENT, 0 },
+        {   NULL, 0, 0, 0 },
+    };
+
+    const char *sig = "alert http any any -> any any (file_data; content:\"bccd\"; depth:4; sid:1;)";
+    return RunTest(steps, sig, yaml);
+}
 #endif /* UNITTESTS */
 
 void DetectEngineHttpServerBodyRegisterTests(void)
@@ -3687,6 +4472,37 @@ void DetectEngineHttpServerBodyRegisterTests(void)
                    DetectEngineHttpServerBodyFileDataTest02, 1);
     UtRegisterTest("DetectEngineHttpServerBodyFileDataTest03",
                    DetectEngineHttpServerBodyFileDataTest03, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest04",
+                   DetectEngineHttpServerBodyFileDataTest04, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest05",
+                  DetectEngineHttpServerBodyFileDataTest05, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest06",
+                  DetectEngineHttpServerBodyFileDataTest06, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest07",
+                  DetectEngineHttpServerBodyFileDataTest07, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest08",
+                  DetectEngineHttpServerBodyFileDataTest08, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest09",
+                  DetectEngineHttpServerBodyFileDataTest09, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest10",
+                  DetectEngineHttpServerBodyFileDataTest10, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest11",
+                  DetectEngineHttpServerBodyFileDataTest11, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest12",
+                  DetectEngineHttpServerBodyFileDataTest12, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest13",
+                  DetectEngineHttpServerBodyFileDataTest13, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest14",
+                  DetectEngineHttpServerBodyFileDataTest14, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest15",
+                  DetectEngineHttpServerBodyFileDataTest15, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest16",
+                  DetectEngineHttpServerBodyFileDataTest16, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest17",
+                  DetectEngineHttpServerBodyFileDataTest17, 1);
+    UtRegisterTest("DetectEngineHttpServerBodyFileDataTest18",
+                  DetectEngineHttpServerBodyFileDataTest18, 1);
+
 #endif /* UNITTESTS */
 
     return;

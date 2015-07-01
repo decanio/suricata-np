@@ -91,12 +91,12 @@ int DecodeTeredo(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt,
                 int blen = len - (start - pkt);
                 /* spawn off tunnel packet */
                 Packet *tp = PacketTunnelPktSetup(tv, dtv, p, start, blen,
-                                                  IPPROTO_IPV6, pq);
+                                                  DECODE_TUNNEL_IPV6, pq);
                 if (tp != NULL) {
                     PKT_SET_SRC(tp, PKT_SRC_DECODER_TEREDO);
                     /* add the tp to the packet queue. */
                     PacketEnqueue(pq,tp);
-                    SCPerfCounterIncr(dtv->counter_teredo, tv->sc_perf_pca);
+                    StatsIncr(tv, dtv->counter_teredo);
                     return TM_ECODE_OK;
                 }
             }

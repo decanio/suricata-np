@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2015 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -19,6 +19,7 @@
  * \file
  *
  * \author Anoop Saldanha <anoopsaldanha@gmail.com>
+ * \author Victor Julien <victor@inliniac.net>
  */
 
 #ifndef __COUNTERS_H__
@@ -28,171 +29,120 @@
 struct ThreadVars_;
 
 /**
- * \brief Data type for different kind of Perf counters that can be registered
- */
-enum {
-    SC_PERF_TYPE_UINT64,
-    SC_PERF_TYPE_MAX,
-};
-
-/**
- * \brief Different kinds of qualifier that can be used to modify the behaviour
- *        of the Perf counter to be registered
- */
-enum {
-    SC_PERF_TYPE_Q_NORMAL = 1,
-    SC_PERF_TYPE_Q_AVERAGE = 2,
-    SC_PERF_TYPE_Q_MAXIMUM = 3,
-    SC_PERF_TYPE_Q_MAX = 4,
-};
-
-/**
- * \brief Different output interfaces made available by the Perf counter API
- */
-enum {
-    SC_PERF_IFACE_FILE,
-    SC_PERF_IFACE_CONSOLE,
-    SC_PERF_IFACE_SYSLOG,
-    SC_PERF_IFACE_MAX,
-};
-
-/**
  * \brief Container to hold the counter variable
  */
-typedef struct SCPerfCounter_ {
+typedef struct StatsCounter_ {
     int type;
 
-    /* local id for this counter in this tm */
+    /* local id for this counter in this thread */
     uint16_t id;
 
-    uint64_t value;
+    /* global id, used in output */
+    uint16_t gid;
+
+    /* counter value(s): copies from the 'private' counter */
+    uint64_t value;     /**< sum of updates/increments, or 'set' value */
+    uint64_t updates;   /**< number of updates (for avg) */
+
+    /* when using type STATS_TYPE_Q_FUNC this function is called once
+     * to get the counter value, regardless of how many threads there are. */
+    uint64_t (*Func)(void);
 
     /* name of the counter */
-    char *cname;
-    /* name of the thread module this counter is registered to */
-    char *tm_name;
+    const char *name;
 
     /* the next perfcounter for this tv's tm instance */
-    struct SCPerfCounter_ *next;
-
-    /* description of this counter */
-    char *desc;
-} SCPerfCounter;
+    struct StatsCounter_ *next;
+} StatsCounter;
 
 /**
- * \brief Holds the Perf Context for a ThreadVars instance
+ * \brief Stats Context for a ThreadVars instance
  */
-typedef struct SCPerfContext_ {
+typedef struct StatsPublicThreadContext_ {
     /* flag set by the wakeup thread, to inform the client threads to sync */
     uint32_t perf_flag;
 
     /* pointer to the head of a list of counters assigned under this context */
-    SCPerfCounter *head;
+    StatsCounter *head;
 
     /* holds the total no of counters already assigned for this perf context */
     uint16_t curr_id;
 
     /* mutex to prevent simultaneous access during update_counter/output_stat */
     SCMutex m;
-} SCPerfContext;
+} StatsPublicThreadContext;
 
 /**
- * \brief Node elements used by the SCPerfCounterArray(PCA) Node
+ * \brief Storage for local counters, with a link to the public counter used
+ *        for syncs
  */
-typedef struct SCPCAElem_ {
-    /* pointer to the PerfCounter that corresponds to this PCAElem */
-    SCPerfCounter *pc;
+typedef struct StatsLocalCounter_ {
+    /* pointer to the counter that corresponds to this local counter */
+    StatsCounter *pc;
 
-    /* counter id of the above counter(pc) */
+    /* local counter id of the above counter */
     uint16_t id;
 
-    uint64_t ui64_cnt;
+    /* total value of the adds/increments, or exact value in case of 'set' */
+    uint64_t value;
 
     /* no of times the local counter has been updated */
-    uint64_t syncs;
-} SCPCAElem;
+    uint64_t updates;
+} StatsLocalCounter;
 
 /**
- * \brief The SCPerfCounterArray used to hold the local version of the counters
- *        registered
+ * \brief used to hold the private version of the counters registered
  */
-typedef struct SCPerfCounterArray_ {
-    /* points to the array holding PCAElems */
-    SCPCAElem *head;
+typedef struct StatsPrivateThreadContext_ {
+    /* points to the array holding local counters */
+    StatsLocalCounter *head;
 
-    /* no of PCAElems in head */
-    uint32_t size;
-} SCPerfCounterArray;
-
-/**
- * \brief Holds multiple instances of the same TM together, used when the stats
- *        have to be clubbed based on TM, before being sent out
- */
-typedef struct SCPerfClubTMInst_ {
-    char *tm_name;
-
-    SCPerfContext **head;
+    /* size of head array in elements */
     uint32_t size;
 
-    struct SCPerfClubTMInst_ *next;
-} SCPerfClubTMInst;
-
-/**
- * \brief Holds the output interface context for the counter api
- */
-typedef struct SCPerfOPIfaceContext_ {
-    SCPerfClubTMInst *pctmi;
-    SCMutex pctmi_lock;
-} SCPerfOPIfaceContext;
+    int initialized;
+} StatsPrivateThreadContext;
 
 /* the initialization functions */
-void SCPerfInitCounterApi(void);
-void SCPerfSpawnThreads(void);
+void StatsInit(void);
+void StatsSetupPostConfig(void);
+void StatsSpawnThreads(void);
+void StatsRegisterTests(void);
 
-/* the ThreadVars counter registration functions */
-uint16_t SCPerfTVRegisterCounter(char *, struct ThreadVars_ *, int, char *);
-uint16_t SCPerfTVRegisterAvgCounter(char *, struct ThreadVars_ *, int, char *);
-uint16_t SCPerfTVRegisterMaxCounter(char *, struct ThreadVars_ *, int, char *);
+/* functions used to free the resources alloted by the Stats API */
+void StatsReleaseResources(void);
 
-/* the non-ThreadVars counter registration functions */
-uint16_t SCPerfRegisterCounter(char *, char *, int, char *, SCPerfContext *);
-uint16_t SCPerfRegisterAvgCounter(char *, char *, int, char *, SCPerfContext *);
-uint16_t SCPerfRegisterMaxCounter(char *, char *, int, char *, SCPerfContext *);
-
-/* utility functions */
-int SCPerfAddToClubbedTMTable(char *, SCPerfContext *);
-SCPerfCounterArray *SCPerfGetCounterArrayRange(uint16_t, uint16_t, SCPerfContext *);
-SCPerfCounterArray * SCPerfGetAllCountersArray(SCPerfContext *);
-
-int SCPerfUpdateCounterArray(SCPerfCounterArray *, SCPerfContext *);
-double SCPerfGetLocalCounterValue(uint16_t, SCPerfCounterArray *);
-
-/* functions used to free the resources alloted by the Perf counter API */
-void SCPerfReleaseResources(void);
-void SCPerfReleasePerfCounterS(SCPerfCounter *);
-void SCPerfReleasePCA(SCPerfCounterArray *);
-
-void SCPerfCounterSetUI64(uint16_t, SCPerfCounterArray *, uint64_t);
-void SCPerfCounterIncr(uint16_t, SCPerfCounterArray *);
-
-void SCPerfRegisterTests(void);
+/* counter registration functions */
+uint16_t StatsRegisterCounter(char *, struct ThreadVars_ *);
+uint16_t StatsRegisterAvgCounter(char *, struct ThreadVars_ *);
+uint16_t StatsRegisterMaxCounter(char *, struct ThreadVars_ *);
+uint16_t StatsRegisterGlobalCounter(char *cname, uint64_t (*Func)(void));
 
 /* functions used to update local counter values */
-void SCPerfCounterAddUI64(uint16_t, SCPerfCounterArray *, uint64_t);
+void StatsAddUI64(struct ThreadVars_ *, uint16_t, uint64_t);
+void StatsSetUI64(struct ThreadVars_ *, uint16_t, uint64_t);
+void StatsIncr(struct ThreadVars_ *, uint16_t);
 
-#define SCPerfSyncCounters(tv) \
-    SCPerfUpdateCounterArray((tv)->sc_perf_pca, &(tv)->sc_perf_pctx);           \
+/* utility functions */
+int StatsUpdateCounterArray(StatsPrivateThreadContext *, StatsPublicThreadContext *);
+uint64_t StatsGetLocalCounterValue(struct ThreadVars_ *, uint16_t);
+int StatsSetupPrivate(struct ThreadVars_ *);
+void StatsThreadCleanup(struct ThreadVars_ *);
 
-#define SCPerfSyncCountersIfSignalled(tv)                                       \
+#define StatsSyncCounters(tv) \
+    StatsUpdateCounterArray(&(tv)->perf_private_ctx, &(tv)->perf_public_ctx);  \
+
+#define StatsSyncCountersIfSignalled(tv)                                       \
     do {                                                                        \
-        if ((tv)->sc_perf_pctx.perf_flag == 1) {                                \
-            SCPerfUpdateCounterArray((tv)->sc_perf_pca, &(tv)->sc_perf_pctx);   \
+        if ((tv)->perf_public_ctx.perf_flag == 1) {                             \
+            StatsUpdateCounterArray(&(tv)->perf_private_ctx,                   \
+                                     &(tv)->perf_public_ctx);                   \
         }                                                                       \
     } while (0)
 
 #ifdef BUILD_UNIX_SOCKET
 #include <jansson.h>
-TmEcode SCPerfOutputCounterSocket(json_t *cmd,
+TmEcode StatsOutputCounterSocket(json_t *cmd,
                                json_t *answer, void *data);
 #endif
 

@@ -46,7 +46,7 @@
 #include "util-unittest.h"
 #include "util-debug.h"
 
-#define PARSE_REGEX         "([a-z]+)(?:,(.*))?"
+#define PARSE_REGEX         "([a-z]+)(?:,\\s*([^\\s]*))?"
 static pcre *parse_regex;
 static pcre_extra *parse_regex_study;
 
@@ -176,34 +176,49 @@ int DetectFlowbitMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx, Packet *p
     return 0;
 }
 
+static int DetectFlowbitParse(char *str, char *cmd, int cmd_len, char *name,
+    int name_len)
+{
+    const int max_substrings = 30;
+    int count, rc;
+    int ov[max_substrings];
+
+    count = pcre_exec(parse_regex, parse_regex_study, str, strlen(str), 0, 0,
+        ov, max_substrings);
+    if (count != 2 && count != 3) {
+        SCLogError(SC_ERR_PCRE_MATCH,
+            "\"%s\" is not a valid setting for flowbits.", str);
+        return 0;
+    }
+
+    rc = pcre_copy_substring((char *)str, ov, max_substrings, 1, cmd, cmd_len);
+    if (rc < 0) {
+        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_copy_substring failed");
+        return 0;
+    }
+
+    if (count == 3) {
+        rc = pcre_copy_substring((char *)str, ov, max_substrings, 2, name,
+            name_len);
+        if (rc < 0) {
+            SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_copy_substring failed");
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 int DetectFlowbitSetup (DetectEngineCtx *de_ctx, Signature *s, char *rawstr)
 {
     DetectFlowbitsData *cd = NULL;
     SigMatch *sm = NULL;
     uint8_t fb_cmd = 0;
-#define MAX_SUBSTRINGS 30
-    int ret = 0, res = 0;
-    int ov[MAX_SUBSTRINGS];
     char fb_cmd_str[16] = "", fb_name[256] = "";
 
-    ret = pcre_exec(parse_regex, parse_regex_study, rawstr, strlen(rawstr), 0, 0, ov, MAX_SUBSTRINGS);
-    if (ret != 2 && ret != 3) {
-        SCLogError(SC_ERR_PCRE_MATCH, "\"%s\" is not a valid setting for flowbits.", rawstr);
+    if (!DetectFlowbitParse(rawstr, fb_cmd_str, sizeof(fb_cmd_str), fb_name,
+            sizeof(fb_name))) {
         return -1;
-    }
-
-    res = pcre_copy_substring((char *)rawstr, ov, MAX_SUBSTRINGS, 1, fb_cmd_str, sizeof(fb_cmd_str));
-    if (res < 0) {
-        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_copy_substring failed");
-        return -1;
-    }
-
-    if (ret == 3) {
-        res = pcre_copy_substring((char *)rawstr, ov, MAX_SUBSTRINGS, 2, fb_name, sizeof(fb_name));
-        if (res < 0) {
-            SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_copy_substring failed");
-            goto error;
-        }
     }
 
     if (strcmp(fb_cmd_str,"noalert") == 0) {
@@ -244,7 +259,7 @@ int DetectFlowbitSetup (DetectEngineCtx *de_ctx, Signature *s, char *rawstr)
     if (unlikely(cd == NULL))
         goto error;
 
-    cd->idx = VariableNameGetIdx(de_ctx, fb_name, DETECT_FLOWBITS);
+    cd->idx = VariableNameGetIdx(de_ctx, fb_name, VAR_TYPE_FLOW_BIT);
     cd->cmd = fb_cmd;
 
     SCLogDebug("idx %" PRIu32 ", cmd %s, name %s",
@@ -260,9 +275,7 @@ int DetectFlowbitSetup (DetectEngineCtx *de_ctx, Signature *s, char *rawstr)
     sm->ctx = (SigMatchCtx *)cd;
 
     switch (fb_cmd) {
-        case DETECT_FLOWBITS_CMD_NOALERT:
-            /* nothing to do */
-            break;
+        /* case DETECT_FLOWBITS_CMD_NOALERT can't happen here */
 
         case DETECT_FLOWBITS_CMD_ISNOTSET:
         case DETECT_FLOWBITS_CMD_ISSET:
@@ -299,6 +312,74 @@ void DetectFlowbitFree (void *ptr)
 }
 
 #ifdef UNITTESTS
+
+static int FlowBitsTestParse01(void)
+{
+    int ret = 0;
+    char command[16] = "", name[16] = "";
+
+    /* Single argument version. */
+    if (!DetectFlowbitParse("noalert", command, sizeof(command), name,
+            sizeof(name))) {
+        goto end;
+    }
+    if (strcmp(command, "noalert") != 0) {
+        goto end;
+    }
+
+    /* No leading or trailing spaces. */
+    if (!DetectFlowbitParse("set,flowbit", command, sizeof(command), name,
+            sizeof(name))) {
+        goto end;
+    }
+    if (strcmp(command, "set") != 0) {
+        goto end;
+    }
+    if (strcmp(name, "flowbit") != 0) {
+        goto end;
+    }
+
+    /* Leading space. */
+    if (!DetectFlowbitParse("set, flowbit", command, sizeof(command), name,
+            sizeof(name))) {
+        goto end;
+    }
+    if (strcmp(command, "set") != 0) {
+        goto end;
+    }
+    if (strcmp(name, "flowbit") != 0) {
+        goto end;
+    }
+
+    /* Trailing space. */
+    if (!DetectFlowbitParse("set,flowbit ", command, sizeof(command), name,
+            sizeof(name))) {
+        goto end;
+    }
+    if (strcmp(command, "set") != 0) {
+        goto end;
+    }
+    if (strcmp(name, "flowbit") != 0) {
+        goto end;
+    }
+
+    /* Leading and trailing space. */
+    if (!DetectFlowbitParse("set, flowbit ", command, sizeof(command), name,
+            sizeof(name))) {
+        goto end;
+    }
+    if (strcmp(command, "set") != 0) {
+        goto end;
+    }
+    if (strcmp(name, "flowbit") != 0) {
+        goto end;
+    }
+
+    ret = 1;
+end:
+    return ret;
+}
+
 /**
  * \test FlowBitsTestSig01 is a test for a valid noalert flowbits option
  *
@@ -616,7 +697,7 @@ static int FlowBitsTestSig04(void)
 
     s = de_ctx->sig_list = SigInit(de_ctx,"alert ip any any -> any any (msg:\"isset option\"; flowbits:isset,fbt; content:\"GET \"; sid:1;)");
 
-    idx = VariableNameGetIdx(de_ctx, "fbt", DETECT_FLOWBITS);
+    idx = VariableNameGetIdx(de_ctx, "fbt", VAR_TYPE_FLOW_BIT);
 
     if (s == NULL || idx != 1) {
         goto end;
@@ -797,7 +878,7 @@ static int FlowBitsTestSig06(void)
 
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
 
-    idx = VariableNameGetIdx(de_ctx, "myflow", DETECT_FLOWBITS);
+    idx = VariableNameGetIdx(de_ctx, "myflow", VAR_TYPE_FLOW_BIT);
 
     gv = p->flow->flowvar;
 
@@ -903,7 +984,7 @@ static int FlowBitsTestSig07(void)
 
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
 
-    idx = VariableNameGetIdx(de_ctx, "myflow", DETECT_FLOWBITS);
+    idx = VariableNameGetIdx(de_ctx, "myflow", VAR_TYPE_FLOW_BIT);
 
     gv = p->flow->flowvar;
 
@@ -1012,7 +1093,7 @@ static int FlowBitsTestSig08(void)
 
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
 
-    idx = VariableNameGetIdx(de_ctx, "myflow", DETECT_FLOWBITS);
+    idx = VariableNameGetIdx(de_ctx, "myflow", VAR_TYPE_FLOW_BIT);
 
     gv = p->flow->flowvar;
 
@@ -1062,6 +1143,7 @@ end:
 void FlowBitsRegisterTests(void)
 {
 #ifdef UNITTESTS
+    UtRegisterTest("FlowBitsTestParse01", FlowBitsTestParse01, 1);
     UtRegisterTest("FlowBitsTestSig01", FlowBitsTestSig01, 0);
     UtRegisterTest("FlowBitsTestSig02", FlowBitsTestSig02, 0);
     UtRegisterTest("FlowBitsTestSig03", FlowBitsTestSig03, 0);

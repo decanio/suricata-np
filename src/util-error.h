@@ -80,7 +80,7 @@ typedef enum {
     SC_ERR_SYSCALL,
     SC_ERR_SYSCONF,
     SC_ERR_INVALID_ARGUMENTS,
-    SC_ERR_PERF_STATS_NOT_INIT,
+    SC_ERR_STATS_NOT_INIT,
     SC_ERR_COMPLETE_PORT_SPACE_NEGATED,
     SC_ERR_NO_PORTS_LEFT_AFTER_MERGE,
     SC_ERR_NEGATED_VALUE_IN_PORT_RANGE,
@@ -295,6 +295,7 @@ typedef enum {
     SC_ERR_NETMAP_CREATE,
     SC_ERR_NETMAP_READ,
     SC_ERR_THREAD_DEINIT, /**< thread's deinit function failed */
+    SC_ERR_IPPAIR_INIT,
 } SCError;
 
 const char *SCErrorToString(SCError);

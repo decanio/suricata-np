@@ -36,6 +36,8 @@
 #include "output.h"
 #include "host.h"
 #include "defrag.h"
+#include "ippair.h"
+#include "app-layer.h"
 
 #include "util-profiling.h"
 
@@ -282,13 +284,16 @@ TmEcode UnixSocketPcapFilesCheck(void *data)
         }
         this->currentfile = NULL;
 
+        /* needed by FlowForceReassembly */
+        PacketPoolInit();
+
         /* handle graceful shutdown of the flow engine, it's helper
          * threads and the packet threads */
-        FlowKillFlowManagerThread();
+        FlowDisableFlowManagerThread();
         TmThreadDisableReceiveThreads();
         FlowForceReassembly();
         TmThreadDisablePacketThreads();
-        FlowKillFlowRecyclerThread();
+        FlowDisableFlowRecyclerThread();
 
         /* kill the stats threads */
         TmThreadKillThreadsFamily(TVT_MGMT);
@@ -298,11 +303,14 @@ TmEcode UnixSocketPcapFilesCheck(void *data)
         TmThreadKillThreadsFamily(TVT_PPT);
         TmThreadClearThreadsFamily(TVT_PPT);
 
+        PacketPoolDestroy();
+
         /* mgt and ppt threads killed, we can run non thread-safe
          * shutdown functions */
-        SCPerfReleaseResources();
+        StatsReleaseResources();
         RunModeShutDown();
         FlowShutdown();
+        IPPairShutdown();
         HostCleanup();
         StreamTcpFreeConfig(STREAM_VERBOSE);
         DefragDestroy();
@@ -337,6 +345,7 @@ TmEcode UnixSocketPcapFilesCheck(void *data)
             return TM_ECODE_FAILED;
         }
         PcapFilesFree(cfile);
+        StatsInit();
 #ifdef PROFILING
         SCProfilingRulesGlobalInit();
         SCProfilingKeywordsGlobalInit();
@@ -344,13 +353,15 @@ TmEcode UnixSocketPcapFilesCheck(void *data)
 #endif /* PROFILING */
         DefragInit();
         FlowInitConfig(FLOW_QUIET);
+        IPPairInitConfig(FLOW_QUIET);
         StreamTcpInitConfig(STREAM_VERBOSE);
+        AppLayerRegisterGlobalCounters();
         RunModeInitializeOutputs();
-        SCPerfInitCounterApi();
+        StatsSetupPostConfig();
         RunModeDispatch(RUNMODE_PCAP_FILE, NULL);
         FlowManagerThreadSpawn();
         FlowRecyclerThreadSpawn();
-        SCPerfSpawnThreads();
+        StatsSpawnThreads();
         /* Un-pause all the paused threads */
         TmThreadContinueThreads();
     }

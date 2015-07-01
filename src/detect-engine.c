@@ -61,6 +61,7 @@
 #include "detect-engine-file.h"
 #include "detect-engine-dns.h"
 #include "detect-engine-modbus.h"
+#include "detect-engine-filedata-smtp.h"
 
 #include "detect-engine.h"
 #include "detect-engine-state.h"
@@ -145,7 +146,6 @@ void DetectEngineRegisterAppInspectionEngines(void)
         AppProto alproto;
         int32_t sm_list;
         uint32_t inspect_flags;
-        uint32_t match_flags;
         uint16_t dir;
         int (*Callback)(ThreadVars *tv,
                         DetectEngineCtx *de_ctx,
@@ -161,13 +161,11 @@ void DetectEngineRegisterAppInspectionEngines(void)
           ALPROTO_HTTP,
           DETECT_SM_LIST_UMATCH,
           DE_STATE_FLAG_URI_INSPECT,
-          DE_STATE_FLAG_URI_INSPECT,
           0,
           DetectEngineInspectPacketUris },
         { IPPROTO_TCP,
           ALPROTO_HTTP,
           DETECT_SM_LIST_HRLMATCH,
-          DE_STATE_FLAG_HRL_INSPECT,
           DE_STATE_FLAG_HRL_INSPECT,
           0,
           DetectEngineInspectHttpRequestLine },
@@ -175,13 +173,11 @@ void DetectEngineRegisterAppInspectionEngines(void)
           ALPROTO_HTTP,
           DETECT_SM_LIST_HCBDMATCH,
           DE_STATE_FLAG_HCBD_INSPECT,
-          DE_STATE_FLAG_HCBD_INSPECT,
           0,
           DetectEngineInspectHttpClientBody },
         { IPPROTO_TCP,
           ALPROTO_HTTP,
           DETECT_SM_LIST_HHDMATCH,
-          DE_STATE_FLAG_HHD_INSPECT,
           DE_STATE_FLAG_HHD_INSPECT,
           0,
           DetectEngineInspectHttpHeader },
@@ -189,13 +185,11 @@ void DetectEngineRegisterAppInspectionEngines(void)
           ALPROTO_HTTP,
           DETECT_SM_LIST_HRHDMATCH,
           DE_STATE_FLAG_HRHD_INSPECT,
-          DE_STATE_FLAG_HRHD_INSPECT,
           0,
           DetectEngineInspectHttpRawHeader },
         { IPPROTO_TCP,
           ALPROTO_HTTP,
           DETECT_SM_LIST_HMDMATCH,
-          DE_STATE_FLAG_HMD_INSPECT,
           DE_STATE_FLAG_HMD_INSPECT,
           0,
           DetectEngineInspectHttpMethod },
@@ -203,13 +197,11 @@ void DetectEngineRegisterAppInspectionEngines(void)
           ALPROTO_HTTP,
           DETECT_SM_LIST_HCDMATCH,
           DE_STATE_FLAG_HCD_INSPECT,
-          DE_STATE_FLAG_HCD_INSPECT,
           0,
           DetectEngineInspectHttpCookie },
         { IPPROTO_TCP,
           ALPROTO_HTTP,
           DETECT_SM_LIST_HRUDMATCH,
-          DE_STATE_FLAG_HRUD_INSPECT,
           DE_STATE_FLAG_HRUD_INSPECT,
           0,
           DetectEngineInspectHttpRawUri },
@@ -217,13 +209,11 @@ void DetectEngineRegisterAppInspectionEngines(void)
           ALPROTO_HTTP,
           DETECT_SM_LIST_FILEMATCH,
           DE_STATE_FLAG_FILE_TS_INSPECT,
-          DE_STATE_FLAG_FILE_TS_INSPECT,
           0,
           DetectFileInspectHttp },
         { IPPROTO_TCP,
           ALPROTO_HTTP,
           DETECT_SM_LIST_HUADMATCH,
-          DE_STATE_FLAG_HUAD_INSPECT,
           DE_STATE_FLAG_HUAD_INSPECT,
           0,
           DetectEngineInspectHttpUA },
@@ -231,13 +221,11 @@ void DetectEngineRegisterAppInspectionEngines(void)
           ALPROTO_HTTP,
           DETECT_SM_LIST_HHHDMATCH,
           DE_STATE_FLAG_HHHD_INSPECT,
-          DE_STATE_FLAG_HHHD_INSPECT,
           0,
           DetectEngineInspectHttpHH },
         { IPPROTO_TCP,
           ALPROTO_HTTP,
           DETECT_SM_LIST_HRHHDMATCH,
-          DE_STATE_FLAG_HRHHD_INSPECT,
           DE_STATE_FLAG_HRHHD_INSPECT,
           0,
           DetectEngineInspectHttpHRH },
@@ -245,7 +233,6 @@ void DetectEngineRegisterAppInspectionEngines(void)
         { IPPROTO_TCP,
           ALPROTO_DNS,
           DETECT_SM_LIST_DNSQUERY_MATCH,
-          DE_STATE_FLAG_DNSQUERY_INSPECT,
           DE_STATE_FLAG_DNSQUERY_INSPECT,
           0,
           DetectEngineInspectDnsQueryName },
@@ -256,13 +243,11 @@ void DetectEngineRegisterAppInspectionEngines(void)
           ALPROTO_DNS,
           DETECT_SM_LIST_DNSQUERY_MATCH,
           DE_STATE_FLAG_DNSQUERY_INSPECT,
-          DE_STATE_FLAG_DNSQUERY_INSPECT,
           0,
           DetectEngineInspectDnsQueryName },
         { IPPROTO_TCP,
           ALPROTO_SMTP,
           DETECT_SM_LIST_FILEMATCH,
-          DE_STATE_FLAG_FILE_TS_INSPECT,
           DE_STATE_FLAG_FILE_TS_INSPECT,
           0,
           DetectFileInspectSmtp },
@@ -271,16 +256,21 @@ void DetectEngineRegisterAppInspectionEngines(void)
           ALPROTO_MODBUS,
           DETECT_SM_LIST_MODBUS_MATCH,
           DE_STATE_FLAG_MODBUS_INSPECT,
-          DE_STATE_FLAG_MODBUS_INSPECT,
           0,
           DetectEngineInspectModbus },
+        /* file_data smtp */
+        { IPPROTO_TCP,
+          ALPROTO_SMTP,
+          DETECT_SM_LIST_FILEDATA,
+          DE_STATE_FLAG_FD_SMTP_INSPECT,
+          0,
+          DetectEngineInspectSMTPFiledata },
     };
 
     struct tmp_t data_toclient[] = {
         { IPPROTO_TCP,
           ALPROTO_HTTP,
-          DETECT_SM_LIST_HSBDMATCH,
-          DE_STATE_FLAG_HSBD_INSPECT,
+          DETECT_SM_LIST_FILEDATA,
           DE_STATE_FLAG_HSBD_INSPECT,
           1,
           DetectEngineInspectHttpServerBody },
@@ -288,13 +278,11 @@ void DetectEngineRegisterAppInspectionEngines(void)
           ALPROTO_HTTP,
           DETECT_SM_LIST_HHDMATCH,
           DE_STATE_FLAG_HHD_INSPECT,
-          DE_STATE_FLAG_HHD_INSPECT,
           1,
           DetectEngineInspectHttpHeader },
         { IPPROTO_TCP,
           ALPROTO_HTTP,
           DETECT_SM_LIST_HRHDMATCH,
-          DE_STATE_FLAG_HRHD_INSPECT,
           DE_STATE_FLAG_HRHD_INSPECT,
           1,
           DetectEngineInspectHttpRawHeader },
@@ -302,13 +290,11 @@ void DetectEngineRegisterAppInspectionEngines(void)
           ALPROTO_HTTP,
           DETECT_SM_LIST_HCDMATCH,
           DE_STATE_FLAG_HCD_INSPECT,
-          DE_STATE_FLAG_HCD_INSPECT,
           1,
           DetectEngineInspectHttpCookie },
         { IPPROTO_TCP,
           ALPROTO_HTTP,
           DETECT_SM_LIST_FILEMATCH,
-          DE_STATE_FLAG_FILE_TC_INSPECT,
           DE_STATE_FLAG_FILE_TC_INSPECT,
           1,
           DetectFileInspectHttp },
@@ -316,13 +302,11 @@ void DetectEngineRegisterAppInspectionEngines(void)
           ALPROTO_HTTP,
           DETECT_SM_LIST_HSMDMATCH,
           DE_STATE_FLAG_HSMD_INSPECT,
-          DE_STATE_FLAG_HSMD_INSPECT,
           1,
           DetectEngineInspectHttpStatMsg },
         { IPPROTO_TCP,
           ALPROTO_HTTP,
           DETECT_SM_LIST_HSCDMATCH,
-          DE_STATE_FLAG_HSCD_INSPECT,
           DE_STATE_FLAG_HSCD_INSPECT,
           1,
           DetectEngineInspectHttpStatCode },
@@ -330,7 +314,6 @@ void DetectEngineRegisterAppInspectionEngines(void)
         { IPPROTO_TCP,
           ALPROTO_MODBUS,
           DETECT_SM_LIST_MODBUS_MATCH,
-          DE_STATE_FLAG_MODBUS_INSPECT,
           DE_STATE_FLAG_MODBUS_INSPECT,
           0,
           DetectEngineInspectModbus }
@@ -343,7 +326,6 @@ void DetectEngineRegisterAppInspectionEngines(void)
                                                 data_toserver[i].dir,
                                                 data_toserver[i].sm_list,
                                                 data_toserver[i].inspect_flags,
-                                                data_toserver[i].match_flags,
                                                 data_toserver[i].Callback,
                                                 app_inspection_engine);
     }
@@ -354,7 +336,6 @@ void DetectEngineRegisterAppInspectionEngines(void)
                                                 data_toclient[i].dir,
                                                 data_toclient[i].sm_list,
                                                 data_toclient[i].inspect_flags,
-                                                data_toclient[i].match_flags,
                                                 data_toclient[i].Callback,
                                                 app_inspection_engine);
     }
@@ -375,14 +356,13 @@ static void AppendAppInspectionEngine(DetectEngineAppInspectionEngine *engine,
     while (tmp != NULL) {
         if (tmp->dir == engine->dir &&
             (tmp->sm_list == engine->sm_list ||
-             tmp->inspect_flags == engine->inspect_flags ||
-             tmp->match_flags == engine->match_flags)) {
+             tmp->inspect_flags == engine->inspect_flags
+            )) {
             SCLogError(SC_ERR_DETECT_PREPARE, "App Inspection Engine already "
                        "registered for this direction(%"PRIu16") ||"
                        "sm_list(%d) || "
-                       "[match(%"PRIu32")|inspect(%"PRIu32")]_flags",
-                       tmp->dir, tmp->sm_list, tmp->inspect_flags,
-                       tmp->match_flags);
+                       "[inspect(%"PRIu32")]_flags",
+                       tmp->dir, tmp->sm_list, tmp->inspect_flags);
             exit(EXIT_FAILURE);
         }
         insert = tmp;
@@ -401,7 +381,6 @@ void DetectEngineRegisterAppInspectionEngine(uint8_t ipproto,
                                              uint16_t dir,
                                              int32_t sm_list,
                                              uint32_t inspect_flags,
-                                             uint32_t match_flags,
                                              int (*Callback)(ThreadVars *tv,
                                                              DetectEngineCtx *de_ctx,
                                                              DetectEngineThreadCtx *det_ctx,
@@ -438,7 +417,6 @@ void DetectEngineRegisterAppInspectionEngine(uint8_t ipproto,
     new_engine->dir = dir;
     new_engine->sm_list = sm_list;
     new_engine->inspect_flags = inspect_flags;
-    new_engine->match_flags = match_flags;
     new_engine->Callback = Callback;
 
     AppendAppInspectionEngine(new_engine, list);
@@ -812,8 +790,8 @@ static DetectEngineCtx *DetectEngineCtxInitReal(int minimal, const char *prefix)
     SCProfilingKeywordInitCounters(de_ctx);
 #endif
 
-    SCClassConfLoadClassficationConfigFile(de_ctx);
-    SCRConfLoadReferenceConfigFile(de_ctx);
+    SCClassConfLoadClassficationConfigFile(de_ctx, NULL);
+    SCRConfLoadReferenceConfigFile(de_ctx, NULL);
 
     if (ActionInitConfig() < 0) {
         goto error;
@@ -1338,17 +1316,12 @@ TmEcode DetectEngineThreadCtxInit(ThreadVars *tv, void *initdata, void **data)
 {
     /* first register the counter. In delayed detect mode we exit right after if the
      * rules haven't been loaded yet. */
-    uint16_t counter_alerts = SCPerfTVRegisterCounter("detect.alert", tv,
-                                                      SC_PERF_TYPE_UINT64, "NULL");
+    uint16_t counter_alerts = StatsRegisterCounter("detect.alert", tv);
 #ifdef PROFILING
-    uint16_t counter_mpm_list = SCPerfTVRegisterAvgCounter("detect.mpm_list", tv,
-                                                      SC_PERF_TYPE_UINT64, "NULL");
-    uint16_t counter_nonmpm_list = SCPerfTVRegisterAvgCounter("detect.nonmpm_list", tv,
-                                                      SC_PERF_TYPE_UINT64, "NULL");
-    uint16_t counter_fnonmpm_list = SCPerfTVRegisterAvgCounter("detect.fnonmpm_list", tv,
-                                                      SC_PERF_TYPE_UINT64, "NULL");
-    uint16_t counter_match_list = SCPerfTVRegisterAvgCounter("detect.match_list", tv,
-                                                      SC_PERF_TYPE_UINT64, "NULL");
+    uint16_t counter_mpm_list = StatsRegisterAvgCounter("detect.mpm_list", tv);
+    uint16_t counter_nonmpm_list = StatsRegisterAvgCounter("detect.nonmpm_list", tv);
+    uint16_t counter_fnonmpm_list = StatsRegisterAvgCounter("detect.fnonmpm_list", tv);
+    uint16_t counter_match_list = StatsRegisterAvgCounter("detect.match_list", tv);
 #endif
     DetectEngineThreadCtx *det_ctx = SCMalloc(sizeof(DetectEngineThreadCtx));
     if (unlikely(det_ctx == NULL))
@@ -1422,17 +1395,12 @@ static DetectEngineThreadCtx *DetectEngineThreadCtxInitForReload(
     }
 
     /** alert counter setup */
-    det_ctx->counter_alerts = SCPerfTVRegisterCounter("detect.alert", tv,
-                                                      SC_PERF_TYPE_UINT64, "NULL");
+    det_ctx->counter_alerts = StatsRegisterCounter("detect.alert", tv);
 #ifdef PROFILING
-    uint16_t counter_mpm_list = SCPerfTVRegisterAvgCounter("detect.mpm_list", tv,
-                                                      SC_PERF_TYPE_UINT64, "NULL");
-    uint16_t counter_nonmpm_list = SCPerfTVRegisterAvgCounter("detect.nonmpm_list", tv,
-                                                      SC_PERF_TYPE_UINT64, "NULL");
-    uint16_t counter_fnonmpm_list = SCPerfTVRegisterAvgCounter("detect.fnonmpm_list", tv,
-                                                      SC_PERF_TYPE_UINT64, "NULL");
-    uint16_t counter_match_list = SCPerfTVRegisterAvgCounter("detect.match_list", tv,
-                                                      SC_PERF_TYPE_UINT64, "NULL");
+    uint16_t counter_mpm_list = StatsRegisterAvgCounter("detect.mpm_list", tv);
+    uint16_t counter_nonmpm_list = StatsRegisterAvgCounter("detect.nonmpm_list", tv);
+    uint16_t counter_fnonmpm_list = StatsRegisterAvgCounter("detect.fnonmpm_list", tv);
+    uint16_t counter_match_list = StatsRegisterAvgCounter("detect.match_list", tv);
     det_ctx->counter_mpm_list = counter_mpm_list;
     det_ctx->counter_nonmpm_list = counter_nonmpm_list;
     det_ctx->counter_fnonmpm_list = counter_fnonmpm_list;
@@ -1498,8 +1466,9 @@ TmEcode DetectEngineThreadCtxDeinit(ThreadVars *tv, void *data)
     if (det_ctx->hsbd != NULL) {
         SCLogDebug("det_ctx hsbd %u", det_ctx->hsbd_buffers_size);
         for (i = 0; i < det_ctx->hsbd_buffers_size; i++) {
-            if (det_ctx->hsbd[i].buffer != NULL)
-                SCFree(det_ctx->hsbd[i].buffer);
+            if (det_ctx->hsbd[i].buffer != NULL) {
+                HTPFree(det_ctx->hsbd[i].buffer, det_ctx->hsbd[i].buffer_size);
+            }
         }
         SCFree(det_ctx->hsbd);
     }
@@ -1855,7 +1824,7 @@ const char *DetectSigmatchListEnumToString(enum DetectSigmatchListEnum type)
             return "http raw uri";
         case DETECT_SM_LIST_HCBDMATCH:
             return "http client body";
-        case DETECT_SM_LIST_HSBDMATCH:
+        case DETECT_SM_LIST_FILEDATA:
             return "http server body";
         case DETECT_SM_LIST_HHDMATCH:
             return "http headers";
@@ -2121,7 +2090,6 @@ int DetectEngineTest05(void)
                                             0 /* STREAM_TOSERVER */,
                                             DETECT_SM_LIST_UMATCH,
                                             DE_STATE_FLAG_URI_INSPECT,
-                                            DE_STATE_FLAG_URI_INSPECT,
                                             DummyTestAppInspectionEngine01,
                                             engine_list);
 
@@ -2142,7 +2110,6 @@ int DetectEngineTest05(void)
                     engine->dir != dir ||
                     engine->sm_list != DETECT_SM_LIST_UMATCH ||
                     engine->inspect_flags != DE_STATE_FLAG_URI_INSPECT ||
-                    engine->match_flags != DE_STATE_FLAG_URI_INSPECT ||
                     engine->Callback != DummyTestAppInspectionEngine01) {
                     printf("failed for http and dir(0-toserver)\n");
                     goto end;
@@ -2184,14 +2151,12 @@ int DetectEngineTest06(void)
                                             0 /* STREAM_TOSERVER */,
                                             DETECT_SM_LIST_UMATCH,
                                             DE_STATE_FLAG_URI_INSPECT,
-                                            DE_STATE_FLAG_URI_INSPECT,
                                             DummyTestAppInspectionEngine01,
                                             engine_list);
     DetectEngineRegisterAppInspectionEngine(IPPROTO_TCP,
                                             ALPROTO_HTTP,
                                             1 /* STREAM_TOCLIENT */,
                                             DETECT_SM_LIST_UMATCH,
-                                            DE_STATE_FLAG_URI_INSPECT,
                                             DE_STATE_FLAG_URI_INSPECT,
                                             DummyTestAppInspectionEngine02,
                                             engine_list);
@@ -2213,7 +2178,6 @@ int DetectEngineTest06(void)
                     engine->dir != dir ||
                     engine->sm_list != DETECT_SM_LIST_UMATCH ||
                     engine->inspect_flags != DE_STATE_FLAG_URI_INSPECT ||
-                    engine->match_flags != DE_STATE_FLAG_URI_INSPECT ||
                     engine->Callback != DummyTestAppInspectionEngine01) {
                     printf("failed for http and dir(0-toserver)\n");
                     goto end;
@@ -2232,7 +2196,6 @@ int DetectEngineTest06(void)
                     engine->dir != dir ||
                     engine->sm_list != DETECT_SM_LIST_UMATCH ||
                     engine->inspect_flags != DE_STATE_FLAG_URI_INSPECT ||
-                    engine->match_flags != DE_STATE_FLAG_URI_INSPECT ||
                     engine->Callback != DummyTestAppInspectionEngine02) {
                     printf("failed for http and dir(0-toclient)\n");
                     goto end;
@@ -2265,7 +2228,6 @@ int DetectEngineTest07(void)
     struct test_data_t {
         int32_t sm_list;
         uint32_t inspect_flags;
-        uint32_t match_flags;
         uint16_t dir;
         int (*Callback)(ThreadVars *tv,
                         DetectEngineCtx *de_ctx,
@@ -2279,66 +2241,53 @@ int DetectEngineTest07(void)
     struct test_data_t data[] = {
         { DETECT_SM_LIST_UMATCH,
           DE_STATE_FLAG_URI_INSPECT,
-          DE_STATE_FLAG_URI_INSPECT,
           0,
           DummyTestAppInspectionEngine01 },
         { DETECT_SM_LIST_HCBDMATCH,
           DE_STATE_FLAG_HCBD_INSPECT,
-          DE_STATE_FLAG_HCBD_INSPECT,
           0,
           DummyTestAppInspectionEngine02 },
-        { DETECT_SM_LIST_HSBDMATCH,
-          DE_STATE_FLAG_HSBD_INSPECT,
+        { DETECT_SM_LIST_FILEDATA,
           DE_STATE_FLAG_HSBD_INSPECT,
           1,
           DummyTestAppInspectionEngine02 },
         { DETECT_SM_LIST_HHDMATCH,
           DE_STATE_FLAG_HHD_INSPECT,
-          DE_STATE_FLAG_HHD_INSPECT,
           0,
           DummyTestAppInspectionEngine01 },
         { DETECT_SM_LIST_HRHDMATCH,
-          DE_STATE_FLAG_HRHD_INSPECT,
           DE_STATE_FLAG_HRHD_INSPECT,
           0,
           DummyTestAppInspectionEngine01 },
         { DETECT_SM_LIST_HMDMATCH,
           DE_STATE_FLAG_HMD_INSPECT,
-          DE_STATE_FLAG_HMD_INSPECT,
           0,
           DummyTestAppInspectionEngine02 },
         { DETECT_SM_LIST_HCDMATCH,
-          DE_STATE_FLAG_HCD_INSPECT,
           DE_STATE_FLAG_HCD_INSPECT,
           0,
           DummyTestAppInspectionEngine01 },
         { DETECT_SM_LIST_HRUDMATCH,
           DE_STATE_FLAG_HRUD_INSPECT,
-          DE_STATE_FLAG_HRUD_INSPECT,
           0,
           DummyTestAppInspectionEngine01 },
         { DETECT_SM_LIST_FILEMATCH,
           DE_STATE_FLAG_FILE_TS_INSPECT,
-          DE_STATE_FLAG_FILE_TS_INSPECT,
           0,
           DummyTestAppInspectionEngine02 },
         { DETECT_SM_LIST_FILEMATCH,
-          DE_STATE_FLAG_FILE_TC_INSPECT,
           DE_STATE_FLAG_FILE_TC_INSPECT,
           1,
           DummyTestAppInspectionEngine02 },
         { DETECT_SM_LIST_HSMDMATCH,
           DE_STATE_FLAG_HSMD_INSPECT,
-          DE_STATE_FLAG_HSMD_INSPECT,
           0,
           DummyTestAppInspectionEngine01 },
         { DETECT_SM_LIST_HSCDMATCH,
           DE_STATE_FLAG_HSCD_INSPECT,
-          DE_STATE_FLAG_HSCD_INSPECT,
           0,
           DummyTestAppInspectionEngine01 },
         { DETECT_SM_LIST_HUADMATCH,
-          DE_STATE_FLAG_HUAD_INSPECT,
           DE_STATE_FLAG_HUAD_INSPECT,
           0,
           DummyTestAppInspectionEngine02 },
@@ -2351,7 +2300,6 @@ int DetectEngineTest07(void)
                                                 data[i].dir /* STREAM_TOCLIENT */,
                                                 data[i].sm_list,
                                                 data[i].inspect_flags,
-                                                data[i].match_flags,
                                                 data[i].Callback,
                                                 engine_list);
     }
@@ -2377,7 +2325,6 @@ int DetectEngineTest07(void)
                         engine->dir != data[i].dir ||
                         engine->sm_list != data[i].sm_list ||
                         engine->inspect_flags != data[i].inspect_flags ||
-                        engine->match_flags != data[i].match_flags ||
                         engine->Callback != data[i].Callback) {
                         printf("failed for http\n");
                         goto end;

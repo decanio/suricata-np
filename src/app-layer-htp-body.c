@@ -195,11 +195,13 @@ void HtpBodyFree(HtpBody *body)
 /**
  * \brief Free request body chunks that are already fully parsed.
  *
- * \param htud pointer to the HtpTxUserData holding the body
+ * \param state htp_state, with reference to our config
+ * \param body the body to prune
+ * \param direction STREAM_TOSERVER (request), STREAM_TOCLIENT (response)
  *
  * \retval none
  */
-void HtpBodyPrune(HtpBody *body)
+void HtpBodyPrune(HtpState *state, HtpBody *body, int direction)
 {
     SCEnter();
 
@@ -208,6 +210,19 @@ void HtpBodyPrune(HtpBody *body)
     }
 
     if (body->body_parsed == 0) {
+        SCReturn;
+    }
+
+    /* get the configured inspect sizes. Default to response values */
+    uint32_t min_size = state->cfg->response_inspect_min_size;
+    uint32_t window = state->cfg->response_inspect_window;
+
+    if (direction == STREAM_TOSERVER) {
+        min_size = state->cfg->request_inspect_min_size;
+        window = state->cfg->request_inspect_window;
+    }
+
+    if (body->body_inspected < (min_size > window) ? min_size : window) {
         SCReturn;
     }
 
@@ -222,7 +237,13 @@ void HtpBodyPrune(HtpBody *body)
                 "body->body_parsed %"PRIu64, cur->stream_offset, cur->len,
                 cur->stream_offset + cur->len, body->body_parsed);
 
-        if (cur->stream_offset >= body->body_inspected) {
+        uint64_t left_edge = body->body_inspected;
+        if (left_edge <= min_size || left_edge <= window)
+            left_edge = 0;
+        if (left_edge)
+            left_edge -= window;
+
+        if (cur->stream_offset + cur->len > left_edge) {
             break;
         }
 

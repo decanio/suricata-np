@@ -27,6 +27,7 @@
 #include "suricata.h"
 #include "detect.h"
 #include "detect-parse.h"
+#include "detect-engine.h"
 #include "detect-engine-analyzer.h"
 #include "detect-engine-mpm.h"
 #include "conf.h"
@@ -41,6 +42,34 @@ static FILE *fp_engine_analysis_FD = NULL;
 static pcre *percent_re = NULL;
 static pcre_extra *percent_re_study = NULL;
 static char log_path[PATH_MAX];
+
+typedef struct FpPatternStats_ {
+    uint16_t min;
+    uint16_t max;
+    uint32_t cnt;
+    uint64_t tot;
+} FpPatternStats;
+
+static FpPatternStats fp_pattern_stats[DETECT_SM_LIST_MAX];
+
+static void FpPatternStatsAdd(int list, uint16_t patlen)
+{
+    if (list < 0 || list >= DETECT_SM_LIST_MAX)
+        return;
+
+    FpPatternStats *f = &fp_pattern_stats[list];
+
+    if (f->min == 0)
+        f->min = patlen;
+    else if (patlen < f->min)
+        f->min = patlen;
+
+    if (patlen > f->max)
+        f->max = patlen;
+
+    f->cnt++;
+    f->tot += patlen;
+}
 
 void EngineAnalysisFP(Signature *s, char *line)
 {
@@ -90,7 +119,7 @@ void EngineAnalysisFP(Signature *s, char *line)
         fprintf(fp_engine_analysis_FD, "http cookie content\n");
     else if (list_type == DETECT_SM_LIST_HCBDMATCH)
         fprintf(fp_engine_analysis_FD, "http client body content\n");
-    else if (list_type == DETECT_SM_LIST_HSBDMATCH)
+    else if (list_type == DETECT_SM_LIST_FILEDATA)
         fprintf(fp_engine_analysis_FD, "http server body content\n");
     else if (list_type == DETECT_SM_LIST_HSCDMATCH)
         fprintf(fp_engine_analysis_FD, "http stat code content\n");
@@ -162,10 +191,14 @@ void EngineAnalysisFP(Signature *s, char *line)
         fprintf(fp_engine_analysis_FD, "        Final content: ");
         PrintRawUriFp(fp_engine_analysis_FD, pat, patlen);
         fprintf(fp_engine_analysis_FD, "\n");
+
+        FpPatternStatsAdd(list_type, patlen);
     } else {
         fprintf(fp_engine_analysis_FD, "        Final content: ");
         PrintRawUriFp(fp_engine_analysis_FD, pat, patlen);
         fprintf(fp_engine_analysis_FD, "\n");
+
+        FpPatternStatsAdd(list_type, patlen);
     }
     SCFree(pat);
 
@@ -220,6 +253,7 @@ int SetupFPAnalyzer(void)
     fprintf(fp_engine_analysis_FD, "----------------------------------------------"
             "---------------------\n");
 
+    memset(&fp_pattern_stats, 0, sizeof(fp_pattern_stats));
     return 1;
 }
 
@@ -286,6 +320,19 @@ int SetupRuleAnalyzer(void)
 
 void CleanupFPAnalyzer(void)
 {
+    fprintf(fp_engine_analysis_FD, "============\n"
+        "Summary:\n============\n");
+    int i;
+    for (i = 0; i < DETECT_SM_LIST_MAX; i++) {
+        FpPatternStats *f = &fp_pattern_stats[i];
+        if (f->cnt == 0)
+            continue;
+
+        fprintf(fp_engine_analysis_FD,
+            "%s, smallest pattern %u byte(s), longest pattern %u byte(s), number of patterns %u, avg pattern len %.2f byte(s)\n",
+            DetectSigmatchListEnumToString(i), f->min, f->max, f->cnt, (float)((double)f->tot/(float)f->cnt));
+    }
+
     if (fp_engine_analysis_FD != NULL) {
         fclose(fp_engine_analysis_FD);
         fp_engine_analysis_FD = NULL;
@@ -421,7 +468,7 @@ static void EngineAnalysisRulesPrintFP(Signature *s)
         fprintf(rule_engine_analysis_FD, "http cookie content");
     else if (list_type == DETECT_SM_LIST_HCBDMATCH)
         fprintf(rule_engine_analysis_FD, "http client body content");
-    else if (list_type == DETECT_SM_LIST_HSBDMATCH)
+    else if (list_type == DETECT_SM_LIST_FILEDATA)
         fprintf(rule_engine_analysis_FD, "http server body content");
     else if (list_type == DETECT_SM_LIST_HSCDMATCH)
         fprintf(rule_engine_analysis_FD, "http stat code content");
@@ -553,7 +600,7 @@ void EngineAnalysisRules(Signature *s, char *line)
                     norm_http_buf += 1;
                     http_cookie_buf += 1;
                 }
-                else if (list_id == DETECT_SM_LIST_HSBDMATCH) {
+                else if (list_id == DETECT_SM_LIST_FILEDATA) {
                     rule_pcre_http += 1;
                     http_server_body_buf += 1;
                     raw_http_buf += 1;
@@ -619,7 +666,7 @@ void EngineAnalysisRules(Signature *s, char *line)
                     raw_http_buf += 1;
                     http_client_body_buf += 1;
                 }
-                else if (list_id == DETECT_SM_LIST_HSBDMATCH) {
+                else if (list_id == DETECT_SM_LIST_FILEDATA) {
                     rule_content_http += 1;
                     raw_http_buf += 1;
                     http_server_body_buf += 1;

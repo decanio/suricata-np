@@ -65,6 +65,7 @@ enum PktSrcEnum {
 
 #include "action-globals.h"
 
+#include "decode-erspan.h"
 #include "decode-ethernet.h"
 #include "decode-gre.h"
 #include "decode-ppp.h"
@@ -78,6 +79,7 @@ enum PktSrcEnum {
 #include "decode-udp.h"
 #include "decode-sctp.h"
 #include "decode-raw.h"
+#include "decode-null.h"
 #include "decode-vlan.h"
 #include "decode-mpls.h"
 
@@ -579,23 +581,26 @@ typedef struct DecodeThreadVars_
 
     int vlan_disabled;
 
-    /* thread data for flow logging api */
-    void *output_flow_thread_data;
-
     /** stats/counters */
     uint16_t counter_pkts;
     uint16_t counter_bytes;
+    uint16_t counter_avg_pkt_size;
+    uint16_t counter_max_pkt_size;
+
     uint16_t counter_invalid;
+
+    uint16_t counter_eth;
     uint16_t counter_ipv4;
     uint16_t counter_ipv6;
-    uint16_t counter_eth;
-    uint16_t counter_sll;
-    uint16_t counter_raw;
     uint16_t counter_tcp;
     uint16_t counter_udp;
-    uint16_t counter_sctp;
     uint16_t counter_icmpv4;
     uint16_t counter_icmpv6;
+
+    uint16_t counter_sll;
+    uint16_t counter_raw;
+    uint16_t counter_null;
+    uint16_t counter_sctp;
     uint16_t counter_ppp;
     uint16_t counter_gre;
     uint16_t counter_vlan;
@@ -605,8 +610,7 @@ typedef struct DecodeThreadVars_
     uint16_t counter_mpls;
     uint16_t counter_ipv4inipv6;
     uint16_t counter_ipv6inipv6;
-    uint16_t counter_avg_pkt_size;
-    uint16_t counter_max_pkt_size;
+    uint16_t counter_erspan;
 
     /** frag stats - defrag runs in the context of the decoder. */
     uint16_t counter_defrag_ipv4_fragments;
@@ -617,10 +621,26 @@ typedef struct DecodeThreadVars_
     uint16_t counter_defrag_ipv6_timeouts;
     uint16_t counter_defrag_max_hit;
 
+    /* thread data for flow logging api: only used at forced
+     * flow recycle during lookups */
+    void *output_flow_thread_data;
+
 #ifdef __SC_CUDA_SUPPORT__
     CudaThreadVars cuda_vars;
 #endif
 } DecodeThreadVars;
+
+typedef struct CaptureStats_ {
+
+    uint16_t counter_ips_accepted;
+    uint16_t counter_ips_blocked;
+    uint16_t counter_ips_rejected;
+    uint16_t counter_ips_replaced;
+
+} CaptureStats;
+
+void CaptureStatsUpdate(ThreadVars *tv, CaptureStats *s, const Packet *p);
+void CaptureStatsSetup(ThreadVars *tv, CaptureStats *s);
 
 /**
  *  \brief reset these to -1(indicates that the packet is fresh from the queue)
@@ -827,12 +847,20 @@ typedef struct DecodeThreadVars_
 #define IS_TUNNEL_PKT_VERDICTED(p)  (((p)->flags & PKT_TUNNEL_VERDICTED))
 #define SET_TUNNEL_PKT_VERDICTED(p) ((p)->flags |= PKT_TUNNEL_VERDICTED)
 
+enum DecodeTunnelProto {
+    DECODE_TUNNEL_ETHERNET,
+    DECODE_TUNNEL_ERSPAN,
+    DECODE_TUNNEL_VLAN,
+    DECODE_TUNNEL_IPV4,
+    DECODE_TUNNEL_IPV6,
+    DECODE_TUNNEL_PPP,
+};
 
-void DecodeRegisterPerfCounters(DecodeThreadVars *, ThreadVars *);
 Packet *PacketTunnelPktSetup(ThreadVars *tv, DecodeThreadVars *dtv, Packet *parent,
-                             uint8_t *pkt, uint16_t len, uint8_t proto, PacketQueue *pq);
+                             uint8_t *pkt, uint16_t len, enum DecodeTunnelProto proto, PacketQueue *pq);
 Packet *PacketDefragPktSetup(Packet *parent, uint8_t *pkt, uint16_t len, uint8_t proto);
 void PacketDefragPktSetupParent(Packet *parent);
+void DecodeRegisterPerfCounters(DecodeThreadVars *, ThreadVars *);
 Packet *PacketGetFromQueueOrAlloc(void);
 Packet *PacketGetFromAlloc(void);
 void PacketDecodeFinalize(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p);
@@ -846,6 +874,8 @@ const char *PktSrcToString(enum PktSrcEnum pkt_src);
 
 DecodeThreadVars *DecodeThreadVarsAlloc(ThreadVars *);
 void DecodeThreadVarsFree(ThreadVars *, DecodeThreadVars *);
+void DecodeUpdatePacketCounters(ThreadVars *tv,
+                                const DecodeThreadVars *dtv, const Packet *p);
 
 /* decoder functions */
 int DecodeEthernet(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, PacketQueue *);
@@ -853,7 +883,8 @@ int DecodeSll(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, P
 int DecodePPP(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, PacketQueue *);
 int DecodePPPOESession(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, PacketQueue *);
 int DecodePPPOEDiscovery(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, PacketQueue *);
-int DecodeTunnel(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, PacketQueue *, uint8_t) __attribute__ ((warn_unused_result));
+int DecodeTunnel(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, PacketQueue *, enum DecodeTunnelProto) __attribute__ ((warn_unused_result));
+int DecodeNull(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, PacketQueue *);
 int DecodeRaw(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, PacketQueue *);
 int DecodeIPV4(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, PacketQueue *);
 int DecodeIPV6(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, PacketQueue *);
@@ -865,6 +896,7 @@ int DecodeSCTP(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, 
 int DecodeGRE(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, PacketQueue *);
 int DecodeVLAN(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, PacketQueue *);
 int DecodeMPLS(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, PacketQueue *);
+int DecodeERSPAN(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t, PacketQueue *);
 
 void AddressDebugPrint(Address *);
 
@@ -962,8 +994,13 @@ void AddressDebugPrint(Address *);
 #endif
 #endif
 
+#ifndef DLT_NULL
+#define DLT_NULL 0
+#endif
+
 /** libpcap shows us the way to linktype codes
  * \todo we need more & maybe put them in a separate file? */
+#define LINKTYPE_NULL       DLT_NULL
 #define LINKTYPE_ETHERNET   DLT_EN10MB
 #define LINKTYPE_LINUX_SLL  113
 #define LINKTYPE_PPP        9

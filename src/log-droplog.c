@@ -384,14 +384,11 @@ int LogDropLogTest01()
 
     de_ctx->flags |= DE_QUIET;
 
-    SCClassConfGenerateValidDummyClassConfigFD01();
-    SCClassConfLoadClassficationConfigFile(de_ctx);
-    SCClassConfDeleteDummyClassificationConfigFD();
+    FILE *fd = SCClassConfGenerateValidDummyClassConfigFD01();
+    SCClassConfLoadClassficationConfigFile(de_ctx, fd);
 
     de_ctx->sig_list = SigInit(de_ctx, "drop tcp any any -> any any "
             "(msg:\"LogDropLog test\"; content:\"GET\"; Classtype:unknown; sid:1;)");
-
-    result = (de_ctx->sig_list != NULL);
 
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
@@ -399,8 +396,6 @@ int LogDropLogTest01()
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
     if (p->alerts.cnt == 1 && (PACKET_TEST_ACTION(p, ACTION_DROP)))
         result = (strcmp(p->alerts.alerts[0].s->class_msg, "Unknown are we") == 0);
-    else
-        result = 0;
 
     if (LogDropCondition(NULL, p) == TRUE)
         LogDropLogger(NULL, &dlt, p);
@@ -453,14 +448,11 @@ int LogDropLogTest02()
 
     de_ctx->flags |= DE_QUIET;
 
-    SCClassConfGenerateValidDummyClassConfigFD01();
-    SCClassConfLoadClassficationConfigFile(de_ctx);
-    SCClassConfDeleteDummyClassificationConfigFD();
+    FILE *fd = SCClassConfGenerateValidDummyClassConfigFD01();
+    SCClassConfLoadClassficationConfigFile(de_ctx, fd);
 
     de_ctx->sig_list = SigInit(de_ctx, "alert udp any any -> any any "
             "(msg:\"LogDropLog test\"; content:\"GET\"; Classtype:unknown; sid:1;)");
-
-    result = (de_ctx->sig_list != NULL);
 
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
@@ -468,8 +460,6 @@ int LogDropLogTest02()
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
     if (p->alerts.cnt == 1 && p->alerts.alerts[0].action != ACTION_DROP)
         result = (strcmp(p->alerts.alerts[0].s->class_msg, "Unknown are we") == 0);
-    else
-        result = 0;
 
     if (LogDropCondition(NULL, p) == TRUE)
         LogDropLogger(NULL, &dlt, p);

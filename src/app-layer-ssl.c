@@ -897,6 +897,9 @@ static int SSLv3Decode(uint8_t direction, SSLState *ssl_state,
                 if (ssl_state->curr_connp->bytes_processed == ssl_state->curr_connp->record_length + SSLV3_RECORD_HDR_LEN) {
                     SSLParserReset(ssl_state);
                 }
+
+                SCLogDebug("trigger RAW! (post HS)");
+                AppLayerParserTriggerRawStreamReassembly(ssl_state->f);
                 return parsed;
             }
 
@@ -920,6 +923,10 @@ static int SSLv3Decode(uint8_t direction, SSLState *ssl_state,
             AppLayerDecoderEventsSetEvent(ssl_state->f, TLS_DECODER_EVENT_INVALID_SSL_RECORD);
             return -1;
         }
+
+        SCLogDebug("record complete, trigger RAW");
+        AppLayerParserTriggerRawStreamReassembly(ssl_state->f);
+
         /* looks like we have another record */
         uint32_t diff = ssl_state->curr_connp->record_length + SSLV3_RECORD_HDR_LEN - ssl_state->curr_connp->bytes_processed;
         parsed += diff;
@@ -966,6 +973,12 @@ static int SSLDecode(Flow *f, uint8_t direction, void *alstate, AppLayerParserSt
     int32_t input_len = (int32_t)ilen;
 
     ssl_state->f = f;
+
+    if (input == NULL && AppLayerParserStateIssetFlag(pstate, APP_LAYER_PARSER_EOF)) {
+        SCReturnInt(1);
+    } else if (input == NULL || input_len == 0) {
+        SCReturnInt(-1);
+    }
 
     if (direction == 0)
         ssl_state->curr_connp = &ssl_state->client_connp;

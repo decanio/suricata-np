@@ -749,7 +749,7 @@ static int DetectLuaSetupPrime(DetectEngineCtx *de_ctx, DetectLuaData *ld)
 
     lua_State *luastate = luaL_newstate();
     if (luastate == NULL)
-        goto error;
+        return -1;
     luaL_openlibs(luastate);
 
     /* hackish, needed to allow unittests to pass buffers as scripts instead of files */
@@ -831,7 +831,7 @@ static int DetectLuaSetupPrime(DetectEngineCtx *de_ctx, DetectLuaData *ld)
                         goto error;
                     }
 
-                    uint16_t idx = VariableNameGetIdx(de_ctx, (char *)value, DETECT_FLOWVAR);
+                    uint16_t idx = VariableNameGetIdx(de_ctx, (char *)value, VAR_TYPE_FLOW_VAR);
                     ld->flowvar[ld->flowvars++] = idx;
                     SCLogDebug("script uses flowvar %u with script id %u", idx, ld->flowvars - 1);
                 }
@@ -853,7 +853,7 @@ static int DetectLuaSetupPrime(DetectEngineCtx *de_ctx, DetectLuaData *ld)
                         goto error;
                     }
 
-                    uint16_t idx = VariableNameGetIdx(de_ctx, (char *)value, DETECT_FLOWINT);
+                    uint16_t idx = VariableNameGetIdx(de_ctx, (char *)value, VAR_TYPE_FLOW_INT);
                     ld->flowint[ld->flowints++] = idx;
                     SCLogDebug("script uses flowint %u with script id %u", idx, ld->flowints - 1);
                 }
@@ -1024,7 +1024,7 @@ static int DetectLuaSetup (DetectEngineCtx *de_ctx, Signature *s, char *str)
             SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_MATCH);
     } else if (luajit->alproto == ALPROTO_HTTP) {
         if (luajit->flags & DATATYPE_HTTP_RESPONSE_BODY)
-            SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_HSBDMATCH);
+            SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_FILEDATA);
         else if (luajit->flags & DATATYPE_HTTP_REQUEST_BODY)
             SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_HCBDMATCH);
         else if (luajit->flags & DATATYPE_HTTP_URI)

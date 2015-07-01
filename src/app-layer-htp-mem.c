@@ -78,14 +78,18 @@ void HTPDecrMemuse(uint64_t size)
     return;
 }
 
-void HTPMemuseCounter(ThreadVars *tv,  TcpReassemblyThreadCtx *trt)
+uint64_t HTPMemuseGlobalCounter(void)
 {
     uint64_t tmpval = SC_ATOMIC_GET(htp_memuse);
-    SCPerfCounterSetUI64(trt->counter_htp_memuse, tv->sc_perf_pca, tmpval);
-    tmpval = SC_ATOMIC_GET(htp_memcap);
-    SCPerfCounterSetUI64(trt->counter_htp_memcap, tv->sc_perf_pca, tmpval);
-    return;
+    return tmpval;
 }
+
+uint64_t HTPMemcapGlobalCounter(void)
+{
+    uint64_t tmpval = SC_ATOMIC_GET(htp_memcap);
+    return tmpval;
+}
+
 /**
  *  \brief Check if alloc'ing "size" would mean we're over memcap
  *

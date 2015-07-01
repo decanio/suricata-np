@@ -1172,6 +1172,10 @@ static int SMBParse(Flow *f, void *smb_state, AppLayerParserState *pstate,
         SCReturnInt(0);
     }
 
+    if (input == NULL && AppLayerParserStateIssetFlag(pstate, APP_LAYER_PARSER_EOF)) {
+        SCReturnInt(1);
+    }
+
     if (sstate->bytesprocessed != 0 && sstate->data_needed_for_dir != dir) {
         SCReturnInt(-1);
     }
@@ -1484,7 +1488,7 @@ static uint16_t SMBProbingParser(uint8_t *input, uint32_t ilen, uint32_t *offset
             case NBSS_RETARGET_SESSION_RESPONSE:
             case NBSS_SESSION_KEEP_ALIVE:
                 len = (input[1] & 0x01) << 16;
-                len = input[2] << 8;
+                len |= input[2] << 8;
                 len |= input[3];
                 break;
             default:
