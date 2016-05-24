@@ -169,6 +169,82 @@ void CreateJSONFlowId(json_t *js, const Flow *f)
     json_object_set_new(js, "flow_id", json_integer(f->flow_hash));
 }
 
+static void AddJSONTunnel(json_t *parent_js, const Packet *p, int direction_sensitive)
+{
+    char srcip[46], dstip[46];
+    Port sp, dp;
+    json_t *js = json_object();
+    if (unlikely(js == NULL))
+        return;
+
+    srcip[0] = '\0';
+    dstip[0] = '\0';
+    if (direction_sensitive) {
+        if ((PKT_IS_TOSERVER(p))) {
+            if (PKT_IS_IPV4(p)) {
+                PrintInet(AF_INET, (const void *)GET_IPV4_SRC_ADDR_PTR(p), srcip, sizeof(srcip));
+                PrintInet(AF_INET, (const void *)GET_IPV4_DST_ADDR_PTR(p), dstip, sizeof(dstip));
+            } else if (PKT_IS_IPV6(p)) {
+                PrintInet(AF_INET6, (const void *)GET_IPV6_SRC_ADDR(p), srcip, sizeof(srcip));
+                PrintInet(AF_INET6, (const void *)GET_IPV6_DST_ADDR(p), dstip, sizeof(dstip));
+            }
+            sp = p->sp;
+            dp = p->dp;
+        } else {
+            if (PKT_IS_IPV4(p)) {
+                PrintInet(AF_INET, (const void *)GET_IPV4_DST_ADDR_PTR(p), srcip, sizeof(srcip));
+                PrintInet(AF_INET, (const void *)GET_IPV4_SRC_ADDR_PTR(p), dstip, sizeof(dstip));
+            } else if (PKT_IS_IPV6(p)) {
+                PrintInet(AF_INET6, (const void *)GET_IPV6_DST_ADDR(p), srcip, sizeof(srcip));
+                PrintInet(AF_INET6, (const void *)GET_IPV6_SRC_ADDR(p), dstip, sizeof(dstip));
+            }
+            sp = p->dp;
+            dp = p->sp;
+        }
+    } else {
+        if (PKT_IS_IPV4(p)) {
+            PrintInet(AF_INET, (const void *)GET_IPV4_SRC_ADDR_PTR(p), srcip, sizeof(srcip));
+            PrintInet(AF_INET, (const void *)GET_IPV4_DST_ADDR_PTR(p), dstip, sizeof(dstip));
+        } else if (PKT_IS_IPV6(p)) {
+            PrintInet(AF_INET6, (const void *)GET_IPV6_SRC_ADDR(p), srcip, sizeof(srcip));
+            PrintInet(AF_INET6, (const void *)GET_IPV6_DST_ADDR(p), dstip, sizeof(dstip));
+        }
+        sp = p->sp;
+        dp = p->dp;
+    }
+
+    char proto[16];
+    if (SCProtoNameValid(IP_GET_IPPROTO(p)) == TRUE) {
+        strlcpy(proto, known_proto[IP_GET_IPPROTO(p)], sizeof(proto));
+    } else {
+        snprintf(proto, sizeof(proto), "%03" PRIu32, IP_GET_IPPROTO(p));
+    }
+
+    /* tuple */
+    json_object_set_new(js, "src_ip", json_string(srcip));
+    switch(p->proto) {
+        case IPPROTO_ICMP:
+            break;
+        case IPPROTO_UDP:
+        case IPPROTO_TCP:
+        case IPPROTO_SCTP:
+            json_object_set_new(js, "src_port", json_integer(sp));
+            break;
+    }
+    json_object_set_new(js, "dest_ip", json_string(dstip));
+    switch(p->proto) {
+        case IPPROTO_ICMP:
+            break;
+        case IPPROTO_UDP:
+        case IPPROTO_TCP:
+        case IPPROTO_SCTP:
+            json_object_set_new(js, "dest_port", json_integer(dp));
+            break;
+    }
+    json_object_set_new(js, "proto", json_string(proto));
+    json_object_set_new(parent_js, "tunnel", js);
+}
+
 json_t *CreateJSONHeader(const Packet *p, int direction_sensitive,
                          const char *event_type)
 {
@@ -270,6 +346,11 @@ json_t *CreateJSONHeader(const Packet *p, int direction_sensitive,
                 /* shouldn't get here */
                 break;
         }
+    }
+
+    /* tunnel */
+    if (p->root != NULL) {
+        AddJSONTunnel(js, p->root, direction_sensitive);
     }
 
     /* tuple */
