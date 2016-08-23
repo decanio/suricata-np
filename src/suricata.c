@@ -93,6 +93,7 @@
 #include "source-napatech.h"
 
 #include "source-af-packet.h"
+#include "source-dpdk-px.h"
 #include "source-netmap.h"
 #include "source-mpipe.h"
 
@@ -813,6 +814,9 @@ void RegisterAllModules()
     /* af-packet */
     TmModuleReceiveAFPRegister();
     TmModuleDecodeAFPRegister();
+    /* DPDK-PX */
+    TmModuleReceiveDPDKRegister();
+    TmModuleDecodeDPDKRegister();
     /* netmap */
     TmModuleReceiveNetmapRegister();
     TmModuleDecodeNetmapRegister();
@@ -918,6 +922,28 @@ static TmEcode ParseInterfacesList(int run_mode, char *pcap_dev)
                 SCLogInfo("AF_PACKET: Setting IPS mode");
                 EngineModeSetIPS();
             }
+        }
+#endif
+#ifdef HAVE_DPDK
+    } else if (run_mode == RUNMODE_DPDK) {
+        /* iface has been set on command line */
+        if (strlen(pcap_dev)) {
+            if (ConfSetFinal("dpdk.live-interface", pcap_dev) != 1) {
+                SCLogError(SC_ERR_INITIALIZATION, "Failed to set dpdk.live-interface");
+                SCReturnInt(TM_ECODE_FAILED);
+            }
+        } else {
+            int ret = LiveBuildDeviceList("dpdk");
+            if (ret == 0) {
+                SCLogError(SC_ERR_INITIALIZATION, "No interface found in config for netmap");
+                SCReturnInt(TM_ECODE_FAILED);
+            }
+#if 0
+            if (NetmapRunModeIsIPS()) {
+                SCLogInfo("Netmap: Setting IPS mode");
+                EngineModeSetIPS();
+            }
+#endif
         }
 #endif
 #ifdef HAVE_NETMAP

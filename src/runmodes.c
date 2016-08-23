@@ -140,6 +140,12 @@ static const char *RunModeTranslateModeToName(int runmode)
             return "MPIPE";
         case RUNMODE_AFP_DEV:
             return "AF_PACKET_DEV";
+        case RUNMODE_DPDK:
+#ifdef HAVE_DPDK
+            return "DPDK";
+#else
+            return "DPDK(DISABLED)";
+#endif
         case RUNMODE_NETMAP:
 #ifdef HAVE_NETMAP
             return "NETMAP";
@@ -217,6 +223,7 @@ void RunModeRegisterRunModes(void)
     RunModeErfDagRegister();
     RunModeNapatechRegister();
     RunModeIdsAFPRegister();
+    RunModeIdsDPDKRegister();
     RunModeIdsNetmapRegister();
     RunModeIdsNflogRegister();
     RunModeTileMpipeRegister();
