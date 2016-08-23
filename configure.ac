@@ -1207,6 +1207,23 @@
             [[#include <linux/net_tstamp.h>]])
     ])
 
+  # DPDK support
+    AC_ARG_ENABLE(dpdk,
+            AS_HELP_STRING([--enable-dpdk], [Enable DPDK support]),,[enable_dpdk=no])
+    AC_ARG_WITH(dpdk_includes,
+            [  --with-dpdk-includes=DIR dpdk include directory],
+            [with_dpdk_includes="$withval"],[with_dpdk_includes=no])
+
+    AS_IF([test "x$enable_dpdk" = "xyes"], [
+        AC_DEFINE([HAVE_DPDK],[1],(DPDK support enabled))
+
+        if test "$with_dpdk_includes" != "no"; then
+            CPPFLAGS="${CPPFLAGS} -I${with_dpdk_includes}"
+        fi
+
+        AC_CHECK_HEADER(rte_common.h,,[AC_ERROR(rte_common.h not found ...)],)
+  ])
+
   # Netmap support
     AC_ARG_ENABLE(netmap,
             AS_HELP_STRING([--enable-netmap], [Enable Netmap support]),,[enable_netmap=no])
@@ -1979,6 +1996,7 @@ SURICATA_BUILD_CONF="Suricata Configuration:
   NFQueue support:                         ${enable_nfqueue}
   NFLOG support:                           ${enable_nflog}
   IPFW support:                            ${enable_ipfw}
+  DPDK support:                            ${enable_dpdk}
   Netmap support:                          ${enable_netmap}
   DAG enabled:                             ${enable_dag}
   Napatech enabled:                        ${enable_napatech}

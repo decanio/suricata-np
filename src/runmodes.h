@@ -35,6 +35,7 @@ enum RunModes {
     RUNMODE_ERF_FILE,
     RUNMODE_DAG,
     RUNMODE_AFP_DEV,
+    RUNMODE_DPDK,
     RUNMODE_NETMAP,
     RUNMODE_TILERA_MPIPE,
     RUNMODE_UNITTEST,
@@ -101,6 +102,7 @@ int RunModeOutputFiledataEnabled(void);
 #include "runmode-af-packet.h"
 #include "runmode-nflog.h"
 #include "runmode-unix-socket.h"
+#include "runmode-dpdk-px.h"
 #include "runmode-netmap.h"
 
 int threading_set_cpu_affinity;
