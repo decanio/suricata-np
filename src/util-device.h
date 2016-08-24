@@ -55,6 +55,9 @@ const char *LiveGetDeviceName(int number);
 LiveDevice *LiveGetDevice(const char *dev);
 const char *LiveGetShortName(const char *dev);
 int LiveBuildDeviceList(const char *base);
+#ifdef HAVE_DPDK
+int LiveBuildDeviceListDPDK(const char *base, const char *itemname);
+#endif
 void LiveDeviceHasNoStats(void);
 int LiveDeviceListClean(void);
 int LiveBuildDeviceListCustom(const char *base, const char *itemname);

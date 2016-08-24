@@ -50,11 +50,11 @@
 #include "util-checksum.h"
 #include "util-ioctl.h"
 #include "util-host-info.h"
+#include "util-print.h"
 #include "tmqh-packetpool.h"
 #include "source-dpdk-px.h"
 #include "runmodes.h"
 
-#if 0
 #ifdef __SC_CUDA_SUPPORT__
 
 #include "util-cuda.h"
@@ -66,10 +66,33 @@
 #include "util-cuda-vars.h"
 
 #endif /* __SC_CUDA_SUPPORT__ */
-#endif
 
 #ifdef HAVE_DPDK
+#include <rte_config.h>
+#include <rte_common.h>
+#include <rte_malloc.h>
+#include <rte_memory.h>
+#include <rte_memzone.h>
+#include <rte_eal.h>
+#include <rte_atomic.h>
+#include <rte_branch_prediction.h>
+#include <rte_log.h>
+#include <rte_per_lcore.h>
+#include <rte_launch.h>
+#include <rte_lcore.h>
+#include <rte_ring.h>
+#include <rte_launch.h>
+#include <rte_lcore.h>
+#include <rte_debug.h>
+#include <rte_mempool.h>
+#include <rte_mbuf.h>
+#include <rte_interrupts.h>
+#include <rte_pci.h>
+#include <rte_ether.h>
+#include <rte_ethdev.h>
+#include <rte_string_fns.h>
 
+/*
 #if HAVE_SYS_IOCTL_H
 #include <sys/ioctl.h>
 #endif
@@ -77,10 +100,13 @@
 #if HAVE_SYS_MMAN_H
 #include <sys/mman.h>
 #endif
+*/
 
 #endif /* HAVE_DPDK */
 
 #include "util-ioctl.h"
+
+#define PRINT
 
 extern intmax_t max_pending_packets;
 
@@ -153,6 +179,7 @@ enum {
     DPDK_FLAG_ZERO_COPY = 1,
 };
 
+#if 0
 /**
  * \brief DPDK ring isntance.
  */
@@ -166,12 +193,21 @@ typedef struct DPDKRing
     int dst_next_ring;
     SCSpinlock tx_lock;
 } DPDKRing;
+#endif
 
+/* TBD: need to move these */
+#define MP_CLIENT_RTN_NAME "MProc_Client_%u_RTN"
+#define PKTMBUF_POOL_NAME "MProc_pktmbuf_pool"
 /**
  * \brief DPDK device instance.
  */
 typedef struct DPDKDevice_
 {
+    //char ringname[IFNAMSIZ];
+    //const struct rte_memzone *mz;
+    struct rte_ring *rx_ring;
+    struct rte_ring *rtn_ring;
+    struct rte_mempool *mp;
 #if 0
     char ifname[IFNAMSIZ];
     void *mem;
@@ -195,8 +231,10 @@ typedef struct DPDKThreadVars_
 {
     /* receive inteface */
     DPDKDevice *ifsrc;
+#if 0
     /* dst interface for IPS mode */
     DPDKDevice *ifdst;
+#endif
 
     int src_ring_from;
     int src_ring_to;
@@ -225,8 +263,10 @@ typedef struct DPDKThreadVars_
 
 typedef TAILQ_HEAD(DPDKDeviceList_, DPDKDevice_) DPDKDeviceList;
 
+#if 0
 static DPDKDeviceList netmap_devlist = TAILQ_HEAD_INITIALIZER(netmap_devlist);
 static SCMutex netmap_devlist_lock = SCMUTEX_INITIALIZER;
+#endif
 
 #if 0
 /** \brief get RSS RX-queue count
@@ -525,6 +565,31 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
         goto error_ntv;
     }
 
+    ntv->ifsrc = SCMalloc(sizeof(*ntv->ifsrc));
+    if (unlikely(ntv->ifsrc == NULL)) {
+        SCLogError(SC_ERR_MEM_ALLOC, "Memory allocation failed");
+        goto error_ntv;
+    }
+    memset(ntv->ifsrc, 0, sizeof(*ntv->ifsrc));
+    ntv->ifsrc->rx_ring = rte_ring_lookup(ntv->livedev->dev);
+    if (ntv->ifsrc->rx_ring == NULL) {
+        SCLogError(SC_ERR_INVALID_VALUE, "Unable to find DPDK ring");
+        goto error_src;
+    }
+
+    ntv->ifsrc->mp = rte_mempool_lookup(PKTMBUF_POOL_NAME);
+    if (ntv->ifsrc->mp == NULL) {
+        SCLogError(SC_ERR_INVALID_VALUE, "Cannon get DPDK mempool for mbufs");
+        goto error_src;
+    }
+
+#if 0
+    ntv->ifsrc->mz = rte_memzone_lookup(MZ_PORT_INFO);
+    if (ntv->ifsrc->mz == NULL) {
+        SCLogError(SC_ERR_INVALID_VALUE, "Cannon get DPDK mempool for mbufs");
+        goto error_ntv;
+    }
+#endif
 #if 0
     if (DPDKOpen(aconf->in.iface, aconf->in.promisc, &ntv->ifsrc, 1) != 0) {
         goto error_ntv;
@@ -571,7 +636,7 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
         }
     }
 #endif
-    SCLogDebug("netmap: %s thread:%d rings:%d-%d", aconf->iface_name,
+    SCLogDebug("DPDK: %s thread:%d rings:%d-%d", aconf->iface_name,
                ntv->thread_idx, ntv->src_ring_from, ntv->src_ring_to);
 
 #if 0
@@ -618,6 +683,7 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
             ntv->tv);
 
     /* enable zero-copy mode for workers runmode */
+    ntv->flags |= DPDK_FLAG_ZERO_COPY;
 #if 0
     char const *active_runmode = RunmodeGetActive();
     if ((aconf->in.copy_mode != DPDK_COPY_MODE_NONE) && active_runmode &&
@@ -656,8 +722,8 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
     aconf->DerefFunc(aconf);
     SCReturnInt(TM_ECODE_OK);
 
-error_dst:
 #if 0
+error_dst:
     if (aconf->in.copy_mode != DPDK_COPY_MODE_NONE) {
         DPDKClose(ntv->ifdst);
     }
@@ -666,6 +732,8 @@ error_src:
 #if 0
     DPDKClose(ntv->ifsrc);
 #endif
+    if (ntv->ifsrc)
+        SCFree(ntv->ifsrc);
 error_ntv:
     SCFree(ntv);
 error:
@@ -730,24 +798,29 @@ static TmEcode DPDKWritePacket(DPDKThreadVars *ntv, Packet *p)
 
     return TM_ECODE_OK;
 }
-
+#endif
 /**
  * \brief Packet release routine.
  * \param p Packet.
  */
 static void DPDKReleasePacket(Packet *p)
 {
-    DPDKThreadVars *ntv = (DPDKThreadVars *)p->netmap_v.ntv;
+    //DPDKThreadVars *ntv = (DPDKThreadVars *)p->netmap_v.ntv;
 
     /* Need to be in copy mode and need to detect early release
        where Ethernet header could not be set (and pseudo packet) */
-    if ((ntv->copy_mode != DPDK_COPY_MODE_NONE) && !PKT_IS_PSEUDOPKT(p)) {
-        DPDKWritePacket(ntv, p);
+    if (/*(ntv->copy_mode != DPDK_COPY_MODE_NONE) &&*/ !PKT_IS_PSEUDOPKT(p)) {
+        //DPDKWritePacket(ntv, p);
+#if 1
+#else
+        rte_pktmbuf_free(p->dpdk_v.m);
+#endif
     }
 
     PacketFreeOrRelease(p);
 }
 
+#if 0
 /**
  * \brief Read packets from ring and pass them further.
  * \param ntv Thread local variables.
@@ -845,6 +918,81 @@ static int DPDKRingRead(DPDKThreadVars *ntv, int ring_id)
     SCReturnInt(DPDK_OK);
 }
 #endif
+/**
+ * \brief Read packets from ring and pass them further.
+ * \param ntv Thread local variables.
+ * \param ring_id Ring id to read.
+ */
+static int DPDKPacketInput(DPDKThreadVars *ntv, struct rte_mbuf *m)
+{
+    SCEnter();
+    uint32_t pkt_len = m->pkt_len;
+    uint8_t *pkt_data = rte_pktmbuf_mtod(m, uint8_t *);
+
+#ifdef PRINT
+    static unsigned long long pcap_cnt = 0;
+    printf("--------------- (pcap_cnt: %llu)\n", ++pcap_cnt);
+    PrintRawDataFp(stdout, pkt_data, pkt_len);
+    printf("---------------\n");
+#endif
+    Packet *p = PacketPoolGetPacket();
+    if (unlikely(p == NULL)) {
+        SCReturnInt(DPDK_FAILURE);
+    }
+
+    PKT_SET_SRC(p, PKT_SRC_WIRE);
+    p->livedev = ntv->livedev;
+    p->datalink = LINKTYPE_ETHERNET;
+    //p->ts = rx->ts;
+    /* TBD: we have to do better than this */
+    gettimeofday(&p->ts, NULL);
+    ntv->pkts++;
+    ntv->bytes += m->pkt_len;
+
+    /* checksum validation */
+    if (ntv->checksum_mode == CHECKSUM_VALIDATION_DISABLE) {
+        p->flags |= PKT_IGNORE_CHECKSUM;
+    } else if (ntv->checksum_mode == CHECKSUM_VALIDATION_AUTO) {
+        if (ntv->livedev->ignore_checksum) {
+            p->flags |= PKT_IGNORE_CHECKSUM;
+        } else if (ChecksumAutoModeCheck(ntv->pkts,
+                    SC_ATOMIC_GET(ntv->livedev->pkts),
+                    SC_ATOMIC_GET(ntv->livedev->invalid_checksums))) {
+            ntv->livedev->ignore_checksum = 1;
+            p->flags |= PKT_IGNORE_CHECKSUM;
+        }
+    }
+
+    if (ntv->flags & DPDK_FLAG_ZERO_COPY) {
+        if (PacketSetData(p, pkt_data, pkt_len) == -1) {
+            TmqhOutputPacketpool(ntv->tv, p);
+            SCReturnInt(DPDK_FAILURE);
+        }
+    } else {
+        if (PacketCopyData(p, pkt_data, pkt_len) == -1) {
+            TmqhOutputPacketpool(ntv->tv, p);
+            SCReturnInt(DPDK_FAILURE);
+        }
+    }
+
+    p->ReleasePacket = DPDKReleasePacket;
+#if 0
+    p->netmap_v.ring_id = ring_id;
+    p->netmap_v.slot_id = cur;
+    p->netmap_v.dst_ring_id = ring->dst_next_ring;
+    p->netmap_v.ntv = ntv;
+#endif
+    p->dpdk_v.m = m;
+    SCLogDebug("pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
+               GET_PKT_LEN(p), p, GET_PKT_DATA(p));
+
+    if (TmThreadsSlotProcessPkt(ntv->tv, ntv->slot, p) != TM_ECODE_OK) {
+        TmqhOutputPacketpool(ntv->tv, p);
+        SCReturnInt(DPDK_FAILURE);
+    }
+
+    SCReturnInt(DPDK_OK);
+}
 
 /**
  *  \brief Main netmap reading loop function
@@ -855,17 +1003,22 @@ static TmEcode ReceiveDPDKLoop(ThreadVars *tv, void *data, void *slot)
 
     TmSlot *s = (TmSlot *)slot;
     DPDKThreadVars *ntv = (DPDKThreadVars *)data;
+    struct rte_ring *rx_ring = ntv->ifsrc->rx_ring;
+    struct rte_mbuf *m;
+#if 0
     struct pollfd *fds;
     int rings_count = ntv->src_ring_to - ntv->src_ring_from + 1;
+#endif
 
     ntv->slot = s->slot_next;
 
+#if 0
     fds = SCMalloc(sizeof(*fds) * rings_count);
     if (unlikely(fds == NULL)) {
         SCLogError(SC_ERR_MEM_ALLOC, "Memory allocation failed");
         SCReturnInt(TM_ECODE_FAILED);
     }
-#if 0
+
     for (int i = 0; i < rings_count; i++) {
         fds[i].fd = ntv->ifsrc->rings[ntv->src_ring_from + i].fd;
         fds[i].events = POLLIN;
@@ -880,6 +1033,9 @@ static TmEcode ReceiveDPDKLoop(ThreadVars *tv, void *data, void *slot)
          * to prevent us from alloc'ing packets at line rate */
         PacketPoolWait();
 
+        if (rte_ring_dequeue(rx_ring, (void *)&m) == 0) {
+            DPDKPacketInput(ntv, m);
+        }
 #if 0
         int r = poll(fds, rings_count, POLL_TIMEOUT);
 
@@ -940,7 +1096,9 @@ static TmEcode ReceiveDPDKLoop(ThreadVars *tv, void *data, void *slot)
         StatsSyncCountersIfSignalled(tv);
     }
 
+#if 0
     SCFree(fds);
+#endif
     StatsSyncCountersIfSignalled(tv);
     SCReturnInt(TM_ECODE_OK);
 }

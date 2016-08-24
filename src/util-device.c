@@ -259,6 +259,37 @@ int LiveBuildDeviceListCustom(const char *runmode, const char *itemname)
     return i;
 }
 
+#ifdef HAVE_DPDK
+int LiveBuildDeviceListDPDK(const char *runmode, const char *itemname)
+{
+    ConfNode *base = ConfGetNode(runmode);
+    ConfNode *child;
+    int i = 0;
+    char ringname[128];
+
+    if (base == NULL)
+        return 0;
+
+    TAILQ_FOREACH(child, &base->head, next) {
+        ConfNode *subchild;
+        TAILQ_FOREACH(subchild, &child->head, next) {
+            if ((!strcmp(subchild->name, itemname))) {
+                if (!strcmp(subchild->val, "default"))
+                    break;
+                snprintf(ringname, sizeof(ringname)-1, subchild->val, i);
+                SCLogConfig("Adding %s %s from config file",
+                          itemname, ringname);
+                LiveRegisterDevice(ringname);
+                i++;
+            }
+        }
+    }
+
+    return i;
+}
+
+#endif
+
 /** Call this function to disable stat on live devices
  *
  * This can be useful in the case, this is not a real interface.

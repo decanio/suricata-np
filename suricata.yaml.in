@@ -1547,6 +1547,13 @@ netmap:
    # Put default values here
  - interface: default
 
+dpdk:
+ - interface: default
+
+dpdk-ring:
+ - rx-ring: "MProc_Client_%u_RX"
+ - rtn-ring: "MProc_Client_%u_RTN"
+
 # PF_RING configuration. for use with native PF_RING support
 # for more info see http://www.ntop.org/products/pf_ring/
 pfring:

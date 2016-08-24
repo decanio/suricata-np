@@ -61,6 +61,7 @@ enum PktSrcEnum {
 #include "source-ipfw.h"
 #include "source-pcap.h"
 #include "source-af-packet.h"
+#include "source-dpdk-px.h"
 #include "source-mpipe.h"
 #include "source-netmap.h"
 
@@ -449,6 +450,9 @@ typedef struct Packet_
 #endif
 #ifdef HAVE_NETMAP
         NetmapPacketVars netmap_v;
+#endif
+#ifdef HAVE_DPDK
+        DPDKPacketVars dpdk_v;
 #endif
 
         /** libpcap vars: shared by Pcap Live mode and Pcap File mode */

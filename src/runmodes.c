@@ -327,6 +327,9 @@ void RunModeDispatch(int runmode, const char *custom_mode)
             case RUNMODE_AFP_DEV:
                 custom_mode = RunModeAFPGetDefaultMode();
                 break;
+            case RUNMODE_DPDK:
+                custom_mode = RunModeDPDKGetDefaultMode();
+                break;
             case RUNMODE_NETMAP:
                 custom_mode = RunModeNetmapGetDefaultMode();
                 break;

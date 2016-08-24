@@ -171,6 +171,17 @@
 #include "util-storage.h"
 #include "host-storage.h"
 
+#ifdef HAVE_DPDK
+#include <rte_config.h>
+#include <rte_memory.h>
+#include <rte_memzone.h>
+#include <rte_launch.h>
+#include <rte_eal.h>
+#include <rte_per_lcore.h>
+#include <rte_lcore.h>
+#include <rte_debug.h>
+#endif
+
 /*
  * we put this here, because we only use it here in main.
  */
@@ -555,6 +566,10 @@ void usage(const char *progname)
 #ifdef HAVE_AF_PACKET
     printf("\t--af-packet[=<dev>]                  : run in af-packet mode, no value select interfaces from suricata.yaml\n");
 #endif
+#ifdef HAVE_DPDK
+    printf("\t--dpdk[=<dev>]                       : run in DPDK mode, no value select interfaces from suricata.yaml\n");
+    printf("\t--dpdk-rings                         : run from DPDK rings\n");
+#endif
 #ifdef HAVE_NETMAP
     printf("\t--netmap[=<dev>]                     : run in netmap mode, no value select interfaces from suricata.yaml\n");
 #endif
@@ -933,9 +948,9 @@ static TmEcode ParseInterfacesList(int run_mode, char *pcap_dev)
                 SCReturnInt(TM_ECODE_FAILED);
             }
         } else {
-            int ret = LiveBuildDeviceList("dpdk");
+            int ret = LiveBuildDeviceListDPDK("dpdk-ring", "rx-ring");
             if (ret == 0) {
-                SCLogError(SC_ERR_INITIALIZATION, "No interface found in config for netmap");
+                SCLogError(SC_ERR_INITIALIZATION, "No interface found in config for dpdk");
                 SCReturnInt(TM_ECODE_FAILED);
             }
 #if 0
@@ -1165,6 +1180,8 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
         {"pfring-cluster-id", required_argument, 0, 0},
         {"pfring-cluster-type", required_argument, 0, 0},
         {"af-packet", optional_argument, 0, 0},
+        {"dpdk", optional_argument, 0, 0},
+        {"dpdk-rings", optional_argument, 0, 0},
         {"netmap", optional_argument, 0, 0},
         {"pcap", optional_argument, 0, 0},
         {"simulate-ips", 0, 0 , 0},
@@ -1286,6 +1303,36 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
                 if (ParseCommandLineAfpacket(suri, optarg) != TM_ECODE_OK) {
                     return TM_ECODE_FAILED;
                 }
+            } else if (strcmp((long_opts[option_index]).name , "dpdk-rings") == 0){
+#ifdef HAVE_DPDK
+                if (suri->run_mode == RUNMODE_UNKNOWN) {
+                    suri->run_mode = RUNMODE_DPDK;
+                    if (optarg) {
+                        LiveRegisterDevice(optarg);
+                        memset(suri->pcap_dev, 0, sizeof(suri->pcap_dev));
+                        strlcpy(suri->pcap_dev, optarg,
+                                ((strlen(optarg) < sizeof(suri->pcap_dev)) ?
+                                 (strlen(optarg) + 1) : sizeof(suri->pcap_dev)));
+                    }
+                } else if (suri->run_mode == RUNMODE_DPDK) {
+                    SCLogWarning(SC_WARN_PCAP_MULTI_DEV_EXPERIMENTAL, "using "
+                            "multiple devices to get packets is experimental.");
+                    if (optarg) {
+                        LiveRegisterDevice(optarg);
+                    } else {
+                        SCLogInfo("Multiple netmap option without interface on each is useless");
+                        break;
+                    }
+                } else {
+                    SCLogError(SC_ERR_MULTIPLE_RUN_MODE, "more than one run mode "
+                            "has been specified");
+                    usage(argv[0]);
+                    return TM_ECODE_FAILED;
+                }
+#else
+                    SCLogError(SC_ERR_NO_DKDP, "DPDK not enabled.");
+                    return TM_ECODE_FAILED;
+#endif
             } else if (strcmp((long_opts[option_index]).name , "netmap") == 0){
 #ifdef HAVE_NETMAP
                 if (suri->run_mode == RUNMODE_UNKNOWN) {
@@ -2418,6 +2465,17 @@ int main(int argc, char **argv)
     SCInstanceInit(&suri);
     suri.progname = argv[0];
 
+#ifdef HAVE_DPDK
+    int retval;
+
+    retval = rte_eal_init(argc, argv);
+    if (retval < 0) {
+        rte_panic("Cannot init EAL\n");
+    }
+    argc -= retval;
+    argv += retval;
+
+#endif
     sc_set_caps = FALSE;
 
     SC_ATOMIC_INIT(engine_stage);
