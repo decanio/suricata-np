@@ -190,6 +190,24 @@ static int ParseDPDKSettings(DPDKIfaceSettings *ns, const char *iface,
         }
     }
 
+    char *rxringstr;
+    if (ConfGetChildValueWithDefault(if_root, if_default,
+                "rx-ring", &rxringstr) == 1) {
+        strncpy(ns->rx_ring, rxringstr, sizeof(ns->rx_ring)-1);
+    } else {
+        /* Use DPDK default */
+        strcpy(ns->rx_ring, "MProc_Client_%u_RX");
+    }
+
+    char *rtnringstr;
+    if (ConfGetChildValueWithDefault(if_root, if_default,
+                "rx-ring", &rtnringstr) == 1) {
+        strncpy(ns->rtn_ring, rtnringstr, sizeof(ns->rtn_ring)-1);
+    } else {
+        /* Use DPDK default */
+        strcpy(ns->rx_ring, "MProc_Client_%u_RTN");
+    }
+
 finalize:
 
     if (ns->sw_ring) {

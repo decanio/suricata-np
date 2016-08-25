@@ -39,6 +39,10 @@ typedef struct DPDKIfaceSettings_
 {
     /* real inner interface name */
     char iface[DPDK_IFACE_NAME_LENGTH];
+    /* rx_ring name */
+    char rx_ring[DPDK_IFACE_NAME_LENGTH];
+    /* rtn_ring name */
+    char rtn_ring[DPDK_IFACE_NAME_LENGTH];
 
     int threads;
     /* sw ring flag for out_iface */
@@ -74,9 +78,9 @@ typedef struct DPDKPacketVars_
     int ring_id;
     int slot_id;
     int dst_ring_id;
+#endif
     /* DPDKThreadVars */
     void *ntv;
-#endif
 } DPDKPacketVars;
 
 int DPDKGetRSSCount(const char *ifname);

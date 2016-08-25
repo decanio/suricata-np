@@ -1,4 +1,4 @@
-/* Copyright (C) 2011-2014 Open Information Security Foundation
+/* Copyright (C) 2011-2016 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -570,9 +570,16 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
         SCLogError(SC_ERR_MEM_ALLOC, "Memory allocation failed");
         goto error_ntv;
     }
+
     memset(ntv->ifsrc, 0, sizeof(*ntv->ifsrc));
     ntv->ifsrc->rx_ring = rte_ring_lookup(ntv->livedev->dev);
     if (ntv->ifsrc->rx_ring == NULL) {
+        SCLogError(SC_ERR_INVALID_VALUE, "Unable to find DPDK ring");
+        goto error_src;
+    }
+
+    ntv->ifsrc->rtn_ring = rte_ring_lookup("MProc_Client_0_RTN");
+    if (ntv->ifsrc->rtn_ring == NULL) {
         SCLogError(SC_ERR_INVALID_VALUE, "Unable to find DPDK ring");
         goto error_src;
     }
@@ -805,13 +812,14 @@ static TmEcode DPDKWritePacket(DPDKThreadVars *ntv, Packet *p)
  */
 static void DPDKReleasePacket(Packet *p)
 {
-    //DPDKThreadVars *ntv = (DPDKThreadVars *)p->netmap_v.ntv;
+    DPDKThreadVars *ntv = (DPDKThreadVars *)p->dpdk_v.ntv;
 
     /* Need to be in copy mode and need to detect early release
        where Ethernet header could not be set (and pseudo packet) */
     if (/*(ntv->copy_mode != DPDK_COPY_MODE_NONE) &&*/ !PKT_IS_PSEUDOPKT(p)) {
         //DPDKWritePacket(ntv, p);
 #if 1
+        rte_ring_enqueue(ntv->ifsrc->rtn_ring, p->dpdk_v.m);
 #else
         rte_pktmbuf_free(p->dpdk_v.m);
 #endif
@@ -980,8 +988,8 @@ static int DPDKPacketInput(DPDKThreadVars *ntv, struct rte_mbuf *m)
     p->netmap_v.ring_id = ring_id;
     p->netmap_v.slot_id = cur;
     p->netmap_v.dst_ring_id = ring->dst_next_ring;
-    p->netmap_v.ntv = ntv;
 #endif
+    p->dpdk_v.ntv = ntv;
     p->dpdk_v.m = m;
     SCLogDebug("pktlen: %" PRIu32 " (pkt %p, pkt data %p)",
                GET_PKT_LEN(p), p, GET_PKT_DATA(p));
@@ -1130,9 +1138,9 @@ static TmEcode ReceiveDPDKThreadDeinit(ThreadVars *tv, void *data)
 {
     SCEnter();
 
+#if 0
     DPDKThreadVars *ntv = (DPDKThreadVars *)data;
 
-#if 0
     if (ntv->ifsrc) {
         DPDKClose(ntv->ifsrc);
         ntv->ifsrc = NULL;
