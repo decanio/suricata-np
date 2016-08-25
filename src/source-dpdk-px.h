@@ -45,6 +45,7 @@ typedef struct DPDKIfaceSettings_
     char rtn_ring[DPDK_IFACE_NAME_LENGTH];
 
     int threads;
+    unsigned num_mbufs;
     int rte_ring_mode; /* running in rte_ring client mode */
     int promisc;
     int copy_mode;

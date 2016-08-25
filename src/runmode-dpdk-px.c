@@ -103,10 +103,6 @@ static int ParseDPDKSettings(DPDKIfaceSettings *ns, const char *iface,
 
     strlcpy(ns->iface, iface, sizeof(ns->iface));
 
-    if (strcmp(ns->iface, "rte_ring") == 0) {
-        ns->rte_ring_mode = 1;
-    }
-
     if (if_root == NULL && if_default == NULL) {
         SCLogInfo("Unable to find DPDK config for "
                 "interface \"%s\" or \"default\", using default values",
@@ -118,6 +114,20 @@ static int ParseDPDKSettings(DPDKIfaceSettings *ns, const char *iface,
         if_root = if_default;
         if_default = NULL;
     }
+
+    if (strcmp(ns->iface, "rte_ring") == 0) {
+        ns->rte_ring_mode = 1;
+    } else {
+        /* If we aren't operating in ring mode we need to set up an mbuf pool */
+        char *nummbufsstr = NULL;
+        ns->num_mbufs = 16384;
+        if (ConfGetChildValueWithDefault(if_root, if_default, "num-mbufs", &nummbufsstr) != 1) {
+            ;
+        } else {
+            ns->num_mbufs = (unsigned)atoi(nummbufsstr);
+        }
+    }
+
 
     char *threadsstr = NULL;
     if (ConfGetChildValueWithDefault(if_root, if_default, "threads", &threadsstr) != 1) {

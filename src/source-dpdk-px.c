@@ -173,6 +173,7 @@ SC_ATOMIC_DECLARE(unsigned int, threads_run);
 
 /* TBD: need to move these */
 #define PKTMBUF_POOL_NAME "MProc_pktmbuf_pool"
+#define MBUF_CACHE_SIZE 512
 
 /*
  * When doing reads from the NIC or the client queues,
@@ -213,6 +214,7 @@ typedef struct DPDKThreadVars_
     LiveDevice *livedev;
 
     /* copy from config */
+    unsigned num_mbufs;
     int rte_ring_mode;
     int copy_mode;
     ChecksumValidationMode checksum_mode;
@@ -266,8 +268,18 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
     ntv->tv = tv;
     ntv->checksum_mode = aconf->in.checksum_mode;
     ntv->rte_ring_mode = aconf->in.rte_ring_mode;
+    ntv->num_mbufs = aconf->in.num_mbufs;
     ntv->copy_mode = aconf->in.copy_mode;
     ntv->thread_idx = SC_ATOMIC_ADD(threads_run, 1) - 1;
+
+    if ((ntv->rte_ring_mode == 0) && (ntv->thread_idx == 0)) {
+        /* initialize the mbuf pools */
+        ntv->ifsrc->mp = rte_pktmbuf_pool_create(PKTMBUF_POOL_NAME,
+                                                 ntv->num_mbufs,
+                                                 MBUF_CACHE_SIZE, 0,
+                                                 RTE_MBUF_DEFAULT_BUF_SIZE,
+                                                 rte_socket_id());
+    }
 
     ntv->livedev = LiveGetDevice(aconf->iface_name);
     if (ntv->livedev == NULL) {
@@ -298,12 +310,12 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
             SCLogError(SC_ERR_INVALID_VALUE, "Unable to find DPDK ring");
             goto error_src;
         }
-    }
 
-    ntv->ifsrc->mp = rte_mempool_lookup(PKTMBUF_POOL_NAME);
-    if (ntv->ifsrc->mp == NULL) {
-        SCLogError(SC_ERR_INVALID_VALUE, "Cannon get DPDK mempool for mbufs");
-        goto error_src;
+        ntv->ifsrc->mp = rte_mempool_lookup(PKTMBUF_POOL_NAME);
+        if (ntv->ifsrc->mp == NULL) {
+            SCLogError(SC_ERR_INVALID_VALUE, "Cannon get DPDK mempool for mbufs");
+            goto error_src;
+        }
     }
 
     SCLogDebug("DPDK: %s thread:%d rings:%d-%d", aconf->iface_name,
