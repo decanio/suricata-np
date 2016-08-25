@@ -205,6 +205,7 @@ typedef struct DPDKThreadVars_
     LiveDevice *livedev;
 
     /* copy from config */
+    int rte_ring_mode;
     int copy_mode;
     ChecksumValidationMode checksum_mode;
 
@@ -241,7 +242,6 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
 {
     SCEnter();
     DPDKIfaceConfig *aconf = initdata;
-    char ringname[DPDK_IFACE_NAME_LENGTH];
 
     if (initdata == NULL) {
         SCLogError(SC_ERR_INVALID_ARGUMENT, "initdata == NULL");
@@ -257,6 +257,7 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
 
     ntv->tv = tv;
     ntv->checksum_mode = aconf->in.checksum_mode;
+    ntv->rte_ring_mode = aconf->in.rte_ring_mode;
     ntv->copy_mode = aconf->in.copy_mode;
     ntv->thread_idx = SC_ATOMIC_ADD(threads_run, 1) - 1;
 
@@ -273,18 +274,22 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
     }
     memset(ntv->ifsrc, 0, sizeof(*ntv->ifsrc));
 
-    snprintf(ringname, sizeof(ringname)-1, aconf->in.rx_ring, ntv->thread_idx);
-    ntv->ifsrc->rx_ring = rte_ring_lookup(ringname);
-    if (ntv->ifsrc->rx_ring == NULL) {
-        SCLogError(SC_ERR_INVALID_VALUE, "Unable to find DPDK ring");
-        goto error_src;
-    }
+    if (ntv->rte_ring_mode) {
+        char ringname[DPDK_IFACE_NAME_LENGTH];
 
-    snprintf(ringname, sizeof(ringname)-1, aconf->in.rtn_ring, ntv->thread_idx);
-    ntv->ifsrc->rtn_ring = rte_ring_lookup(ringname);
-    if (ntv->ifsrc->rtn_ring == NULL) {
-        SCLogError(SC_ERR_INVALID_VALUE, "Unable to find DPDK ring");
-        goto error_src;
+        snprintf(ringname, sizeof(ringname)-1, aconf->in.rx_ring, ntv->thread_idx);
+        ntv->ifsrc->rx_ring = rte_ring_lookup(ringname);
+        if (ntv->ifsrc->rx_ring == NULL) {
+            SCLogError(SC_ERR_INVALID_VALUE, "Unable to find DPDK ring");
+            goto error_src;
+        }
+
+        snprintf(ringname, sizeof(ringname)-1, aconf->in.rtn_ring, ntv->thread_idx);
+        ntv->ifsrc->rtn_ring = rte_ring_lookup(ringname);
+        if (ntv->ifsrc->rtn_ring == NULL) {
+            SCLogError(SC_ERR_INVALID_VALUE, "Unable to find DPDK ring");
+            goto error_src;
+        }
     }
 
     ntv->ifsrc->mp = rte_mempool_lookup(PKTMBUF_POOL_NAME);
@@ -420,21 +425,24 @@ static TmEcode ReceiveDPDKLoop(ThreadVars *tv, void *data, void *slot)
 
     ntv->slot = s->slot_next;
 
-    for(;;) {
-        if (suricata_ctl_flags != 0) {
-            break;
+    if (ntv->rte_ring_mode) {
+
+        for(;;) {
+            if (suricata_ctl_flags != 0) {
+                break;
+            }
+
+            /* make sure we have at least one packet in the packet pool,
+             * to prevent us from alloc'ing packets at line rate */
+            PacketPoolWait();
+
+            if (rte_ring_dequeue(rx_ring, (void *)&m) == 0) {
+                DPDKPacketInput(ntv, m);
+            }
+
+            DPDKDumpCounters(ntv);
+            StatsSyncCountersIfSignalled(tv);
         }
-
-        /* make sure we have at least one packet in the packet pool,
-         * to prevent us from alloc'ing packets at line rate */
-        PacketPoolWait();
-
-        if (rte_ring_dequeue(rx_ring, (void *)&m) == 0) {
-            DPDKPacketInput(ntv, m);
-        }
-
-        DPDKDumpCounters(ntv);
-        StatsSyncCountersIfSignalled(tv);
     }
 
     StatsSyncCountersIfSignalled(tv);

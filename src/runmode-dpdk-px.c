@@ -103,6 +103,10 @@ static int ParseDPDKSettings(DPDKIfaceSettings *ns, const char *iface,
 
     strlcpy(ns->iface, iface, sizeof(ns->iface));
 
+    if (strcmp(ns->iface, "rte_ring") == 0) {
+        ns->rte_ring_mode = 1;
+    }
+
     if (if_root == NULL && if_default == NULL) {
         SCLogInfo("Unable to find DPDK config for "
                 "interface \"%s\" or \"default\", using default values",
@@ -163,30 +167,33 @@ static int ParseDPDKSettings(DPDKIfaceSettings *ns, const char *iface,
         }
     }
 
-    char *rxringstr;
-    if (ConfGetChildValueWithDefault(if_root, if_default,
-                "rx-ring", &rxringstr) == 1) {
-        strncpy(ns->rx_ring, rxringstr, sizeof(ns->rx_ring)-1);
-    } else {
-        /* Use DPDK default */
-        strcpy(ns->rx_ring, "MProc_Client_%u_RX");
-    }
+    /*
+     * If we are running in rte_ring client mode then read our
+     * ring configuration
+     */
+    if (ns->rte_ring_mode) {
+        char *rxringstr;
+        if (ConfGetChildValueWithDefault(if_root, if_default,
+                    "rx-ring", &rxringstr) == 1) {
+            strncpy(ns->rx_ring, rxringstr, sizeof(ns->rx_ring)-1);
+        } else {
+            /* Use DPDK default */
+            strcpy(ns->rx_ring, "MProc_Client_%u_RX");
+        }
 
-    char *rtnringstr;
-    if (ConfGetChildValueWithDefault(if_root, if_default,
-                "rtn-ring", &rtnringstr) == 1) {
-        strncpy(ns->rtn_ring, rtnringstr, sizeof(ns->rtn_ring)-1);
-    } else {
-        /* Use DPDK default */
-        strcpy(ns->rx_ring, "MProc_Client_%u_RTN");
+        char *rtnringstr;
+        if (ConfGetChildValueWithDefault(if_root, if_default,
+                    "rtn-ring", &rtnringstr) == 1) {
+            strncpy(ns->rtn_ring, rtnringstr, sizeof(ns->rtn_ring)-1);
+        } else {
+            /* Use DPDK default */
+            strcpy(ns->rx_ring, "MProc_Client_%u_RTN");
+        }
     }
 
 finalize:
 
-    if (ns->sw_ring) {
-        /* just one thread per interface supported */
-        ns->threads = 1;
-    } else if (ns->threads == 0) {
+    if (ns->threads == 0) {
 #if 0
         /* As DPDKGetRSSCount is broken on Linux, first run
          * GetIfaceRSSQueuesNum. If that fails, run DPDKGetRSSCount */
