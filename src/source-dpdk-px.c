@@ -173,11 +173,19 @@ SC_ATOMIC_DECLARE(unsigned int, threads_run);
 
 /* TBD: need to move these */
 #define PKTMBUF_POOL_NAME "MProc_pktmbuf_pool"
+
+/*
+ * When doing reads from the NIC or the client queues,
+ * use this batch size
+ */
+#define PACKET_READ_SIZE 32
+
 /**
  * \brief DPDK device instance.
  */
 typedef struct DPDKDevice_
 {
+    uint8_t port_id;
     struct rte_ring *rx_ring;
     struct rte_ring *rtn_ring;
     struct rte_mempool *mp;
@@ -420,13 +428,37 @@ static TmEcode ReceiveDPDKLoop(ThreadVars *tv, void *data, void *slot)
 
     TmSlot *s = (TmSlot *)slot;
     DPDKThreadVars *ntv = (DPDKThreadVars *)data;
-    struct rte_ring *rx_ring = ntv->ifsrc->rx_ring;
     struct rte_mbuf *m;
 
     ntv->slot = s->slot_next;
 
-    if (ntv->rte_ring_mode) {
+    if (ntv->rte_ring_mode == 0) {
+        uint8_t port_id = ntv->ifsrc->port_id;
 
+        /* consume packets from ethernet interface */
+        for (;;) {
+            struct rte_mbuf *buf[PACKET_READ_SIZE];
+            uint16_t rx_count;
+            uint16_t i;
+
+            if (suricata_ctl_flags != 0) {
+                break;
+            }
+
+            rx_count = rte_eth_rx_burst(port_id, 0, buf, PACKET_READ_SIZE);
+
+            for (i = 0; i < rx_count; i++) {
+                DPDKPacketInput(ntv, buf[i]);
+            }
+
+            DPDKDumpCounters(ntv);
+            StatsSyncCountersIfSignalled(tv);
+        }
+                
+    } else {
+        struct rte_ring *rx_ring = ntv->ifsrc->rx_ring;
+
+        /* consume packets from rte_ring */
         for(;;) {
             if (suricata_ctl_flags != 0) {
                 break;

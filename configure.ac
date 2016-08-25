@@ -1223,7 +1223,7 @@
 
         AC_CHECK_HEADER(rte_common.h,,[AC_ERROR(rte_common.h not found ...)],)
 
-        LIBS="${LIBS} -lrte_eal -lrte_mempool -lrte_mbuf -lrte_ring -ldl"
+        LIBS="${LIBS} -lethdev -lrte_eal -lrte_mempool -lrte_mbuf -lrte_ring -ldl"
   ])
 
   # Netmap support
