@@ -568,7 +568,6 @@ void usage(const char *progname)
 #endif
 #ifdef HAVE_DPDK
     printf("\t--dpdk[=<dev>]                       : run in DPDK mode, no value select interfaces from suricata.yaml\n");
-    printf("\t--dpdk-rings                         : run from DPDK rings\n");
 #endif
 #ifdef HAVE_NETMAP
     printf("\t--netmap[=<dev>]                     : run in netmap mode, no value select interfaces from suricata.yaml\n");
@@ -1181,7 +1180,6 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
         {"pfring-cluster-type", required_argument, 0, 0},
         {"af-packet", optional_argument, 0, 0},
         {"dpdk", optional_argument, 0, 0},
-        {"dpdk-rings", optional_argument, 0, 0},
         {"netmap", optional_argument, 0, 0},
         {"pcap", optional_argument, 0, 0},
         {"simulate-ips", 0, 0 , 0},
@@ -1303,7 +1301,7 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
                 if (ParseCommandLineAfpacket(suri, optarg) != TM_ECODE_OK) {
                     return TM_ECODE_FAILED;
                 }
-            } else if (strcmp((long_opts[option_index]).name , "dpdk-rings") == 0){
+            } else if (strcmp((long_opts[option_index]).name , "dpdk") == 0){
 #ifdef HAVE_DPDK
                 if (suri->run_mode == RUNMODE_UNKNOWN) {
                     suri->run_mode = RUNMODE_DPDK;

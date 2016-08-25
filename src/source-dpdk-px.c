@@ -947,7 +947,7 @@ static int DPDKPacketInput(DPDKThreadVars *ntv, struct rte_mbuf *m)
 
 #ifdef PRINT
     static unsigned long long pcap_cnt = 0;
-    printf("--------------- (pcap_cnt: %llu)\n", ++pcap_cnt);
+    printf("--------------- (thread: %u pcap_cnt: %llu)\n", ntv->thread_idx, ++pcap_cnt);
     PrintRawDataFp(stdout, pkt_data, pkt_len);
     printf("---------------\n");
 #endif

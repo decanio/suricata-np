@@ -205,7 +205,7 @@ static int ParseDPDKSettings(DPDKIfaceSettings *ns, const char *iface,
 
     char *rtnringstr;
     if (ConfGetChildValueWithDefault(if_root, if_default,
-                "rx-ring", &rtnringstr) == 1) {
+                "rtn-ring", &rtnringstr) == 1) {
         strncpy(ns->rtn_ring, rtnringstr, sizeof(ns->rtn_ring)-1);
     } else {
         /* Use DPDK default */
