@@ -74,11 +74,6 @@ typedef struct DPDKIfaceConfig_
 typedef struct DPDKPacketVars_
 {
     struct rte_mbuf *m;
-#if 0
-    int ring_id;
-    int slot_id;
-    int dst_ring_id;
-#endif
     /* DPDKThreadVars */
     void *ntv;
 } DPDKPacketVars;
