@@ -102,24 +102,6 @@ static int ParseDPDKSettings(DPDKIfaceSettings *ns, const char *iface,
     ns->copy_mode = DPDK_COPY_MODE_NONE;
 
     strlcpy(ns->iface, iface, sizeof(ns->iface));
-#if 0
-    if (ns->iface[0]) {
-        size_t len = strlen(ns->iface);
-        if (ns->iface[len-1] == '+') {
-            ns->iface[len-1] = '\0';
-            ns->sw_ring = 1;
-        }
-    }
-
-    char *bpf_filter = NULL;
-    if (ConfGet("bpf-filter", &bpf_filter) == 1) {
-        if (strlen(bpf_filter) > 0) {
-            ns->bpf_filter = bpf_filter;
-            SCLogInfo("Going to use command-line provided bpf filter '%s'",
-                    ns->bpf_filter);
-        }
-    }
-#endif
 
     if (if_root == NULL && if_default == NULL) {
         SCLogInfo("Unable to find DPDK config for "
@@ -143,19 +125,6 @@ static int ParseDPDKSettings(DPDKIfaceSettings *ns, const char *iface,
             ns->threads = (uint8_t)atoi(threadsstr);
         }
     }
-
-#if 0
-    /* load netmap bpf filter */
-    /* command line value has precedence */
-    if (ns->bpf_filter == NULL) {
-        if (ConfGetChildValueWithDefault(if_root, if_default, "bpf-filter", &bpf_filter) == 1) {
-            if (strlen(bpf_filter) > 0) {
-                ns->bpf_filter = bpf_filter;
-                SCLogInfo("Going to use bpf filter %s", ns->bpf_filter);
-            }
-        }
-    }
-#endif
 
     int boolval = 0;
     (void)ConfGetChildValueBoolWithDefault(if_root, if_default, "disable-promisc", (int *)&boolval);
@@ -225,9 +194,6 @@ finalize:
         if (ns->threads == 0) {
             ns->threads = DPDKGetRSSCount(ns->iface);
         }
-#else
-	/* figure out how many rings we are trying to read */
-        //ns->threads = 1;
 #endif
     }
     if (ns->threads <= 0) {
