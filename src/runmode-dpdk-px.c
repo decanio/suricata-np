@@ -102,6 +102,7 @@ static int ParseDPDKSettings(DPDKIfaceSettings *ns, const char *iface,
     ns->copy_mode = DPDK_COPY_MODE_NONE;
 
     strlcpy(ns->iface, iface, sizeof(ns->iface));
+#if 0
     if (ns->iface[0]) {
         size_t len = strlen(ns->iface);
         if (ns->iface[len-1] == '+') {
@@ -118,6 +119,7 @@ static int ParseDPDKSettings(DPDKIfaceSettings *ns, const char *iface,
                     ns->bpf_filter);
         }
     }
+#endif
 
     if (if_root == NULL && if_default == NULL) {
         SCLogInfo("Unable to find DPDK config for "
@@ -142,6 +144,7 @@ static int ParseDPDKSettings(DPDKIfaceSettings *ns, const char *iface,
         }
     }
 
+#if 0
     /* load netmap bpf filter */
     /* command line value has precedence */
     if (ns->bpf_filter == NULL) {
@@ -152,6 +155,7 @@ static int ParseDPDKSettings(DPDKIfaceSettings *ns, const char *iface,
             }
         }
     }
+#endif
 
     int boolval = 0;
     (void)ConfGetChildValueBoolWithDefault(if_root, if_default, "disable-promisc", (int *)&boolval);
@@ -223,7 +227,7 @@ finalize:
         }
 #else
 	/* figure out how many rings we are trying to read */
-        ns->threads = 1;
+        //ns->threads = 1;
 #endif
     }
     if (ns->threads <= 0) {
@@ -247,7 +251,7 @@ static void *ParseDPDKConfig(const char *iface_name)
 {
     ConfNode *if_root = NULL;
     ConfNode *if_default = NULL;
-    ConfNode *netmap_node;
+    ConfNode *dpdk_node;
     char *out_iface = NULL;
 
     if (iface_name == NULL) {
@@ -266,22 +270,22 @@ static void *ParseDPDKConfig(const char *iface_name)
     (void) SC_ATOMIC_ADD(aconf->ref, 1);
 
     /* Find initial node */
-    netmap_node = ConfGetNode("netmap");
-    if (netmap_node == NULL) {
-        SCLogInfo("Unable to find netmap config using default value");
+    dpdk_node = ConfGetNode("dpdk");
+    if (dpdk_node == NULL) {
+        SCLogInfo("Unable to find dpdk config using default value");
     } else {
-        if_root = ConfFindDeviceConfig(netmap_node, aconf->iface_name);
-        if_default = ConfFindDeviceConfig(netmap_node, "default");
+        if_root = ConfFindDeviceConfig(dpdk_node, aconf->iface_name);
+        if_default = ConfFindDeviceConfig(dpdk_node, "default");
     }
 
     /* parse settings for capture iface */
     ParseDPDKSettings(&aconf->in, aconf->iface_name, if_root, if_default);
 
     /* if we have a copy iface, parse that as well */
-    if (netmap_node != NULL) {
+    if (dpdk_node != NULL) {
         if (ConfGetChildValueWithDefault(if_root, if_default, "copy-iface", &out_iface) == 1) {
             if (strlen(out_iface) > 0) {
-                if_root = ConfFindDeviceConfig(netmap_node, out_iface);
+                if_root = ConfFindDeviceConfig(dpdk_node, out_iface);
                 ParseDPDKSettings(&aconf->out, out_iface, if_root, if_default);
             }
         }

@@ -179,6 +179,8 @@ enum {
     DPDK_FLAG_ZERO_COPY = 1,
 };
 
+SC_ATOMIC_DECLARE(unsigned int, threads_run);
+
 #if 0
 /**
  * \brief DPDK ring isntance.
@@ -542,6 +544,7 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
 {
     SCEnter();
     DPDKIfaceConfig *aconf = initdata;
+    char ringname[DPDK_IFACE_NAME_LENGTH];
 
     if (initdata == NULL) {
         SCLogError(SC_ERR_INVALID_ARGUMENT, "initdata == NULL");
@@ -558,6 +561,7 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
     ntv->tv = tv;
     ntv->checksum_mode = aconf->in.checksum_mode;
     ntv->copy_mode = aconf->in.copy_mode;
+    ntv->thread_idx = SC_ATOMIC_ADD(threads_run, 1) - 1;
 
     ntv->livedev = LiveGetDevice(aconf->iface_name);
     if (ntv->livedev == NULL) {
@@ -570,15 +574,19 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
         SCLogError(SC_ERR_MEM_ALLOC, "Memory allocation failed");
         goto error_ntv;
     }
-
     memset(ntv->ifsrc, 0, sizeof(*ntv->ifsrc));
-    ntv->ifsrc->rx_ring = rte_ring_lookup(ntv->livedev->dev);
+
+    snprintf(ringname, sizeof(ringname)-1, aconf->in.rx_ring, ntv->thread_idx);
+    //ntv->ifsrc->rx_ring = rte_ring_lookup(ntv->livedev->dev);
+    ntv->ifsrc->rx_ring = rte_ring_lookup(ringname);
     if (ntv->ifsrc->rx_ring == NULL) {
         SCLogError(SC_ERR_INVALID_VALUE, "Unable to find DPDK ring");
         goto error_src;
     }
 
-    ntv->ifsrc->rtn_ring = rte_ring_lookup("MProc_Client_0_RTN");
+    snprintf(ringname, sizeof(ringname)-1, aconf->in.rtn_ring, ntv->thread_idx);
+    //ntv->ifsrc->rtn_ring = rte_ring_lookup("MProc_Client_0_RTN");
+    ntv->ifsrc->rtn_ring = rte_ring_lookup(ringname);
     if (ntv->ifsrc->rtn_ring == NULL) {
         SCLogError(SC_ERR_INVALID_VALUE, "Unable to find DPDK ring");
         goto error_src;

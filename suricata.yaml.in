@@ -1548,11 +1548,15 @@ netmap:
  - interface: default
 
 dpdk:
+ # interface rte_ring causes suricata to read from rte_rings as a client
+ # if the mutli_process mp_server application.
+ - interface: rte_ring
+   # Number of receive threads (>1 will enable experimental flow pinned
+   # runmode)
+   threads: 2
+   rx-ring: "MProc_Client_%u_RX"
+   rtn-ring: "MProc_Client_%u_RTN"
  - interface: default
-
-dpdk-ring:
- - rx-ring: "MProc_Client_%u_RX"
- - rtn-ring: "MProc_Client_%u_RTN"
 
 # PF_RING configuration. for use with native PF_RING support
 # for more info see http://www.ntop.org/products/pf_ring/

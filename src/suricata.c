@@ -948,7 +948,7 @@ static TmEcode ParseInterfacesList(int run_mode, char *pcap_dev)
                 SCReturnInt(TM_ECODE_FAILED);
             }
         } else {
-            int ret = LiveBuildDeviceListDPDK("dpdk", "rx-ring");
+            int ret = LiveBuildDeviceList("dpdk");
             if (ret == 0) {
                 SCLogError(SC_ERR_INITIALIZATION, "No interface found in config for dpdk");
                 SCReturnInt(TM_ECODE_FAILED);
