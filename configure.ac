@@ -1263,9 +1263,9 @@
         DPDKLIBS="${DPDKLIBS} -lrte_mbuf"
         DPDKLIBS="${DPDKLIBS} -lethdev"
         DPDKLIBS="${DPDKLIBS} -lrte_cryptodev"
+        DPDKLIBS="${DPDKLIBS} -lrte_eal"
         DPDKLIBS="${DPDKLIBS} -lrte_mempool"
         DPDKLIBS="${DPDKLIBS} -lrte_ring"
-        DPDKLIBS="${DPDKLIBS} -lrte_eal"
         DPDKLIBS="${DPDKLIBS} -lrte_cmdline"
         DPDKLIBS="${DPDKLIBS} -lrte_cfgfile"
 

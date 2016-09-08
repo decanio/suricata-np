@@ -174,6 +174,8 @@
 #ifdef HAVE_DPDK
 #include <rte_config.h>
 #include <rte_memory.h>
+#include <rte_mempool.h>
+#include <rte_mbuf.h>
 #include <rte_memzone.h>
 #include <rte_launch.h>
 #include <rte_eal.h>
@@ -2467,8 +2469,6 @@ int main(int argc, char **argv)
 #ifdef HAVE_DPDK
     int retval;
 
-    rte_mempool_ctor_init();
-
     retval = rte_eal_init(argc, argv);
     if (retval < 0) {
         rte_panic("Cannot init EAL\n");
@@ -2476,6 +2476,15 @@ int main(int argc, char **argv)
     argc -= retval;
     argv += retval;
 
+#if 0
+/* TEMPORARY */
+    /* create the mbuf pool */
+    struct rte_mempool * l2fwd_pktmbuf_pool;
+    l2fwd_pktmbuf_pool = rte_pktmbuf_pool_create("mbuf_pool", 1024,
+                256, 0, RTE_MBUF_DEFAULT_BUF_SIZE,
+                rte_socket_id());
+    exit(0);
+#endif
 #endif
     sc_set_caps = FALSE;
 
