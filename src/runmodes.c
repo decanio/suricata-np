@@ -49,7 +49,26 @@
 
 #include "source-pfring.h"
 
+#include "tmqh-flow.h"
+
+#ifdef __SC_CUDA_SUPPORT__
+#include "util-cuda-buffer.h"
+#include "util-mpm-ac.h"
+#endif
+
 int debuglog_enabled = 0;
+
+/* Runmode Global Thread Names */
+const char *thread_name_autofp = "RX";
+const char *thread_name_single = "W";
+const char *thread_name_workers = "W";
+const char *thread_name_verdict = "TX";
+const char *thread_name_flow_mgr = "FM";
+const char *thread_name_flow_rec = "FR";
+const char *thread_name_unix_socket = "US";
+const char *thread_name_detect_loader = "DL";
+const char *thread_name_counter_stats = "CS";
+const char *thread_name_counter_wakeup = "CW";
 
 /**
  * \brief Holds description for a runmode.
@@ -360,16 +379,32 @@ void RunModeDispatch(int runmode, const char *custom_mode)
     }
 
     /* Export the custom mode */
+    if (active_runmode) {
+        SCFree(active_runmode);
+    }
     active_runmode = SCStrdup(custom_mode);
     if (unlikely(active_runmode == NULL)) {
         SCLogError(SC_ERR_MEM_ALLOC, "Unable to dup active mode");
         exit(EXIT_FAILURE);
     }
 
+    if (strcasecmp(active_runmode, "autofp") == 0) {
+        TmqhFlowPrintAutofpHandler();
+    }
+
     mode->RunModeFunc();
 
     if (local_custom_mode != NULL)
         SCFree(local_custom_mode);
+
+#ifdef __SC_CUDA_SUPPORT__
+    if (PatternMatchDefaultMatcher() == MPM_AC_CUDA)
+        SCACCudaStartDispatcher();
+#endif
+
+    /* Check if the alloted queues have at least 1 reader and writer */
+    TmValidateQueueState();
+
     return;
 }
 
@@ -582,7 +617,8 @@ static void SetupOutput(const char *name, OutputModule *module, OutputCtx *outpu
     } else if (module->TxLogFunc) {
         SCLogDebug("%s is a tx logger", module->name);
         OutputRegisterTxLogger(module->name, module->alproto,
-                module->TxLogFunc, output_ctx);
+                module->TxLogFunc, output_ctx, module->tc_log_progress,
+                module->ts_log_progress, module->TxLogCondition);
 
         /* need one instance of the tx logger module */
         if (tx_logger_module == NULL) {
@@ -682,6 +718,99 @@ static void SetupOutput(const char *name, OutputModule *module, OutputCtx *outpu
     }
 }
 
+static void RunModeInitializeEveOutput(ConfNode *conf, OutputCtx *parent_ctx)
+{
+    ConfNode *types = ConfNodeLookupChild(conf, "types");
+    SCLogDebug("types %p", types);
+    if (types == NULL) {
+        return;
+    }
+
+    ConfNode *type = NULL;
+    TAILQ_FOREACH(type, &types->head, next) {
+        SCLogConfig("enabling 'eve-log' module '%s'", type->val);
+
+        int sub_count = 0;
+        char subname[256];
+        snprintf(subname, sizeof(subname), "eve-log.%s", type->val);
+
+        /* Now setup all registers logger of this name. */
+        OutputModule *sub_module;
+        TAILQ_FOREACH(sub_module, &output_modules, entries) {
+            if (strcmp(subname, sub_module->conf_name) == 0) {
+                sub_count++;
+
+                if (sub_module->parent_name == NULL ||
+                        strcmp(sub_module->parent_name, "eve-log") != 0) {
+                    FatalError(SC_ERR_INVALID_ARGUMENT,
+                            "bad parent for %s", subname);
+                }
+                if (sub_module->InitSubFunc == NULL) {
+                    FatalError(SC_ERR_INVALID_ARGUMENT,
+                            "bad sub-module for %s", subname);
+                }
+                ConfNode *sub_output_config =
+                    ConfNodeLookupChild(type, type->val);
+                // sub_output_config may be NULL if no config
+
+                /* pass on parent output_ctx */
+                OutputCtx *sub_output_ctx =
+                    sub_module->InitSubFunc(sub_output_config,
+                            parent_ctx);
+                if (sub_output_ctx == NULL) {
+                    continue;
+                }
+
+                AddOutputToFreeList(sub_module, sub_output_ctx);
+                SetupOutput(sub_module->name, sub_module,
+                        sub_output_ctx);
+            }
+        }
+
+        /* Error is no registered loggers with this name
+         * were found .*/
+        if (!sub_count) {
+            FatalErrorOnInit(SC_ERR_INVALID_ARGUMENT,
+                    "No output module named %s", subname);
+            continue;
+        }
+    }
+}
+
+static void RunModeInitializeLuaOutput(ConfNode *conf, OutputCtx *parent_ctx)
+{
+    OutputModule *lua_module = OutputGetModuleByConfName("lua");
+    BUG_ON(lua_module == NULL);
+
+    ConfNode *scripts = ConfNodeLookupChild(conf, "scripts");
+    BUG_ON(scripts == NULL); //TODO
+
+    OutputModule *m;
+    TAILQ_FOREACH(m, &parent_ctx->submodules, entries) {
+        SCLogDebug("m %p %s:%s", m, m->name, m->conf_name);
+
+        ConfNode *script = NULL;
+        TAILQ_FOREACH(script, &scripts->head, next) {
+            SCLogDebug("script %s", script->val);
+            if (strcmp(script->val, m->conf_name) == 0) {
+                break;
+            }
+        }
+        BUG_ON(script == NULL);
+
+        /* pass on parent output_ctx */
+        OutputCtx *sub_output_ctx =
+            m->InitSubFunc(script, parent_ctx);
+        if (sub_output_ctx == NULL) {
+            SCLogInfo("sub_output_ctx NULL, skipping");
+            continue;
+        }
+
+        AddOutputToFreeList(m, sub_output_ctx);
+        SetupOutput(m->name, m, sub_output_ctx);
+    }
+}
+
 /**
  * Initialize the output modules.
  */
@@ -695,15 +824,20 @@ void RunModeInitializeOutputs(void)
 
     ConfNode *output, *output_config;
     const char *enabled;
+    char tls_log_enabled = 0;
+    char tls_store_present = 0;
 
     TAILQ_FOREACH(output, &outputs->head, next) {
 
         output_config = ConfNodeLookupChild(output, output->val);
         if (output_config == NULL) {
             /* Shouldn't happen. */
-            SCLogError(SC_ERR_INVALID_ARGUMENT,
-                "Failed to lookup configuration child node: fast");
-            exit(1);
+            FatalError(SC_ERR_INVALID_ARGUMENT,
+                "Failed to lookup configuration child node: %s", output->val);
+        }
+
+        if (strcmp(output->val, "tls-store") == 0) {
+            tls_store_present = 1;
         }
 
         enabled = ConfNodeLookupChildValue(output_config, "enabled");
@@ -742,111 +876,91 @@ void RunModeInitializeOutputs(void)
                     "files installed to add lua support.");
             continue;
 #endif
+        } else if (strcmp(output->val, "tls-log") == 0) {
+            tls_log_enabled = 1;
         }
 
-        OutputModule *module = OutputGetModuleByConfName(output->val);
-        if (module == NULL) {
-            SCLogWarning(SC_ERR_INVALID_ARGUMENT,
-                "No output module named %s, ignoring", output->val);
-            continue;
-        }
-
-        OutputCtx *output_ctx = NULL;
-        if (module->InitFunc != NULL) {
-            output_ctx = module->InitFunc(output_config);
-            if (output_ctx == NULL) {
-                /* In most cases the init function will have logged the
-                 * error. Maybe we should exit on init errors? */
+        OutputModule *module;
+        int count = 0;
+        TAILQ_FOREACH(module, &output_modules, entries) {
+            if (strcmp(module->conf_name, output->val) != 0) {
                 continue;
             }
-        } else if (module->InitSubFunc != NULL) {
-            SCLogInfo("skipping submodule");
+
+            count++;
+
+            OutputCtx *output_ctx = NULL;
+            if (module->InitFunc != NULL) {
+                output_ctx = module->InitFunc(output_config);
+                if (output_ctx == NULL) {
+                    FatalErrorOnInit(SC_ERR_INVALID_ARGUMENT,
+                        "output module setup failed");
+                    continue;
+                }
+            } else if (module->InitSubFunc != NULL) {
+                SCLogInfo("skipping submodule");
+                continue;
+            }
+
+            // TODO if module == parent, find it's children
+            if (strcmp(output->val, "eve-log") == 0) {
+                RunModeInitializeEveOutput(output_config, output_ctx);
+
+                /* add 'eve-log' to free list as it's the owner of the
+                 * main output ctx from which the sub-modules share the
+                 * LogFileCtx */
+                AddOutputToFreeList(module, output_ctx);
+            } else if (strcmp(output->val, "lua") == 0) {
+                SCLogDebug("handle lua");
+                if (output_ctx == NULL)
+                    continue;
+                RunModeInitializeLuaOutput(output_config, output_ctx);
+                AddOutputToFreeList(module, output_ctx);
+            } else {
+                AddOutputToFreeList(module, output_ctx);
+                SetupOutput(module->name, module, output_ctx);
+            }
+        }
+        if (count == 0) {
+            FatalErrorOnInit(SC_ERR_INVALID_ARGUMENT,
+                "No output module named %s", output->val);
             continue;
         }
+    }
 
-        // TODO if module == parent, find it's children
-        if (strcmp(output->val, "eve-log") == 0) {
-            ConfNode *types = ConfNodeLookupChild(output_config, "types");
-            SCLogDebug("types %p", types);
-            if (types != NULL) {
-                ConfNode *type = NULL;
-                TAILQ_FOREACH(type, &types->head, next) {
-                    SCLogInfo("enabling 'eve-log' module '%s'", type->val);
+    /* Backward compatibility code */
+    if (!tls_store_present && tls_log_enabled) {
+        /* old YAML with no "tls-store" in outputs. "tls-log" value needs
+         * to be started using 'tls-log' config as own config */
+        SCLogWarning(SC_ERR_CONF_YAML_ERROR,
+                     "Please use 'tls-store' in YAML to configure TLS storage");
 
-                    char subname[256];
-                    snprintf(subname, sizeof(subname), "%s.%s", output->val, type->val);
+        TAILQ_FOREACH(output, &outputs->head, next) {
+            output_config = ConfNodeLookupChild(output, output->val);
 
-                    OutputModule *sub_module = OutputGetModuleByConfName(subname);
-                    if (sub_module == NULL) {
-                        SCLogWarning(SC_ERR_INVALID_ARGUMENT,
-                                "No output module named %s, ignoring", subname);
-                        continue;
-                    }
-                    if (sub_module->parent_name == NULL ||
-                            strcmp(sub_module->parent_name,output->val) != 0) {
-                        SCLogWarning(SC_ERR_INVALID_ARGUMENT,
-                                "bad parent for %s, ignoring", subname);
-                        continue;
-                    }
-                    if (sub_module->InitSubFunc == NULL) {
-                        SCLogWarning(SC_ERR_INVALID_ARGUMENT,
-                                "bad sub-module for %s, ignoring", subname);
-                        continue;
-                    }
-                    ConfNode *sub_output_config = ConfNodeLookupChild(type, type->val);
-                    // sub_output_config may be NULL if no config
+            if (strcmp(output->val, "tls-log") == 0) {
 
-                    /* pass on parent output_ctx */
-                    OutputCtx *sub_output_ctx =
-                        sub_module->InitSubFunc(sub_output_config, output_ctx);
-                    if (sub_output_ctx == NULL) {
-                        continue;
-                    }
-
-                    AddOutputToFreeList(sub_module, sub_output_ctx);
-                    SetupOutput(sub_module->name, sub_module, sub_output_ctx);
-                }
-            }
-            /* add 'eve-log' to free list as it's the owner of the
-             * main output ctx from which the sub-modules share the
-             * LogFileCtx */
-            AddOutputToFreeList(module, output_ctx);
-
-        } else if (strcmp(output->val, "lua") == 0) {
-            SCLogDebug("handle lua");
-
-            ConfNode *scripts = ConfNodeLookupChild(output_config, "scripts");
-            BUG_ON(scripts == NULL); //TODO
-
-            OutputModule *m;
-            TAILQ_FOREACH(m, &output_ctx->submodules, entries) {
-                SCLogDebug("m %p %s:%s", m, m->name, m->conf_name);
-
-                ConfNode *script = NULL;
-                TAILQ_FOREACH(script, &scripts->head, next) {
-                    SCLogDebug("script %s", script->val);
-                    if (strcmp(script->val, m->conf_name) == 0) {
-                        break;
-                    }
-                }
-                BUG_ON(script == NULL);
-
-                /* pass on parent output_ctx */
-                OutputCtx *sub_output_ctx =
-                    m->InitSubFunc(script, output_ctx);
-                if (sub_output_ctx == NULL) {
-                    SCLogInfo("sub_output_ctx NULL, skipping");
+                OutputModule *module = OutputGetModuleByConfName("tls-store");
+                if (module == NULL) {
+                    SCLogWarning(SC_ERR_INVALID_ARGUMENT,
+                            "No output module named %s, ignoring", "tls-store");
                     continue;
                 }
 
-                SetupOutput(m->name, m, sub_output_ctx);
-            }
+                OutputCtx *output_ctx = NULL;
+                if (module->InitFunc != NULL) {
+                    output_ctx = module->InitFunc(output_config);
+                    if (output_ctx == NULL) {
+                        continue;
+                    }
+                }
 
-        } else {
-            AddOutputToFreeList(module, output_ctx);
-            SetupOutput(module->name, module, output_ctx);
+                AddOutputToFreeList(module, output_ctx);
+                SetupOutput(module->name, module, output_ctx);
+            }
         }
     }
+
 }
 
 /**

@@ -34,6 +34,7 @@
 #include "suricata.h"
 
 #include "util-spm-bm.h"
+#include "util-spm.h"
 #include "util-debug.h"
 #include "util-error.h"
 #include "util-memcpy.h"
@@ -73,7 +74,7 @@ void BoyerMooreCtxToNocase(BmCtx *bm_ctx, uint8_t *needle, uint16_t needle_len)
  * \retval BmCtx pointer to the newly created Context for the pattern
  * \initonly BoyerMoore contexts should be created at init
  */
-BmCtx *BoyerMooreCtxInit(uint8_t *needle, uint16_t needle_len)
+BmCtx *BoyerMooreCtxInit(const uint8_t *needle, uint16_t needle_len)
 {
     BmCtx *new = SCMalloc(sizeof(BmCtx));
     if (unlikely(new == NULL)) {
@@ -302,7 +303,7 @@ static void PreBmGsNocase(const uint8_t *x, uint16_t m, uint16_t *bmGs)
  *
  * \retval ptr to start of the match; NULL if no match
  */
-uint8_t *BoyerMoore(uint8_t *x, uint16_t m, uint8_t *y, int32_t n, BmCtx *bm_ctx)
+uint8_t *BoyerMoore(const uint8_t *x, uint16_t m, const uint8_t *y, int32_t n, BmCtx *bm_ctx)
 {
     uint16_t *bmGs = bm_ctx->bmGs;
     uint16_t *bmBc = bm_ctx->bmBc;
@@ -324,7 +325,7 @@ uint8_t *BoyerMoore(uint8_t *x, uint16_t m, uint8_t *y, int32_t n, BmCtx *bm_ctx
       for (i = m - 1; i >= 0 && x[i] == y[i + j]; --i);
 
       if (i < 0) {
-         return y + j;
+         return (uint8_t *)(y + j);
          //j += bmGs[0];
       } else {
  //        printf("%c", y[i+j]);
@@ -351,7 +352,7 @@ uint8_t *BoyerMoore(uint8_t *x, uint16_t m, uint8_t *y, int32_t n, BmCtx *bm_ctx
  *
  * \retval ptr to start of the match; NULL if no match
  */
-uint8_t *BoyerMooreNocase(uint8_t *x, uint16_t m, uint8_t *y, int32_t n, BmCtx *bm_ctx)
+uint8_t *BoyerMooreNocase(const uint8_t *x, uint16_t m, const uint8_t *y, int32_t n, BmCtx *bm_ctx)
 {
     uint16_t *bmGs = bm_ctx->bmGs;
     uint16_t *bmBc = bm_ctx->bmBc;
@@ -372,7 +373,7 @@ uint8_t *BoyerMooreNocase(uint8_t *x, uint16_t m, uint8_t *y, int32_t n, BmCtx *
         for (i = m - 1; i >= 0 && x[i] == u8_tolower(y[i + j]); --i);
 
         if (i < 0) {
-            return y + j;
+            return (uint8_t *)(y + j);
         } else {
             j += (m1=bmGs[i]) > (m2=bmBc[u8_tolower(y[i + j])] - m + 1 + i)?m1:m2;
         }
@@ -380,3 +381,133 @@ uint8_t *BoyerMooreNocase(uint8_t *x, uint16_t m, uint8_t *y, int32_t n, BmCtx *
    return NULL;
 }
 
+typedef struct SpmBmCtx_ {
+    BmCtx *bm_ctx;
+    uint8_t *needle;
+    uint16_t needle_len;
+    int nocase;
+} SpmBmCtx;
+
+static SpmCtx *BMInitCtx(const uint8_t *needle, uint16_t needle_len, int nocase,
+                         SpmGlobalThreadCtx *global_thread_ctx)
+{
+    SpmCtx *ctx = SCMalloc(sizeof(SpmCtx));
+    if (ctx == NULL) {
+        SCLogDebug("Unable to alloc SpmCtx.");
+        return NULL;
+    }
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->matcher = SPM_BM;
+
+    SpmBmCtx *sctx = SCMalloc(sizeof(SpmBmCtx));
+    if (sctx == NULL) {
+        SCLogDebug("Unable to alloc SpmBmCtx.");
+        SCFree(ctx);
+        return NULL;
+    }
+    memset(sctx, 0, sizeof(*sctx));
+
+    sctx->needle = SCMalloc(needle_len);
+    if (sctx->needle == NULL) {
+        SCLogDebug("Unable to alloc string.");
+        SCFree(sctx);
+        SCFree(ctx);
+        return NULL;
+    }
+    memcpy(sctx->needle, needle, needle_len);
+    sctx->needle_len = needle_len;
+
+    if (nocase) {
+        sctx->bm_ctx = BoyerMooreNocaseCtxInit(sctx->needle, sctx->needle_len);
+        sctx->nocase = 1;
+    } else {
+        sctx->bm_ctx = BoyerMooreCtxInit(sctx->needle, sctx->needle_len);
+        sctx->nocase = 0;
+    }
+
+    ctx->ctx = sctx;
+    return ctx;
+}
+
+static void BMDestroyCtx(SpmCtx *ctx)
+{
+    if (ctx == NULL) {
+        return;
+    }
+
+    SpmBmCtx *sctx = ctx->ctx;
+    if (sctx != NULL) {
+        BoyerMooreCtxDeInit(sctx->bm_ctx);
+        if (sctx->needle != NULL) {
+            SCFree(sctx->needle);
+        }
+        SCFree(sctx);
+    }
+
+    SCFree(ctx);
+}
+
+static uint8_t *BMScan(const SpmCtx *ctx, SpmThreadCtx *thread_ctx,
+                       const uint8_t *haystack, uint16_t haystack_len)
+{
+    const SpmBmCtx *sctx = ctx->ctx;
+
+    if (sctx->nocase) {
+        return BoyerMooreNocase(sctx->needle, sctx->needle_len, haystack,
+                                haystack_len, sctx->bm_ctx);
+    } else {
+        return BoyerMoore(sctx->needle, sctx->needle_len, haystack,
+                          haystack_len, sctx->bm_ctx);
+    }
+}
+
+static SpmGlobalThreadCtx *BMInitGlobalThreadCtx(void)
+{
+    SpmGlobalThreadCtx *global_thread_ctx = SCMalloc(sizeof(SpmGlobalThreadCtx));
+    if (global_thread_ctx == NULL) {
+        SCLogDebug("Unable to alloc SpmThreadCtx.");
+        return NULL;
+    }
+    memset(global_thread_ctx, 0, sizeof(*global_thread_ctx));
+    global_thread_ctx->matcher = SPM_BM;
+    return global_thread_ctx;
+}
+
+static void BMDestroyGlobalThreadCtx(SpmGlobalThreadCtx *global_thread_ctx)
+{
+    if (global_thread_ctx == NULL) {
+        return;
+    }
+    SCFree(global_thread_ctx);
+}
+
+static void BMDestroyThreadCtx(SpmThreadCtx *thread_ctx)
+{
+    if (thread_ctx == NULL) {
+        return;
+    }
+    SCFree(thread_ctx);
+}
+
+static SpmThreadCtx *BMMakeThreadCtx(const SpmGlobalThreadCtx *global_thread_ctx) {
+    SpmThreadCtx *thread_ctx = SCMalloc(sizeof(SpmThreadCtx));
+    if (thread_ctx == NULL) {
+        SCLogDebug("Unable to alloc SpmThreadCtx.");
+        return NULL;
+    }
+    memset(thread_ctx, 0, sizeof(*thread_ctx));
+    thread_ctx->matcher = SPM_BM;
+    return thread_ctx;
+}
+
+void SpmBMRegister(void)
+{
+    spm_table[SPM_BM].name = "bm";
+    spm_table[SPM_BM].InitGlobalThreadCtx = BMInitGlobalThreadCtx;
+    spm_table[SPM_BM].DestroyGlobalThreadCtx = BMDestroyGlobalThreadCtx;
+    spm_table[SPM_BM].MakeThreadCtx = BMMakeThreadCtx;
+    spm_table[SPM_BM].DestroyThreadCtx = BMDestroyThreadCtx;
+    spm_table[SPM_BM].InitCtx = BMInitCtx;
+    spm_table[SPM_BM].DestroyCtx = BMDestroyCtx;
+    spm_table[SPM_BM].Scan = BMScan;
+}

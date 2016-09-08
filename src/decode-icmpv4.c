@@ -47,13 +47,13 @@
 /**
  * Note, this is the IP header, plus a bit of the original packet, not the whole thing!
  */
-void DecodePartialIPV4( Packet* p, uint8_t* partial_packet, uint16_t len )
+int DecodePartialIPV4( Packet* p, uint8_t* partial_packet, uint16_t len )
 {
     /** Check the sizes, the header must fit at least */
     if (len < IPV4_HEADER_LEN) {
         SCLogDebug("DecodePartialIPV4: ICMPV4_IPV4_TRUNC_PKT");
         ENGINE_SET_INVALID_EVENT(p, ICMPV4_IPV4_TRUNC_PKT);
-        return;
+        return -1;
     }
 
     IPV4Hdr *icmp4_ip4h = (IPV4Hdr*)partial_packet;
@@ -64,7 +64,7 @@ void DecodePartialIPV4( Packet* p, uint8_t* partial_packet, uint16_t len )
         SCLogDebug("DecodePartialIPV4: ICMPv4 contains Unknown IPV4 version "
                    "ICMPV4_IPV4_UNKNOWN_VER");
         ENGINE_SET_INVALID_EVENT(p, ICMPV4_IPV4_UNKNOWN_VER);
-        return;
+        return -1;
     }
 
     /** We need to fill icmpv4vars */
@@ -125,12 +125,14 @@ void DecodePartialIPV4( Packet* p, uint8_t* partial_packet, uint16_t len )
 
             break;
         case IPPROTO_ICMP:
-            p->icmpv4vars.emb_icmpv4h = (ICMPV4Hdr*)(partial_packet + IPV4_HEADER_LEN);
-            p->icmpv4vars.emb_sport = 0;
-            p->icmpv4vars.emb_dport = 0;
-            p->icmpv4vars.emb_ip4_proto = IPPROTO_ICMP;
+            if (len >= IPV4_HEADER_LEN + ICMPV4_HEADER_LEN ) {
+                p->icmpv4vars.emb_icmpv4h = (ICMPV4Hdr*)(partial_packet + IPV4_HEADER_LEN);
+                p->icmpv4vars.emb_sport = 0;
+                p->icmpv4vars.emb_dport = 0;
+                p->icmpv4vars.emb_ip4_proto = IPPROTO_ICMP;
 
-            SCLogDebug("DecodePartialIPV4: ICMPV4->IPV4->ICMP header");
+                SCLogDebug("DecodePartialIPV4: ICMPV4->IPV4->ICMP header");
+            }
 
             break;
     }
@@ -144,8 +146,7 @@ void DecodePartialIPV4( Packet* p, uint8_t* partial_packet, uint16_t len )
             IPV4_GET_RAW_IPPROTO(icmp4_ip4h), IPV4_GET_RAW_IPID(icmp4_ip4h));
 #endif
 
-    return;
-
+    return 0;
 }
 
 /** DecodeICMPV4
@@ -188,11 +189,13 @@ int DecodeICMPV4(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt,
             } else {
                 /* parse IP header plus 64 bytes */
                 if (len > ICMPV4_HEADER_PKT_OFFSET) {
-                    DecodePartialIPV4( p, (uint8_t *)(pkt + ICMPV4_HEADER_PKT_OFFSET), len - ICMPV4_HEADER_PKT_OFFSET );
-
-                    /* ICMP ICMP_DEST_UNREACH influence TCP/UDP flows */
-                    if (ICMPV4_DEST_UNREACH_IS_VALID(p)) {
-                        FlowHandlePacket(tv, dtv, p);
+                    if (DecodePartialIPV4(p, (uint8_t *)(pkt + ICMPV4_HEADER_PKT_OFFSET),
+                                             len - ICMPV4_HEADER_PKT_OFFSET ) == 0)
+                    {
+                        /* ICMP ICMP_DEST_UNREACH influence TCP/UDP flows */
+                        if (ICMPV4_DEST_UNREACH_IS_VALID(p)) {
+                            FlowSetupPacket(p);
+                        }
                     }
                 }
             }
@@ -662,7 +665,7 @@ static int ICMPV4CalculateInvalidChecksumtest06(void)
         0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x38};
 
     csum = *( ((uint16_t *)raw_icmpv4) + 1);
-    return (csum == ICMPV4CalculateChecksum((uint16_t *)raw_icmpv4, sizeof(raw_icmpv4)));
+    return (csum != ICMPV4CalculateChecksum((uint16_t *)raw_icmpv4, sizeof(raw_icmpv4)));
 }
 
 static int ICMPV4InvalidType07(void)
@@ -766,17 +769,17 @@ static int DecodeICMPV4test08(void)
 void DecodeICMPV4RegisterTests(void)
 {
 #ifdef UNITTESTS
-    UtRegisterTest("DecodeICMPV4test01", DecodeICMPV4test01, 1);
-    UtRegisterTest("DecodeICMPV4test02", DecodeICMPV4test02, 1);
-    UtRegisterTest("DecodeICMPV4test03", DecodeICMPV4test03, 1);
-    UtRegisterTest("DecodeICMPV4test04", DecodeICMPV4test04, 1);
-    UtRegisterTest("DecodeICMPV4test05", DecodeICMPV4test05, 1);
+    UtRegisterTest("DecodeICMPV4test01", DecodeICMPV4test01);
+    UtRegisterTest("DecodeICMPV4test02", DecodeICMPV4test02);
+    UtRegisterTest("DecodeICMPV4test03", DecodeICMPV4test03);
+    UtRegisterTest("DecodeICMPV4test04", DecodeICMPV4test04);
+    UtRegisterTest("DecodeICMPV4test05", DecodeICMPV4test05);
     UtRegisterTest("ICMPV4CalculateValidChecksumtest05",
-                   ICMPV4CalculateValidChecksumtest05, 1);
+                   ICMPV4CalculateValidChecksumtest05);
     UtRegisterTest("ICMPV4CalculateInvalidChecksumtest06",
-                   ICMPV4CalculateInvalidChecksumtest06, 0);
-    UtRegisterTest("DecodeICMPV4InvalidType", ICMPV4InvalidType07, 1);
-    UtRegisterTest("DecodeICMPV4test08", DecodeICMPV4test08, 1);
+                   ICMPV4CalculateInvalidChecksumtest06);
+    UtRegisterTest("DecodeICMPV4InvalidType", ICMPV4InvalidType07);
+    UtRegisterTest("DecodeICMPV4test08", DecodeICMPV4test08);
 #endif /* UNITTESTS */
 }
 /**

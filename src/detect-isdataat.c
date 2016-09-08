@@ -55,7 +55,6 @@
 static pcre *parse_regex;
 static pcre_extra *parse_regex_study;
 
-int DetectIsdataatMatch (ThreadVars *, DetectEngineThreadCtx *, Packet *, Signature *, const SigMatchCtx *);
 int DetectIsdataatSetup (DetectEngineCtx *, Signature *, char *);
 void DetectIsdataatRegisterTests(void);
 void DetectIsdataatFree(void *);
@@ -68,64 +67,15 @@ void DetectIsdataatRegister(void)
     sigmatch_table[DETECT_ISDATAAT].name = "isdataat";
     sigmatch_table[DETECT_ISDATAAT].desc = "check if there is still data at a specific part of the payload";
     sigmatch_table[DETECT_ISDATAAT].url = "https://redmine.openinfosecfoundation.org/projects/suricata/wiki/Payload_keywords#Isadataat";
-    sigmatch_table[DETECT_ISDATAAT].Match = DetectIsdataatMatch;
+    /* match is handled in DetectEngineContentInspection() */
+    sigmatch_table[DETECT_ISDATAAT].Match = NULL;
     sigmatch_table[DETECT_ISDATAAT].Setup = DetectIsdataatSetup;
     sigmatch_table[DETECT_ISDATAAT].Free  = DetectIsdataatFree;
     sigmatch_table[DETECT_ISDATAAT].RegisterTests = DetectIsdataatRegisterTests;
 
     sigmatch_table[DETECT_ISDATAAT].flags |= SIGMATCH_PAYLOAD;
 
-    const char *eb;
-    int eo;
-    int opts = 0;
-
-    parse_regex = pcre_compile(PARSE_REGEX, opts, &eb, &eo, NULL);
-    if(parse_regex == NULL) {
-        SCLogError(SC_ERR_PCRE_COMPILE, "pcre compile of \"%s\" failed at offset %" PRId32 ": %s", PARSE_REGEX, eo, eb);
-        goto error;
-    }
-
-    parse_regex_study = pcre_study(parse_regex, 0, &eb);
-    if(eb != NULL) {
-        SCLogError(SC_ERR_PCRE_STUDY, "pcre study failed: %s", eb);
-        goto error;
-    }
-    return;
-
-error:
-    /* XXX */
-    return;
-}
-
-/**
- * \brief This function is used to match isdataat on a packet
- * \todo We need to add support for rawbytes
- *
- * \param t pointer to thread vars
- * \param det_ctx pointer to the pattern matcher thread
- * \param p pointer to the current packet
- * \param m pointer to the sigmatch that we will cast into DetectIsdataatData
- *
- * \retval 0 no match
- * \retval 1 match
- */
-int DetectIsdataatMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx, Packet *p, Signature *s, const SigMatchCtx *ctx)
-{
-    const DetectIsdataatData *idad = (const DetectIsdataatData *)ctx;
-
-    SCLogDebug("payload_len: %u , dataat? %u ; relative? %u...", p->payload_len,idad->dataat,idad->flags &ISDATAAT_RELATIVE);
-
-    /* Relative to the last matched content is not performed here, returning match (content should take care of this)*/
-    if (idad->flags & ISDATAAT_RELATIVE)
-        return 1;
-
-    /* its not relative and we have more data in the packet than the offset of isdataat */
-    if (p->payload_len >= idad->dataat) {
-        SCLogDebug("matched with payload_len: %u , dataat? %u ; relative? %u...", p->payload_len,idad->dataat,idad->flags &ISDATAAT_RELATIVE);
-        return 1;
-    }
-
-    return 0;
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
 }
 
 /**
@@ -1087,17 +1037,17 @@ static int DetectIsdataatTestParse16(void)
     }
 
     s = de_ctx->sig_list;
-    if (s->sm_lists_tail[DETECT_SM_LIST_DNSQUERY_MATCH] == NULL) {
+    if (s->sm_lists_tail[DETECT_SM_LIST_DNSQUERYNAME_MATCH] == NULL) {
         printf("dns_query list empty: ");
         goto end;
     }
 
-    if (s->sm_lists_tail[DETECT_SM_LIST_DNSQUERY_MATCH]->type != DETECT_ISDATAAT) {
+    if (s->sm_lists_tail[DETECT_SM_LIST_DNSQUERYNAME_MATCH]->type != DETECT_ISDATAAT) {
         printf("last dns_query body sm not isdataat: ");
         goto end;
     }
 
-    data = (DetectIsdataatData *)s->sm_lists_tail[DETECT_SM_LIST_DNSQUERY_MATCH]->ctx;
+    data = (DetectIsdataatData *)s->sm_lists_tail[DETECT_SM_LIST_DNSQUERYNAME_MATCH]->ctx;
     if ( !(data->flags & ISDATAAT_RELATIVE) ||
          (data->flags & ISDATAAT_RAWBYTES) ||
          !(data->flags & ISDATAAT_NEGATED) ) {
@@ -1225,25 +1175,25 @@ end:
 void DetectIsdataatRegisterTests(void)
 {
 #ifdef UNITTESTS
-    UtRegisterTest("DetectIsdataatTestParse01", DetectIsdataatTestParse01, 1);
-    UtRegisterTest("DetectIsdataatTestParse02", DetectIsdataatTestParse02, 1);
-    UtRegisterTest("DetectIsdataatTestParse03", DetectIsdataatTestParse03, 1);
-    UtRegisterTest("DetectIsdataatTestParse04", DetectIsdataatTestParse04, 1);
-    UtRegisterTest("DetectIsdataatTestParse05", DetectIsdataatTestParse05, 1);
-    UtRegisterTest("DetectIsdataatTestParse06", DetectIsdataatTestParse06, 1);
-    UtRegisterTest("DetectIsdataatTestParse07", DetectIsdataatTestParse07, 1);
-    UtRegisterTest("DetectIsdataatTestParse08", DetectIsdataatTestParse08, 1);
-    UtRegisterTest("DetectIsdataatTestParse09", DetectIsdataatTestParse09, 1);
-    UtRegisterTest("DetectIsdataatTestParse10", DetectIsdataatTestParse10, 1);
-    UtRegisterTest("DetectIsdataatTestParse11", DetectIsdataatTestParse11, 1);
-    UtRegisterTest("DetectIsdataatTestParse12", DetectIsdataatTestParse12, 1);
-    UtRegisterTest("DetectIsdataatTestParse13", DetectIsdataatTestParse13, 1);
-    UtRegisterTest("DetectIsdataatTestParse14", DetectIsdataatTestParse14, 1);
-    UtRegisterTest("DetectIsdataatTestParse15", DetectIsdataatTestParse15, 1);
-    UtRegisterTest("DetectIsdataatTestParse16", DetectIsdataatTestParse16, 1);
+    UtRegisterTest("DetectIsdataatTestParse01", DetectIsdataatTestParse01);
+    UtRegisterTest("DetectIsdataatTestParse02", DetectIsdataatTestParse02);
+    UtRegisterTest("DetectIsdataatTestParse03", DetectIsdataatTestParse03);
+    UtRegisterTest("DetectIsdataatTestParse04", DetectIsdataatTestParse04);
+    UtRegisterTest("DetectIsdataatTestParse05", DetectIsdataatTestParse05);
+    UtRegisterTest("DetectIsdataatTestParse06", DetectIsdataatTestParse06);
+    UtRegisterTest("DetectIsdataatTestParse07", DetectIsdataatTestParse07);
+    UtRegisterTest("DetectIsdataatTestParse08", DetectIsdataatTestParse08);
+    UtRegisterTest("DetectIsdataatTestParse09", DetectIsdataatTestParse09);
+    UtRegisterTest("DetectIsdataatTestParse10", DetectIsdataatTestParse10);
+    UtRegisterTest("DetectIsdataatTestParse11", DetectIsdataatTestParse11);
+    UtRegisterTest("DetectIsdataatTestParse12", DetectIsdataatTestParse12);
+    UtRegisterTest("DetectIsdataatTestParse13", DetectIsdataatTestParse13);
+    UtRegisterTest("DetectIsdataatTestParse14", DetectIsdataatTestParse14);
+    UtRegisterTest("DetectIsdataatTestParse15", DetectIsdataatTestParse15);
+    UtRegisterTest("DetectIsdataatTestParse16", DetectIsdataatTestParse16);
 
-    UtRegisterTest("DetectIsdataatTestPacket01", DetectIsdataatTestPacket01, 1);
-    UtRegisterTest("DetectIsdataatTestPacket02", DetectIsdataatTestPacket02, 1);
-    UtRegisterTest("DetectIsdataatTestPacket03", DetectIsdataatTestPacket03, 1);
+    UtRegisterTest("DetectIsdataatTestPacket01", DetectIsdataatTestPacket01);
+    UtRegisterTest("DetectIsdataatTestPacket02", DetectIsdataatTestPacket02);
+    UtRegisterTest("DetectIsdataatTestPacket03", DetectIsdataatTestPacket03);
 #endif
 }

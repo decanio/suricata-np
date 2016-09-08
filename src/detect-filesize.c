@@ -70,30 +70,7 @@ void DetectFilesizeRegister(void)
     sigmatch_table[DETECT_FILESIZE].RegisterTests = DetectFilesizeRegisterTests;
     sigmatch_table[DETECT_FILESIZE].flags |= SIGMATCH_PAYLOAD; /** XXX necessary? */
 
-    const char *eb;
-    int eo;
-    int opts = 0;
-
-    parse_regex = pcre_compile(PARSE_REGEX, opts, &eb, &eo, NULL);
-    if (parse_regex == NULL) {
-        SCLogDebug("pcre compile of \"%s\" failed at offset %" PRId32 ": %s",
-                    PARSE_REGEX, eo, eb);
-        goto error;
-    }
-
-    parse_regex_study = pcre_study(parse_regex, 0, &eb);
-    if (eb != NULL) {
-        SCLogDebug("pcre study failed: %s", eb);
-        goto error;
-    }
-    return;
-
-error:
-    if (parse_regex != NULL)
-        SCFree(parse_regex);
-    if (parse_regex_study != NULL)
-        SCFree(parse_regex_study);
-    return;
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
 }
 
 /**
@@ -117,30 +94,32 @@ static int DetectFilesizeMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx, F
 
     DetectFilesizeData *fsd = (DetectFilesizeData *)m->ctx;
     int ret = 0;
-    SCLogDebug("file size %"PRIu64", check %"PRIu64, file->size, fsd->size1);
+    uint64_t file_size = FileSize(file);
+
+    SCLogDebug("file size %"PRIu64", check %"PRIu64, file_size, fsd->size1);
 
     if (file->state == FILE_STATE_CLOSED) {
         switch (fsd->mode) {
             case DETECT_FILESIZE_EQ:
-                if (file->size == fsd->size1)
+                if (file_size == fsd->size1)
                     ret = 1;
                 break;
             case DETECT_FILESIZE_LT:
-                if (file->size < fsd->size1)
+                if (file_size < fsd->size1)
                     ret = 1;
                 break;
             case DETECT_FILESIZE_GT:
-                if (file->size > fsd->size1)
+                if (file_size > fsd->size1)
                     ret = 1;
                 break;
             case DETECT_FILESIZE_RA:
-                if (file->size > fsd->size1 && file->size < fsd->size2)
+                if (file_size > fsd->size1 && file_size < fsd->size2)
                     ret = 1;
                 break;
         }
     /* truncated, error: only see if what we have meets the GT condition */
     } else if (file->state > FILE_STATE_CLOSED) {
-        if (fsd->mode == DETECT_FILESIZE_GT && file->size > fsd->size1)
+        if (fsd->mode == DETECT_FILESIZE_GT && file_size > fsd->size1)
             ret = 1;
     }
     SCReturnInt(ret);
@@ -342,11 +321,9 @@ static void DetectFilesizeFree(void *ptr)
 }
 
 #ifdef UNITTESTS
-
 #include "stream.h"
 #include "stream-tcp-private.h"
 #include "stream-tcp-reassemble.h"
-#include "detect-parse.h"
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
 #include "app-layer-parser.h"
@@ -522,11 +499,11 @@ end:
 void DetectFilesizeRegisterTests(void)
 {
 #ifdef UNITTESTS
-    UtRegisterTest("DetectFilesizeParseTest01", DetectFilesizeParseTest01, 1);
-    UtRegisterTest("DetectFilesizeParseTest02", DetectFilesizeParseTest02, 1);
-    UtRegisterTest("DetectFilesizeParseTest03", DetectFilesizeParseTest03, 1);
-    UtRegisterTest("DetectFilesizeParseTest04", DetectFilesizeParseTest04, 1);
-    UtRegisterTest("DetectFilesizeParseTest05", DetectFilesizeParseTest05, 1);
-    UtRegisterTest("DetectFilesizeSetpTest01", DetectFilesizeSetpTest01, 1);
+    UtRegisterTest("DetectFilesizeParseTest01", DetectFilesizeParseTest01);
+    UtRegisterTest("DetectFilesizeParseTest02", DetectFilesizeParseTest02);
+    UtRegisterTest("DetectFilesizeParseTest03", DetectFilesizeParseTest03);
+    UtRegisterTest("DetectFilesizeParseTest04", DetectFilesizeParseTest04);
+    UtRegisterTest("DetectFilesizeParseTest05", DetectFilesizeParseTest05);
+    UtRegisterTest("DetectFilesizeSetpTest01", DetectFilesizeSetpTest01);
 #endif /* UNITTESTS */
 }

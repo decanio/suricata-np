@@ -48,6 +48,7 @@ typedef struct OutputModule_ {
     PacketLogger PacketLogFunc;
     PacketLogCondition PacketConditionFunc;
     TxLogger TxLogFunc;
+    TxLoggerCondition TxLogCondition;
     FileLogger FileLogFunc;
     FiledataLogger FiledataLogFunc;
     FlowLogger FlowLogFunc;
@@ -55,9 +56,14 @@ typedef struct OutputModule_ {
     StatsLogger StatsLogFunc;
     AppProto alproto;
     enum OutputStreamingType stream_type;
+    int tc_log_progress;
+    int ts_log_progress;
 
     TAILQ_ENTRY(OutputModule_) entries;
 } OutputModule;
+
+typedef TAILQ_HEAD(OutputModuleList_, OutputModule_) OutputModuleList;
+extern OutputModuleList output_modules;
 
 void OutputRegisterModule(const char *, const char *, OutputCtx *(*)(ConfNode *));
 
@@ -74,6 +80,21 @@ void OutputRegisterTxModule(const char *name, const char *conf_name,
 void OutputRegisterTxSubModule(const char *parent_name, const char *name,
     const char *conf_name, OutputCtx *(*InitFunc)(ConfNode *, OutputCtx *parent_ctx),
     AppProto alproto, TxLogger TxLogFunc);
+
+void OutputRegisterTxModuleWithCondition(const char *name, const char *conf_name,
+        OutputCtx *(*InitFunc)(ConfNode *), AppProto alproto,
+        TxLogger TxLogFunc, TxLoggerCondition TxLogCondition);
+void OutputRegisterTxSubModuleWithCondition(const char *parent_name,
+        const char *name, const char *conf_name, OutputCtx *(*InitFunc)(ConfNode *,
+        OutputCtx *parent_ctx), AppProto alproto, TxLogger TxLogFunc,
+        TxLoggerCondition TxLogCondition);
+
+void OutputRegisterTxModuleWithProgress(const char *name, const char *conf_name,
+    OutputCtx *(*InitFunc)(ConfNode *), AppProto alproto,
+    TxLogger TxLogFunc, int tc_log_progress, int ts_log_progress);
+void OutputRegisterTxSubModuleWithProgress(const char *parent_name, const char *name,
+    const char *conf_name, OutputCtx *(*InitFunc)(ConfNode *, OutputCtx *parent_ctx),
+    AppProto alproto, TxLogger TxLogFunc, int tc_log_progress, int ts_log_progress);
 
 void OutputRegisterFileModule(const char *name, const char *conf_name,
     OutputCtx *(*InitFunc)(ConfNode *), FileLogger FileLogFunc);
@@ -111,9 +132,6 @@ void OutputDeregisterAll(void);
 
 int OutputDropLoggerEnable(void);
 void OutputDropLoggerDisable(void);
-
-int OutputTlsLoggerEnable(void);
-void OutputTlsLoggerDisable(void);
 
 int OutputSshLoggerEnable(void);
 void OutputSshLoggerDisable(void);

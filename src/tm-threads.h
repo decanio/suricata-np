@@ -84,14 +84,14 @@ void TmSlotSetFuncAppend(ThreadVars *, TmModule *, void *);
 void TmSlotSetFuncAppendDelayed(ThreadVars *, TmModule *, void *, int delayed);
 TmSlot *TmSlotGetSlotForTM(int);
 
-ThreadVars *TmThreadCreate(char *, char *, char *, char *, char *, char *,
+ThreadVars *TmThreadCreate(const char *, char *, char *, char *, char *, char *,
                            void *(fn_p)(void *), int);
-ThreadVars *TmThreadCreatePacketHandler(char *, char *, char *, char *, char *,
+ThreadVars *TmThreadCreatePacketHandler(const char *, char *, char *, char *, char *,
                                         char *);
-ThreadVars *TmThreadCreateMgmtThread(char *name, void *(fn_p)(void *), int);
-ThreadVars *TmThreadCreateMgmtThreadByName(char *name, char *module,
+ThreadVars *TmThreadCreateMgmtThread(const char *name, void *(fn_p)(void *), int);
+ThreadVars *TmThreadCreateMgmtThreadByName(const char *name, char *module,
                                      int mucond);
-ThreadVars *TmThreadCreateCmdThreadByName(char *name, char *module,
+ThreadVars *TmThreadCreateCmdThreadByName(const char *name, char *module,
                                      int mucond);
 TmEcode TmThreadSpawn(ThreadVars *);
 void TmThreadSetFlags(ThreadVars *, uint8_t);
@@ -102,6 +102,7 @@ void TmThreadKillThreads(void);
 void TmThreadClearThreadsFamily(int family);
 void TmThreadAppend(ThreadVars *, int);
 void TmThreadRemove(ThreadVars *, int);
+void TmThreadSetGroupName(ThreadVars *tv, const char *name);
 
 TmEcode TmThreadSetCPUAffinity(ThreadVars *, uint16_t);
 TmEcode TmThreadSetThreadPriority(ThreadVars *, int);
@@ -131,6 +132,8 @@ ThreadVars *TmThreadsGetTVContainingSlot(TmSlot *);
 void TmThreadDisablePacketThreads(void);
 void TmThreadDisableReceiveThreads(void);
 TmSlot *TmThreadGetFirstTmSlotForPartialPattern(const char *);
+
+uint32_t TmThreadCountThreadsByTmmFlags(uint8_t flags);
 
 /**
  *  \brief Process the rest of the functions (if any) and queue.
@@ -194,10 +197,32 @@ static inline TmEcode TmThreadsSlotProcessPkt(ThreadVars *tv, TmSlot *s, Packet 
     return r;
 }
 
+/** \brief inject packet if THV_CAPTURE_INJECT_PKT is set
+ *  Allow caller to supply their own packet
+ *
+ *  Meant for detect reload process that interupts an sleeping capture thread
+ *  to force a packet through the engine to complete a reload */
+static inline void TmThreadsCaptureInjectPacket(ThreadVars *tv, TmSlot *slot, Packet *p)
+{
+    if (TmThreadsCheckFlag(tv, THV_CAPTURE_INJECT_PKT)) {
+        TmThreadsUnsetFlag(tv, THV_CAPTURE_INJECT_PKT);
+        if (p == NULL)
+            p = PacketGetFromQueueOrAlloc();
+        if (p != NULL) {
+            p->flags |= PKT_PSEUDO_STREAM_END;
+            if (TmThreadsSlotProcessPkt(tv, slot, p) != TM_ECODE_OK) {
+                TmqhOutputPacketpool(tv, p);
+            }
+        }
+    }
+}
 
 void TmThreadsListThreads(void);
 int TmThreadsRegisterThread(ThreadVars *tv, const int type);
 void TmThreadsUnregisterThread(const int id);
 int TmThreadsInjectPacketsById(Packet **, int id);
+
+void TmThreadsSetThreadTimestamp(const int id, const struct timeval *ts);
+void TmreadsGetMinimalTimestamp(struct timeval *ts);
 
 #endif /* __TM_THREADS_H__ */

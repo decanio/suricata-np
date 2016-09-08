@@ -71,7 +71,7 @@ int RunModeErfFileSingle(void)
 
     /* Basically the same setup as PCAP files. */
 
-    ThreadVars *tv = TmThreadCreatePacketHandler("ErfFile",
+    ThreadVars *tv = TmThreadCreatePacketHandler(thread_name_single,
         "packetpool", "packetpool",
         "packetpool", "packetpool",
         "pktacqloop");
@@ -94,21 +94,12 @@ int RunModeErfFileSingle(void)
     }
     TmSlotSetFuncAppend(tv, tm_module, NULL);
 
-    tm_module = TmModuleGetByName("StreamTcp");
+    tm_module = TmModuleGetByName("FlowWorker");
     if (tm_module == NULL) {
-        printf("ERROR: TmModuleGetByName StreamTcp failed\n");
+        SCLogError(SC_ERR_RUNMODE, "TmModuleGetByName for FlowWorker failed");
         exit(EXIT_FAILURE);
     }
     TmSlotSetFuncAppend(tv, tm_module, NULL);
-
-    if (DetectEngineEnabled()) {
-        tm_module = TmModuleGetByName("Detect");
-        if (tm_module == NULL) {
-            printf("ERROR: TmModuleGetByName Detect failed\n");
-            exit(EXIT_FAILURE);
-        }
-        TmSlotSetFuncAppend(tv, tm_module, NULL);
-    }
 
     SetupOutputs(tv);
 
@@ -132,7 +123,6 @@ int RunModeErfFileAutoFp(void)
     int thread;
 
     RunModeInitialize();
-    RunmodeSetFlowStreamAsync();
 
     char *file = NULL;
     if (ConfGet("erf-file.file", &file) == 0) {
@@ -152,7 +142,7 @@ int RunModeErfFileAutoFp(void)
         cpu = 1;
 
     /* always create at least one thread */
-    int thread_max = TmThreadGetNbThreads(DETECT_CPU_SET);
+    int thread_max = TmThreadGetNbThreads(WORKER_CPU_SET);
     if (thread_max == 0)
         thread_max = ncpus * threading_detect_ratio;
     if (thread_max < 1)
@@ -166,7 +156,7 @@ int RunModeErfFileAutoFp(void)
 
     /* create the threads */
     ThreadVars *tv =
-        TmThreadCreatePacketHandler("ReceiveErfFile",
+        TmThreadCreatePacketHandler(thread_name_autofp,
                                     "packetpool", "packetpool",
                                     queues, "flow",
                                     "pktacqloop");
@@ -202,20 +192,15 @@ int RunModeErfFileAutoFp(void)
     }
 
     for (thread = 0; thread < thread_max; thread++) {
-        snprintf(tname, sizeof(tname), "Detect%"PRIu16, thread+1);
-        snprintf(qname, sizeof(qname), "pickup%"PRIu16, thread+1);
+        snprintf(tname, sizeof(tname), "%s#%02d", thread_name_workers, thread+1);
+        snprintf(qname, sizeof(qname), "pickup%d", thread+1);
 
         SCLogDebug("tname %s, qname %s", tname, qname);
 
-        char *thread_name = SCStrdup(tname);
-        if (unlikely(thread_name == NULL)) {
-            printf("ERROR: Can't allocate thread name\n");
-            exit(EXIT_FAILURE);
-        }
-        SCLogDebug("Assigning %s affinity to cpu %u", thread_name, cpu);
+        SCLogDebug("Assigning %s affinity to cpu %u", tname, cpu);
 
         ThreadVars *tv_detect_ncpu =
-            TmThreadCreatePacketHandler(thread_name,
+            TmThreadCreatePacketHandler(tname,
                                         qname, "flow",
                                         "packetpool", "packetpool",
                                         "varslot");
@@ -223,21 +208,13 @@ int RunModeErfFileAutoFp(void)
             printf("ERROR: TmThreadsCreate failed\n");
             exit(EXIT_FAILURE);
         }
-        tm_module = TmModuleGetByName("StreamTcp");
+
+        tm_module = TmModuleGetByName("FlowWorker");
         if (tm_module == NULL) {
-            printf("ERROR: TmModuleGetByName StreamTcp failed\n");
+            SCLogError(SC_ERR_RUNMODE, "TmModuleGetByName for FlowWorker failed");
             exit(EXIT_FAILURE);
         }
         TmSlotSetFuncAppend(tv_detect_ncpu, tm_module, NULL);
-
-        if (DetectEngineEnabled()) {
-            tm_module = TmModuleGetByName("Detect");
-            if (tm_module == NULL) {
-                printf("ERROR: TmModuleGetByName Detect failed\n");
-                exit(EXIT_FAILURE);
-            }
-            TmSlotSetFuncAppend(tv_detect_ncpu, tm_module, NULL);
-        }
 
         if (threading_set_cpu_affinity) {
             TmThreadSetCPUAffinity(tv_detect_ncpu, (int)cpu);
@@ -252,12 +229,7 @@ int RunModeErfFileAutoFp(void)
             }
         }
 
-        char *thread_group_name = SCStrdup("Detect");
-        if (unlikely(thread_group_name == NULL)) {
-            printf("Error allocating memory\n");
-            exit(EXIT_FAILURE);
-        }
-        tv_detect_ncpu->thread_group_name = thread_group_name;
+        TmThreadSetGroupName(tv_detect_ncpu, "Detect");
 
         /* add outputs as well */
         SetupOutputs(tv_detect_ncpu);

@@ -96,22 +96,11 @@ static void DefragTrackerInit(DefragTracker *dt, Packet *p)
     dt->vlan_id[1] = p->vlan_id[1];
     dt->policy = DefragGetOsPolicy(p);
     dt->host_timeout = DefragPolicyGetHostTimeout(p);
+    dt->remove = 0;
+    dt->seen_last = 0;
 
     TAILQ_INIT(&dt->frags);
     (void) DefragTrackerIncrUsecnt(dt);
-}
-
-static DefragTracker *DefragTrackerNew(Packet *p)
-{
-    DefragTracker *dt = DefragTrackerAlloc();
-    if (dt == NULL)
-        goto error;
-
-    DefragTrackerInit(dt, p);
-    return dt;
-
-error:
-    return NULL;
 }
 
 void DefragTrackerRelease(DefragTracker *t)
@@ -143,10 +132,11 @@ void DefragInitConfig(char quiet)
     SC_ATOMIC_INIT(defragtracker_prune_idx);
     DefragTrackerQueueInit(&defragtracker_spare_q);
 
+#ifndef AFLFUZZ_NO_RANDOM
     unsigned int seed = RandomTimePreseed();
     /* set defaults */
     defrag_config.hash_rand   = (int)(DEFRAG_DEFAULT_HASHSIZE * (rand_r(&seed) / RAND_MAX + 1.0));
-
+#endif
     defrag_config.hash_size   = DEFRAG_DEFAULT_HASHSIZE;
     defrag_config.memcap      = DEFRAG_DEFAULT_MEMCAP;
     defrag_config.prealloc    = DEFRAG_DEFAULT_PREALLOC;
@@ -214,7 +204,7 @@ void DefragInitConfig(char quiet)
     (void) SC_ATOMIC_ADD(defrag_memuse, (defrag_config.hash_size * sizeof(DefragTrackerHashRow)));
 
     if (quiet == FALSE) {
-        SCLogInfo("allocated %llu bytes of memory for the defrag hash... "
+        SCLogConfig("allocated %llu bytes of memory for the defrag hash... "
                   "%" PRIu32 " buckets of size %" PRIuMAX "",
                   SC_ATOMIC_GET(defrag_memuse), defrag_config.hash_size,
                   (uintmax_t)sizeof(DefragTrackerHashRow));
@@ -241,14 +231,14 @@ void DefragInitConfig(char quiet)
                 DefragTrackerEnqueue(&defragtracker_spare_q,h);
             }
             if (quiet == FALSE) {
-                SCLogInfo("preallocated %" PRIu32 " defrag trackers of size %" PRIuMAX "",
+                SCLogConfig("preallocated %" PRIu32 " defrag trackers of size %" PRIuMAX "",
                         defragtracker_spare_q.len, (uintmax_t)sizeof(DefragTracker));
             }
         }
     }
 
     if (quiet == FALSE) {
-        SCLogInfo("defrag memory usage: %llu bytes, maximum: %"PRIu64,
+        SCLogConfig("defrag memory usage: %llu bytes, maximum: %"PRIu64,
                 SC_ATOMIC_GET(defrag_memuse), defrag_config.memcap);
     }
 
@@ -467,7 +457,7 @@ static DefragTracker *DefragTrackerGetNew(Packet *p)
             /* freed a tracker, but it's unlocked */
         } else {
             /* now see if we can alloc a new tracker */
-            dt = DefragTrackerNew(p);
+            dt = DefragTrackerAlloc();
             if (dt == NULL) {
                 return NULL;
             }
@@ -526,7 +516,7 @@ DefragTracker *DefragGetTrackerFromHash (Packet *p)
     dt = hb->head;
 
     /* see if this is the tracker we are looking for */
-    if (DefragTrackerCompare(dt, p) == 0) {
+    if (dt->remove || DefragTrackerCompare(dt, p) == 0) {
         DefragTracker *pdt = NULL; /* previous tracker */
 
         while (dt) {

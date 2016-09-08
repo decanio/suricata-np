@@ -64,28 +64,7 @@ void DetectFlowvarRegister (void)
     sigmatch_table[DETECT_FLOWVAR_POSTMATCH].Free  = DetectFlowvarDataFree;
     sigmatch_table[DETECT_FLOWVAR_POSTMATCH].RegisterTests  = NULL;
 
-    const char *eb;
-    int eo;
-    int opts = 0;
-
-    parse_regex = pcre_compile(PARSE_REGEX, opts, &eb, &eo, NULL);
-    if(parse_regex == NULL)
-    {
-        SCLogError(SC_ERR_PCRE_COMPILE, "pcre compile of \"%s\" failed at offset %" PRId32 ": %s", PARSE_REGEX, eo, eb);
-        goto error;
-    }
-
-    parse_regex_study = pcre_study(parse_regex, 0, &eb);
-    if(eb != NULL)
-    {
-        SCLogError(SC_ERR_PCRE_STUDY, "pcre study failed: %s", eb);
-        goto error;
-    }
-
-    return;
-
-error:
-    return;
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
 }
 
 /**
@@ -119,9 +98,6 @@ int DetectFlowvarMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx, Packet *p
     int ret = 0;
     DetectFlowvarData *fd = (DetectFlowvarData *)ctx;
 
-    /* we need a lock */
-    FLOWLOCK_RDLOCK(p->flow);
-
     FlowVar *fv = FlowVarGet(p->flow, fd->idx);
     if (fv != NULL) {
         uint8_t *ptr = SpmSearch(fv->data.fv_str.value,
@@ -130,7 +106,6 @@ int DetectFlowvarMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx, Packet *p
         if (ptr != NULL)
             ret = 1;
     }
-    FLOWLOCK_UNLOCK(p->flow);
 
     return ret;
 }

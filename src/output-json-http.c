@@ -50,7 +50,6 @@
 #include "output-json.h"
 
 #ifdef HAVE_LIBJANSSON
-#include <jansson.h>
 
 typedef struct LogHttpFileCtx_ {
     LogFileCtx *file_ctx;
@@ -92,6 +91,8 @@ typedef enum {
     HTTP_FIELD_X_REQUESTED_WITH,
     HTTP_FIELD_DNT,
     HTTP_FIELD_X_FORWARDED_PROTO,
+    HTTP_FIELD_X_AUTHENTICATED_USER,
+    HTTP_FIELD_X_FLASH_VERSION,
     HTTP_FIELD_ACCEPT_RANGES,
     HTTP_FIELD_AGE,
     HTTP_FIELD_ALLOW,
@@ -147,6 +148,8 @@ struct {
     { "x_requested_with", "x-requested-with", LOG_HTTP_REQUEST },
     { "dnt", "dnt", LOG_HTTP_REQUEST },
     { "x_forwarded_proto", "x-forwarded-proto", LOG_HTTP_REQUEST },
+    { "x_authenticated_user", "x-authenticated-user", LOG_HTTP_REQUEST },
+    { "x_flash_version", "x-flash-version", LOG_HTTP_REQUEST },
     { "accept_range", "accept-range", 0 },
     { "age", "age", 0 },
     { "allow", "allow", 0 },
@@ -362,9 +365,6 @@ static void JsonHttpLogJSON(JsonHttpLogThread *aft, json_t *js, htp_tx_t *tx, ui
     if (http_ctx->flags & LOG_HTTP_EXTENDED)
         JsonHttpLogJSONExtended(hjs, tx);
 
-    /* tx id for correlation with alerts */
-    json_object_set_new(hjs, "tx_id", json_integer(tx_id));
-
     json_object_set_new(js, "http", hjs);
 }
 
@@ -374,26 +374,46 @@ static int JsonHttpLogger(ThreadVars *tv, void *thread_data, const Packet *p, Fl
 
     htp_tx_t *tx = txptr;
     JsonHttpLogThread *jhl = (JsonHttpLogThread *)thread_data;
-    MemBuffer *buffer = (MemBuffer *)jhl->buffer;
 
-    json_t *js = CreateJSONHeader((Packet *)p, 1, "http"); //TODO const
+    json_t *js = CreateJSONHeaderWithTxId((Packet *)p, 1, "http", tx_id); //TODO const
     if (unlikely(js == NULL))
         return TM_ECODE_OK;
 
     SCLogDebug("got a HTTP request and now logging !!");
 
     /* reset */
-    MemBufferReset(buffer);
+    MemBufferReset(jhl->buffer);
 
     JsonHttpLogJSON(jhl, js, tx, tx_id);
 
-    OutputJSONBuffer(js, jhl->httplog_ctx->file_ctx, buffer);
+    OutputJSONBuffer(js, jhl->httplog_ctx->file_ctx, &jhl->buffer);
     json_object_del(js, "http");
 
     json_object_clear(js);
     json_decref(js);
 
     SCReturnInt(TM_ECODE_OK);
+}
+
+json_t *JsonHttpAddMetadata(const Flow *f, uint64_t tx_id)
+{
+    HtpState *htp_state = (HtpState *)FlowGetAppState(f);
+    if (htp_state) {
+        htp_tx_t *tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP, htp_state, tx_id);
+
+        if (tx) {
+            json_t *hjs = json_object();
+            if (unlikely(hjs == NULL))
+                return NULL;
+
+            JsonHttpLogJSONBasic(hjs, tx);
+            JsonHttpLogJSONExtended(hjs, tx);
+
+            return hjs;
+        }
+    }
+
+    return NULL;
 }
 
 static void OutputHttpLogDeinit(OutputCtx *output_ctx)
@@ -414,7 +434,7 @@ OutputCtx *OutputHttpLogInit(ConfNode *conf)
         return NULL;
     }
 
-    if (SCConfLogOpenGeneric(conf, file_ctx, DEFAULT_LOG_FILENAME) < 0) {
+    if (SCConfLogOpenGeneric(conf, file_ctx, DEFAULT_LOG_FILENAME, 1) < 0) {
         LogFileFreeCtx(file_ctx);
         return NULL;
     }
@@ -529,7 +549,7 @@ static TmEcode JsonHttpLogThreadInit(ThreadVars *t, void *initdata, void **data)
 
     if(initdata == NULL)
     {
-        SCLogDebug("Error getting context for HTTPLog.  \"initdata\" argument NULL");
+        SCLogDebug("Error getting context for EveLogHTTP.  \"initdata\" argument NULL");
         SCFree(aft);
         return TM_ECODE_FAILED;
     }

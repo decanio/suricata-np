@@ -213,16 +213,11 @@ int RunModeTileMpipeWorkers(void)
             exit(EXIT_FAILURE);
         }
 
-        snprintf(tname, sizeof(tname), "Worker%d", pipe+1);
-        thread_name = SCStrdup(tname);
-        if (unlikely(thread_name == NULL)) {
-            printf("ERROR: SCStrdup failed for ReceiveMpipe\n");
-            exit(EXIT_FAILURE);
-        }
+        snprintf(tname, sizeof(tname), "%s#%02d", thread_name_workers, pipe+1);
 
         /* create the threads */
         ThreadVars *tv_worker =
-             TmThreadCreatePacketHandler(thread_name,
+             TmThreadCreatePacketHandler(tname,
                                          "packetpool", "packetpool",
                                          "packetpool", "packetpool", 
                                          "pktacqloop");
@@ -250,21 +245,12 @@ int RunModeTileMpipeWorkers(void)
         }
         TmSlotSetFuncAppend(tv_worker, tm_module, NULL);
 
-        tm_module = TmModuleGetByName("StreamTcp");
+        tm_module = TmModuleGetByName("FlowWorker");
         if (tm_module == NULL) {
-            printf("ERROR: TmModuleGetByName StreamTcp failed\n");
+            SCLogError(SC_ERR_RUNMODE, "TmModuleGetByName for FlowWorker failed");
             exit(EXIT_FAILURE);
         }
         TmSlotSetFuncAppend(tv_worker, tm_module, NULL);
-
-        if (DetectEngineEnabled()) {
-            tm_module = TmModuleGetByName("Detect");
-            if (tm_module == NULL) {
-                printf("ERROR: TmModuleGetByName Detect failed\n");
-                exit(EXIT_FAILURE);
-            }
-            TmSlotSetFuncAppend(tv_worker, tm_module, NULL);
-        }
 
         tm_module = TmModuleGetByName("RespondReject");
         if (tm_module == NULL) {

@@ -86,7 +86,7 @@ int OutputRegisterStreamingLogger(const char *name, StreamingLogger LogFunc,
         t->next = op;
     }
 
-    SCLogDebug("OutputRegisterTxLogger happy");
+    SCLogDebug("OutputRegisterStreamingLogger happy");
     return 0;
 }
 
@@ -98,7 +98,7 @@ typedef struct StreamerCallbackData_ {
     enum OutputStreamingType type;
 } StreamerCallbackData;
 
-int Streamer(void *cbdata, Flow *f, uint8_t *data, uint32_t data_len, uint64_t tx_id, uint8_t flags)
+int Streamer(void *cbdata, Flow *f, const uint8_t *data, uint32_t data_len, uint64_t tx_id, uint8_t flags)
 {
     StreamerCallbackData *streamer_cbdata = (StreamerCallbackData *)cbdata;
     BUG_ON(streamer_cbdata == NULL);
@@ -147,9 +147,11 @@ int HttpBodyIterator(Flow *f, int close, void *cbdata, uint8_t iflags)
     HtpState *s = f->alstate;
     if (s != NULL && s->conn != NULL) {
         int tx_progress_done_value_ts =
-            AppLayerParserGetStateProgressCompletionStatus(IPPROTO_TCP, ALPROTO_HTTP, 0);
+            AppLayerParserGetStateProgressCompletionStatus(ALPROTO_HTTP,
+                                                           STREAM_TOSERVER);
         int tx_progress_done_value_tc =
-            AppLayerParserGetStateProgressCompletionStatus(IPPROTO_TCP, ALPROTO_HTTP, 1);
+            AppLayerParserGetStateProgressCompletionStatus(ALPROTO_HTTP,
+                                                           STREAM_TOCLIENT);
 
         // for each tx
         uint64_t tx_id = 0;
@@ -161,9 +163,11 @@ int HttpBodyIterator(Flow *f, int close, void *cbdata, uint8_t iflags)
                 int tx_done = 0;
                 int tx_logged = 0;
 
-                int tx_progress_ts = AppLayerParserGetStateProgress(IPPROTO_TCP, ALPROTO_HTTP, tx, 0);
+                int tx_progress_ts = AppLayerParserGetStateProgress(
+                        IPPROTO_TCP, ALPROTO_HTTP, tx, FlowGetDisruptionFlags(f, STREAM_TOSERVER));
                 if (tx_progress_ts >= tx_progress_done_value_ts) {
-                    int tx_progress_tc = AppLayerParserGetStateProgress(IPPROTO_TCP, ALPROTO_HTTP, tx, 1);
+                    int tx_progress_tc = AppLayerParserGetStateProgress(
+                            IPPROTO_TCP, ALPROTO_HTTP, tx, FlowGetDisruptionFlags(f, STREAM_TOCLIENT));
                     if (tx_progress_tc >= tx_progress_done_value_tc) {
                         tx_done = 1;
                     }
@@ -201,7 +205,7 @@ int HttpBodyIterator(Flow *f, int close, void *cbdata, uint8_t iflags)
                         }
 
                         uint8_t flags = iflags | OUTPUT_STREAMING_FLAG_TRANSACTION;
-                        if (chunk->stream_offset == 0)
+                        if (chunk->sbseg.stream_offset == 0)
                             flags |= OUTPUT_STREAMING_FLAG_OPEN;
                         /* if we need to close and we're at the last segment in the list
                          * we add the 'close' flag so the logger can close up. */
@@ -209,9 +213,13 @@ int HttpBodyIterator(Flow *f, int close, void *cbdata, uint8_t iflags)
                             flags |= OUTPUT_STREAMING_FLAG_CLOSE;
                         }
 
+                        const uint8_t *data = NULL;
+                        uint32_t data_len = 0;
+                        StreamingBufferSegmentGetData(body->sb, &chunk->sbseg, &data, &data_len);
+
                         // invoke Streamer
-                        Streamer(cbdata, f, chunk->data, (uint32_t)chunk->len, tx_id, flags);
-                        //PrintRawDataFp(stdout, chunk->data, chunk->len);
+                        Streamer(cbdata, f, data, data_len, tx_id, flags);
+                        //PrintRawDataFp(stdout, data, data_len);
                         chunk->logged = 1;
                         tx_logged = 1;
                     }

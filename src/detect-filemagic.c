@@ -53,7 +53,6 @@
 #include "detect-filemagic.h"
 
 #include "conf.h"
-#include "util-magic.h"
 
 static int DetectFilemagicMatch (ThreadVars *, DetectEngineThreadCtx *, Flow *,
         uint8_t, File *, Signature *, SigMatch *);
@@ -91,40 +90,21 @@ void DetectFilemagicRegister(void)
  */
 int FilemagicGlobalLookup(File *file)
 {
-    if (file == NULL || file->chunks_head == NULL) {
+    if (file == NULL || FileSize(file) == 0) {
         SCReturnInt(-1);
     }
 
-    /* initial chunk already matching our requirement */
-    if (file->chunks_head->len >= FILEMAGIC_MIN_SIZE) {
-        file->magic = MagicGlobalLookup(file->chunks_head->data, FILEMAGIC_MIN_SIZE);
-    } else {
-        uint8_t *buf = SCMalloc(FILEMAGIC_MIN_SIZE);
-        uint32_t size = 0;
+    const uint8_t *data = NULL;
+    uint32_t data_len = 0;
+    uint64_t offset = 0;
 
-        if (likely(buf != NULL)) {
-            FileData *ffd = file->chunks_head;
-
-            for ( ; ffd != NULL; ffd = ffd->next) {
-                uint32_t copy_len = ffd->len;
-                if (size + ffd->len > FILEMAGIC_MIN_SIZE)
-                    copy_len = FILEMAGIC_MIN_SIZE - size;
-
-                memcpy(buf + size, ffd->data, copy_len);
-                size += copy_len;
-
-                if (size >= FILEMAGIC_MIN_SIZE) {
-                    file->magic = MagicGlobalLookup(buf, size);
-                    break;
-                }
-                /* file is done but smaller than FILEMAGIC_MIN_SIZE */
-                if (ffd->next == NULL && file->state >= FILE_STATE_CLOSED) {
-                    file->magic = MagicGlobalLookup(buf, size);
-                    break;
-                }
-            }
-
-            SCFree(buf);
+    StreamingBufferGetData(file->sb,
+                           &data, &data_len, &offset);
+    if (offset == 0) {
+        if (FileSize(file) >= FILEMAGIC_MIN_SIZE) {
+            file->magic = MagicGlobalLookup(data, data_len);
+        } else if (file->state >= FILE_STATE_CLOSED) {
+            file->magic = MagicGlobalLookup(data, data_len);
         }
     }
 
@@ -141,43 +121,23 @@ int FilemagicGlobalLookup(File *file)
  */
 int FilemagicThreadLookup(magic_t *ctx, File *file)
 {
-    if (ctx == NULL || file == NULL || file->chunks_head == NULL) {
+    if (ctx == NULL || file == NULL || FileSize(file) == 0) {
         SCReturnInt(-1);
     }
 
-    /* initial chunk already matching our requirement */
-    if (file->chunks_head->len >= FILEMAGIC_MIN_SIZE) {
-        file->magic = MagicThreadLookup(ctx, file->chunks_head->data, FILEMAGIC_MIN_SIZE);
-    } else {
-        uint8_t *buf = SCMalloc(FILEMAGIC_MIN_SIZE);
-        uint32_t size = 0;
+    const uint8_t *data = NULL;
+    uint32_t data_len = 0;
+    uint64_t offset = 0;
 
-        if (likely(buf != NULL)) {
-            FileData *ffd = file->chunks_head;
-
-            for ( ; ffd != NULL; ffd = ffd->next) {
-                uint32_t copy_len = ffd->len;
-                if (size + ffd->len > FILEMAGIC_MIN_SIZE)
-                    copy_len = FILEMAGIC_MIN_SIZE - size;
-
-                memcpy(buf + size, ffd->data, copy_len);
-                size += copy_len;
-
-                if (size >= FILEMAGIC_MIN_SIZE) {
-                    file->magic = MagicThreadLookup(ctx, buf, size);
-                    break;
-                }
-                /* file is done but smaller than FILEMAGIC_MIN_SIZE */
-                if (ffd->next == NULL && file->state >= FILE_STATE_CLOSED) {
-                    file->magic = MagicThreadLookup(ctx, buf, size);
-                    break;
-                }
-            }
-
-            SCFree(buf);
+    StreamingBufferGetData(file->sb,
+                           &data, &data_len, &offset);
+    if (offset == 0) {
+        if (FileSize(file) >= FILEMAGIC_MIN_SIZE) {
+            file->magic = MagicThreadLookup(ctx, data, data_len);
+        } else if (file->state >= FILE_STATE_CLOSED) {
+            file->magic = MagicThreadLookup(ctx, data, data_len);
         }
     }
-
     SCReturnInt(0);
 }
 
@@ -322,13 +282,20 @@ static void *DetectFilemagicThreadInit(void *data)
 
     (void)ConfGet("magic-file", &filename);
     if (filename != NULL) {
-        SCLogInfo("using magic-file %s", filename);
-
-        if ( (fd = fopen(filename, "r")) == NULL) {
-            SCLogWarning(SC_ERR_FOPEN, "Error opening file: \"%s\": %s", filename, strerror(errno));
-            goto error;
+        if (strlen(filename) == 0) {
+            /* set filename to NULL on *nix systems so magic_load uses system default path (see man libmagic) */
+            SCLogInfo("using system default magic-file");
+            filename = NULL;
         }
-        fclose(fd);
+        else {
+            SCLogInfo("using magic-file %s", filename);
+
+            if ( (fd = fopen(filename, "r")) == NULL) {
+                SCLogWarning(SC_ERR_FOPEN, "Error opening file: \"%s\": %s", filename, strerror(errno));
+                goto error;
+            }
+            fclose(fd);
+        }
     }
 
     if (magic_load(t->ctx, filename) != 0) {
@@ -371,6 +338,11 @@ static int DetectFilemagicSetup (DetectEngineCtx *de_ctx, Signature *s, char *st
     DetectFilemagicData *filemagic = NULL;
     SigMatch *sm = NULL;
 
+    if (s->alproto != ALPROTO_HTTP && s->alproto != ALPROTO_SMTP) {
+        SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rules with filemagic need to have protocol set to http or smtp.");
+        goto error;
+    }
+
     filemagic = DetectFilemagicParse(str);
     if (filemagic == NULL)
         goto error;
@@ -391,11 +363,6 @@ static int DetectFilemagicSetup (DetectEngineCtx *de_ctx, Signature *s, char *st
     sm->ctx = (void *)filemagic;
 
     SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_FILEMATCH);
-
-    if (s->alproto != ALPROTO_HTTP && s->alproto != ALPROTO_SMTP) {
-        SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting keywords.");
-        goto error;
-    }
 
     if (s->alproto == ALPROTO_HTTP) {
         AppLayerHtpNeedFileInspection();
@@ -491,8 +458,8 @@ int DetectFilemagicTestParse03 (void)
 void DetectFilemagicRegisterTests(void)
 {
 #ifdef UNITTESTS /* UNITTESTS */
-    UtRegisterTest("DetectFilemagicTestParse01", DetectFilemagicTestParse01, 1);
-    UtRegisterTest("DetectFilemagicTestParse02", DetectFilemagicTestParse02, 1);
-    UtRegisterTest("DetectFilemagicTestParse03", DetectFilemagicTestParse03, 1);
+    UtRegisterTest("DetectFilemagicTestParse01", DetectFilemagicTestParse01);
+    UtRegisterTest("DetectFilemagicTestParse02", DetectFilemagicTestParse02);
+    UtRegisterTest("DetectFilemagicTestParse03", DetectFilemagicTestParse03);
 #endif /* UNITTESTS */
 }

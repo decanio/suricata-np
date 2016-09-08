@@ -106,6 +106,7 @@ typedef struct AppLayerProtoDetectProbingParser_ {
 
 typedef struct AppLayerProtoDetectPMSignature_ {
     AppProto alproto;
+    SigIntId id;
     /* \todo Change this into a non-pointer */
     DetectContentData *cd;
     struct AppLayerProtoDetectPMSignature_ *next;
@@ -124,6 +125,7 @@ typedef struct AppLayerProtoDetectPMCtx_ {
 
     /* \todo we don't need this except at setup time.  Get rid of it. */
     PatIntId max_pat_id;
+    SigIntId max_sig_id;
 } AppLayerProtoDetectPMCtx;
 
 typedef struct AppLayerProtoDetectCtxIpproto_ {
@@ -140,6 +142,9 @@ typedef struct AppLayerProtoDetectCtx_ {
      *       implemented if needed.  Waste of space otherwise. */
     AppLayerProtoDetectCtxIpproto ctx_ipp[FLOW_PROTO_DEFAULT];
 
+    /* Global SPM thread context prototype. */
+    SpmGlobalThreadCtx *spm_global_thread_ctx;
+
     AppLayerProtoDetectProbingParser *ctx_pp;
 
     /* Indicates the protocols that have registered themselves
@@ -155,6 +160,7 @@ struct AppLayerProtoDetectThreadCtx_ {
     PatternMatcherQueue pmq;
     /* The value 2 is for direction(0 - toserver, 1 - toclient). */
     MpmThreadCtx mpm_tctx[FLOW_PROTO_DEFAULT][2];
+    SpmThreadCtx *spm_thread_ctx;
 };
 
 /* The global app layer proto detection context. */
@@ -165,6 +171,7 @@ static AppLayerProtoDetectCtx alpd_ctx;
 /** \internal
  *  \brief Handle SPM search for Signature */
 static AppProto AppLayerProtoDetectPMMatchSignature(const AppLayerProtoDetectPMSignature *s,
+                                                    AppLayerProtoDetectThreadCtx *tctx,
                                                     uint8_t *buf, uint16_t buflen,
                                                     uint8_t ipproto)
 {
@@ -189,10 +196,7 @@ static AppProto AppLayerProtoDetectPMMatchSignature(const AppLayerProtoDetectPMS
     SCLogDebug("s->co->offset (%"PRIu16") s->cd->depth (%"PRIu16")",
                s->cd->offset, s->cd->depth);
 
-    if (s->cd->flags & DETECT_CONTENT_NOCASE)
-        found = BoyerMooreNocase(s->cd->content, s->cd->content_len, sbuf, sbuflen, s->cd->bm_ctx);
-    else
-        found = BoyerMoore(s->cd->content, s->cd->content_len, sbuf, sbuflen, s->cd->bm_ctx);
+    found = SpmScan(s->cd->spm_ctx, tctx->spm_thread_ctx, sbuf, sbuflen);
     if (found != NULL)
         proto = s->alproto;
 
@@ -254,11 +258,11 @@ static AppProto AppLayerProtoDetectPMGetProto(AppLayerProtoDetectThreadCtx *tctx
     /* loop through unique pattern id's. Can't use search_cnt here,
      * as that contains all matches, tctx->pmq.pattern_id_array_cnt
      * contains only *unique* matches. */
-    for (cnt = 0; cnt < tctx->pmq.pattern_id_array_cnt; cnt++) {
-        const AppLayerProtoDetectPMSignature *s = pm_ctx->map[tctx->pmq.pattern_id_array[cnt]];
+    for (cnt = 0; cnt < tctx->pmq.rule_id_array_cnt; cnt++) {
+        const AppLayerProtoDetectPMSignature *s = pm_ctx->map[tctx->pmq.rule_id_array[cnt]];
         while (s != NULL) {
             AppProto proto = AppLayerProtoDetectPMMatchSignature(s,
-                    buf, searchlen, ipproto);
+                    tctx, buf, searchlen, ipproto);
 
             /* store each unique proto once */
             if (proto != ALPROTO_UNKNOWN &&
@@ -645,7 +649,7 @@ void AppLayerProtoDetectPrintProbingParsers(AppLayerProtoDetectProbingParser *pp
         else if (pp->ipproto == IPPROTO_UDP)
             printf("IPProto: UDP\n");
         else
-            printf("IPProto: %"PRIu16"\n", pp->ipproto);
+            printf("IPProto: %"PRIu8"\n", pp->ipproto);
 
         pp_port = pp->port;
         for ( ; pp_port != NULL; pp_port = pp_port->next) {
@@ -687,6 +691,8 @@ void AppLayerProtoDetectPrintProbingParsers(AppLayerProtoDetectProbingParser *pp
                         printf("            alproto: ALPROTO_DNS\n");
                     else if (pp_pe->alproto == ALPROTO_MODBUS)
                         printf("            alproto: ALPROTO_MODBUS\n");
+                    else if (pp_pe->alproto == ALPROTO_TEMPLATE)
+                        printf("            alproto: ALPROTO_TEMPLATE\n");
                     else
                         printf("impossible\n");
 
@@ -738,6 +744,8 @@ void AppLayerProtoDetectPrintProbingParsers(AppLayerProtoDetectProbingParser *pp
                     printf("            alproto: ALPROTO_DNS\n");
                 else if (pp_pe->alproto == ALPROTO_MODBUS)
                     printf("            alproto: ALPROTO_MODBUS\n");
+                else if (pp_pe->alproto == ALPROTO_TEMPLATE)
+                    printf("            alproto: ALPROTO_TEMPLATE\n");
                 else
                     printf("impossible\n");
 
@@ -934,7 +942,7 @@ static void AppLayerProtoDetectInsertNewProbingParser(AppLayerProtoDetectProbing
     while (curr_pe != NULL) {
         if (curr_pe->alproto == alproto) {
             SCLogError(SC_ERR_ALPARSER, "Duplicate pp registered - "
-                       "ipproto - %"PRIu16" Port - %"PRIu16" "
+                       "ipproto - %"PRIu8" Port - %"PRIu16" "
                        "App Protocol - NULL, App Protocol(ID) - "
                        "%"PRIu16" min_depth - %"PRIu16" "
                        "max_dept - %"PRIu16".",
@@ -1023,8 +1031,6 @@ static void AppLayerProtoDetectPMGetIpprotos(AppProto alproto,
     SCEnter();
 
     const AppLayerProtoDetectPMSignature *s = NULL;
-    int pat_id, max_pat_id;
-
     int i, j;
     uint8_t ipproto;
 
@@ -1032,15 +1038,12 @@ static void AppLayerProtoDetectPMGetIpprotos(AppProto alproto,
         ipproto = FlowGetReverseProtoMapping(i);
         for (j = 0; j < 2; j++) {
             AppLayerProtoDetectPMCtx *pm_ctx = &alpd_ctx.ctx_ipp[i].ctx_pm[j];
-            max_pat_id = pm_ctx->max_pat_id;
 
-            for (pat_id = 0; pat_id < max_pat_id; pat_id++) {
-                s = pm_ctx->map[pat_id];
-                while (s != NULL) {
-                    if (s->alproto == alproto)
-                        ipprotos[ipproto / 8] |= 1 << (ipproto % 8);
-                    s = s->next;
-                }
+            SigIntId x;
+            for (x = 0; x < pm_ctx->max_sig_id;x++) {
+                s = pm_ctx->map[x];
+                if (s->alproto == alproto)
+                    ipprotos[ipproto / 8] |= 1 << (ipproto % 8);
             }
         }
     }
@@ -1077,6 +1080,7 @@ static int AppLayerProtoDetectPMSetContentIDs(AppLayerProtoDetectPMCtx *ctx)
     for (s = ctx->head; s != NULL; s = s->next) {
         struct_total_size += sizeof(TempContainer);
         content_total_size += s->cd->content_len;
+        ctx->max_sig_id++;
     }
 
     ahb = SCMalloc(sizeof(uint8_t) * (struct_total_size + content_total_size));
@@ -1130,54 +1134,40 @@ static int AppLayerProtoDetectPMMapSignatures(AppLayerProtoDetectPMCtx *ctx)
     SCEnter();
 
     int ret = 0;
-    PatIntId max_pat_id = 0, tmp_pat_id;
     AppLayerProtoDetectPMSignature *s, *next_s;
     int mpm_ret;
+    SigIntId id = 0;
 
-    max_pat_id = ctx->max_pat_id;
-
-    ctx->map = SCMalloc((max_pat_id) * sizeof(AppLayerProtoDetectPMSignature *));
+    ctx->map = SCMalloc(ctx->max_sig_id * sizeof(AppLayerProtoDetectPMSignature *));
     if (ctx->map == NULL)
         goto error;
-    memset(ctx->map, 0, (max_pat_id) * sizeof(AppLayerProtoDetectPMSignature *));
+    memset(ctx->map, 0, ctx->max_sig_id * sizeof(AppLayerProtoDetectPMSignature *));
 
-    /* add an array indexed by pattern id to look up the sig */
-    for (s = ctx->head; s != NULL;) {
+    /* add an array indexed by rule id to look up the sig */
+    for (s = ctx->head; s != NULL; ) {
         next_s = s->next;
-        s->next = ctx->map[s->cd->id];
-        ctx->map[s->cd->id] = s;
-        s = next_s;
-    }
-    ctx->head = NULL;
+        s->id = id++;
+        SCLogDebug("s->id %u", s->id);
 
-
-    for (tmp_pat_id = 0; tmp_pat_id < max_pat_id; tmp_pat_id++) {
-        s = NULL;
-        for (s = ctx->map[tmp_pat_id]; s != NULL; s = s->next) {
-            if (s->cd->flags & DETECT_CONTENT_NOCASE) {
-                break;
-            }
-        }
-        /* if s != NULL now, it's CI. If NULL, CS */
-
-        if (s != NULL) {
+        if (s->cd->flags & DETECT_CONTENT_NOCASE) {
             mpm_ret = MpmAddPatternCI(&ctx->mpm_ctx,
                                       s->cd->content, s->cd->content_len,
-                                      0, 0, tmp_pat_id, 0, 0);
+                                      0, 0, s->cd->id, s->id, 0);
             if (mpm_ret < 0)
                 goto error;
         } else {
-            s = ctx->map[tmp_pat_id];
-            if (s == NULL)
-                goto error;
-
             mpm_ret = MpmAddPatternCS(&ctx->mpm_ctx,
                                       s->cd->content, s->cd->content_len,
-                                      0, 0, tmp_pat_id, 0, 0);
+                                      0, 0, s->cd->id, s->id, 0);
             if (mpm_ret < 0)
                 goto error;
         }
+
+        ctx->map[s->id] = s;
+        s->next = NULL;
+        s = next_s;
     }
+    ctx->head = NULL;
 
     goto end;
  error:
@@ -1252,13 +1242,20 @@ static int AppLayerProtoDetectPMRegisterPattern(uint8_t ipproto, AppProto alprot
     DetectContentData *cd;
     int ret = 0;
 
-    cd = DetectContentParseEncloseQuotes(pattern);
+    cd = DetectContentParseEncloseQuotes(alpd_ctx.spm_global_thread_ctx,
+                                         pattern);
     if (cd == NULL)
         goto error;
     cd->depth = depth;
     cd->offset = offset;
     if (!is_cs) {
-        BoyerMooreCtxToNocase(cd->bm_ctx, cd->content, cd->content_len);
+        /* Rebuild as nocase */
+        SpmDestroyCtx(cd->spm_ctx);
+        cd->spm_ctx = SpmInitCtx(cd->content, cd->content_len, 1,
+                                 alpd_ctx.spm_global_thread_ctx);
+        if (cd->spm_ctx == NULL) {
+            goto error;
+        }
         cd->flags |= DETECT_CONTENT_NOCASE;
     }
     if (depth < cd->content_len)
@@ -1352,7 +1349,7 @@ int AppLayerProtoDetectPrepareState(void)
             if (AppLayerProtoDetectPMSetContentIDs(ctx_pm) < 0)
                 goto error;
 
-            if (ctx_pm->max_pat_id == 0)
+            if (ctx_pm->max_sig_id == 0)
                 continue;
 
             if (AppLayerProtoDetectPMMapSignatures(ctx_pm) < 0)
@@ -1530,9 +1527,24 @@ int AppLayerProtoDetectSetup(void)
 
     memset(&alpd_ctx, 0, sizeof(alpd_ctx));
 
+    uint16_t spm_matcher = SinglePatternMatchDefaultMatcher();
+    uint16_t mpm_matcher = PatternMatchDefaultMatcher();
+
+#ifdef __SC_CUDA_SUPPORT__
+    /* CUDA won't work here, so fall back to AC */
+    if (mpm_matcher == MPM_AC_CUDA)
+        mpm_matcher = DEFAULT_MPM;
+#endif
+
+    alpd_ctx.spm_global_thread_ctx = SpmInitGlobalThreadCtx(spm_matcher);
+    if (alpd_ctx.spm_global_thread_ctx == NULL) {
+        SCLogError(SC_ERR_FATAL, "Unable to alloc SpmGlobalThreadCtx.");
+        exit(EXIT_FAILURE);
+    }
+
     for (i = 0; i < FLOW_PROTO_DEFAULT; i++) {
         for (j = 0; j < 2; j++) {
-            MpmInitCtx(&alpd_ctx.ctx_ipp[i].ctx_pm[j].mpm_ctx, MPM_AC);
+            MpmInitCtx(&alpd_ctx.ctx_ipp[i].ctx_pm[j].mpm_ctx, mpm_matcher);
         }
     }
     SCReturnInt(0);
@@ -1549,22 +1561,20 @@ int AppLayerProtoDetectDeSetup(void)
     int dir = 0;
     PatIntId id = 0;
     AppLayerProtoDetectPMCtx *pm_ctx = NULL;
-    AppLayerProtoDetectPMSignature *sig = NULL, *next_sig = NULL;
+    AppLayerProtoDetectPMSignature *sig = NULL;
 
     for (ipproto_map = 0; ipproto_map < FLOW_PROTO_DEFAULT; ipproto_map++) {
         for (dir = 0; dir < 2; dir++) {
             pm_ctx = &alpd_ctx.ctx_ipp[ipproto_map].ctx_pm[dir];
-            mpm_table[pm_ctx->mpm_ctx.mpm_type].DestroyCtx(pm_ctx->mpm_ctx.ctx);
-            for (id = 0; id < pm_ctx->max_pat_id; id++) {
+            mpm_table[pm_ctx->mpm_ctx.mpm_type].DestroyCtx(&pm_ctx->mpm_ctx);
+            for (id = 0; id < pm_ctx->max_sig_id; id++) {
                 sig = pm_ctx->map[id];
-                while (sig != NULL) {
-                    next_sig = sig->next;
-                    AppLayerProtoDetectPMFreeSignature(sig);
-                    sig = next_sig;
-                }
+                AppLayerProtoDetectPMFreeSignature(sig);
             }
         }
     }
+
+    SpmDestroyGlobalThreadCtx(alpd_ctx.spm_global_thread_ctx);
 
     AppLayerProtoDetectFreeProbingParsers(alpd_ctx.ctx_pp);
 
@@ -1679,15 +1689,20 @@ AppLayerProtoDetectThreadCtx *AppLayerProtoDetectGetCtxThread(void)
     memset(alpd_tctx, 0, sizeof(*alpd_tctx));
 
     /* Get the max pat id for all the mpm ctxs. */
-    if (PmqSetup(&alpd_tctx->pmq, max_pat_id) < 0)
+    if (PmqSetup(&alpd_tctx->pmq) < 0)
         goto error;
 
     for (i = 0; i < FLOW_PROTO_DEFAULT; i++) {
         for (j = 0; j < 2; j++) {
             mpm_ctx = &alpd_ctx.ctx_ipp[i].ctx_pm[j].mpm_ctx;
             mpm_tctx = &alpd_tctx->mpm_tctx[i][j];
-            mpm_table[mpm_ctx->mpm_type].InitThreadCtx(mpm_ctx, mpm_tctx, 0);
+            mpm_table[mpm_ctx->mpm_type].InitThreadCtx(mpm_ctx, mpm_tctx);
         }
+    }
+
+    alpd_tctx->spm_thread_ctx = SpmMakeThreadCtx(alpd_ctx.spm_global_thread_ctx);
+    if (alpd_tctx->spm_thread_ctx == NULL) {
+        goto error;
     }
 
     goto end;
@@ -1715,6 +1730,9 @@ void AppLayerProtoDetectDestroyCtxThread(AppLayerProtoDetectThreadCtx *alpd_tctx
         }
     }
     PmqFree(&alpd_tctx->pmq);
+    if (alpd_tctx->spm_thread_ctx != NULL) {
+        SpmDestroyThreadCtx(alpd_tctx->spm_thread_ctx);
+    }
     SCFree(alpd_tctx);
 
     SCReturn;
@@ -3311,7 +3329,6 @@ static int AppLayerProtoDetectTest16(void)
     if (de_ctx == NULL) {
         goto end;
     }
-    de_ctx->mpm_matcher = MPM_B2G;
     de_ctx->flags |= DE_QUIET;
 
     s = de_ctx->sig_list = SigInit(de_ctx, "alert http any any -> any any "
@@ -3405,7 +3422,6 @@ static int AppLayerProtoDetectTest17(void)
     if (de_ctx == NULL) {
         goto end;
     }
-    de_ctx->mpm_matcher = MPM_B2G;
     de_ctx->flags |= DE_QUIET;
 
     s = de_ctx->sig_list = SigInit(de_ctx, "alert http any !80 -> any any "
@@ -3501,7 +3517,6 @@ static int AppLayerProtoDetectTest18(void)
     if (de_ctx == NULL) {
         goto end;
     }
-    de_ctx->mpm_matcher = MPM_B2G;
     de_ctx->flags |= DE_QUIET;
 
     s = de_ctx->sig_list = SigInit(de_ctx, "alert ftp any any -> any any "
@@ -3593,7 +3608,6 @@ static int AppLayerProtoDetectTest19(void)
     if (de_ctx == NULL) {
         goto end;
     }
-    de_ctx->mpm_matcher = MPM_B2G;
     de_ctx->flags |= DE_QUIET;
 
     s = de_ctx->sig_list = SigInit(de_ctx, "alert http any !80 -> any any "
@@ -3696,7 +3710,6 @@ static int AppLayerProtoDetectTest20(void)
     ssn.toserver_smsg_head = stream_msg;
     ssn.toserver_smsg_tail = stream_msg;
 
-    de_ctx->mpm_matcher = MPM_B2G;
     de_ctx->flags |= DE_QUIET;
 
     s = de_ctx->sig_list = SigInit(de_ctx, "alert http any any -> any any "
@@ -3749,26 +3762,26 @@ void AppLayerProtoDetectUnittestsRegister(void)
 {
     SCEnter();
 
-    UtRegisterTest("AppLayerProtoDetectTest01", AppLayerProtoDetectTest01, 1);
-    UtRegisterTest("AppLayerProtoDetectTest02", AppLayerProtoDetectTest02, 1);
-    UtRegisterTest("AppLayerProtoDetectTest03", AppLayerProtoDetectTest03, 1);
-    UtRegisterTest("AppLayerProtoDetectTest04", AppLayerProtoDetectTest04, 1);
-    UtRegisterTest("AppLayerProtoDetectTest05", AppLayerProtoDetectTest05, 1);
-    UtRegisterTest("AppLayerProtoDetectTest06", AppLayerProtoDetectTest06, 1);
-    UtRegisterTest("AppLayerProtoDetectTest07", AppLayerProtoDetectTest07, 1);
-    UtRegisterTest("AppLayerProtoDetectTest08", AppLayerProtoDetectTest08, 1);
-    UtRegisterTest("AppLayerProtoDetectTest09", AppLayerProtoDetectTest09, 1);
-    UtRegisterTest("AppLayerProtoDetectTest10", AppLayerProtoDetectTest10, 1);
-    UtRegisterTest("AppLayerProtoDetectTest11", AppLayerProtoDetectTest11, 1);
-    UtRegisterTest("AppLayerProtoDetectTest12", AppLayerProtoDetectTest12, 1);
-    UtRegisterTest("AppLayerProtoDetectTest13", AppLayerProtoDetectTest13, 1);
-    UtRegisterTest("AppLayerProtoDetectTest14", AppLayerProtoDetectTest14, 1);
-    UtRegisterTest("AppLayerProtoDetectTest15", AppLayerProtoDetectTest15, 1);
-    UtRegisterTest("AppLayerProtoDetectTest16", AppLayerProtoDetectTest16, 1);
-    UtRegisterTest("AppLayerProtoDetectTest17", AppLayerProtoDetectTest17, 1);
-    UtRegisterTest("AppLayerProtoDetectTest18", AppLayerProtoDetectTest18, 1);
-    UtRegisterTest("AppLayerProtoDetectTest19", AppLayerProtoDetectTest19, 1);
-    UtRegisterTest("AppLayerProtoDetectTest20", AppLayerProtoDetectTest20, 1);
+    UtRegisterTest("AppLayerProtoDetectTest01", AppLayerProtoDetectTest01);
+    UtRegisterTest("AppLayerProtoDetectTest02", AppLayerProtoDetectTest02);
+    UtRegisterTest("AppLayerProtoDetectTest03", AppLayerProtoDetectTest03);
+    UtRegisterTest("AppLayerProtoDetectTest04", AppLayerProtoDetectTest04);
+    UtRegisterTest("AppLayerProtoDetectTest05", AppLayerProtoDetectTest05);
+    UtRegisterTest("AppLayerProtoDetectTest06", AppLayerProtoDetectTest06);
+    UtRegisterTest("AppLayerProtoDetectTest07", AppLayerProtoDetectTest07);
+    UtRegisterTest("AppLayerProtoDetectTest08", AppLayerProtoDetectTest08);
+    UtRegisterTest("AppLayerProtoDetectTest09", AppLayerProtoDetectTest09);
+    UtRegisterTest("AppLayerProtoDetectTest10", AppLayerProtoDetectTest10);
+    UtRegisterTest("AppLayerProtoDetectTest11", AppLayerProtoDetectTest11);
+    UtRegisterTest("AppLayerProtoDetectTest12", AppLayerProtoDetectTest12);
+    UtRegisterTest("AppLayerProtoDetectTest13", AppLayerProtoDetectTest13);
+    UtRegisterTest("AppLayerProtoDetectTest14", AppLayerProtoDetectTest14);
+    UtRegisterTest("AppLayerProtoDetectTest15", AppLayerProtoDetectTest15);
+    UtRegisterTest("AppLayerProtoDetectTest16", AppLayerProtoDetectTest16);
+    UtRegisterTest("AppLayerProtoDetectTest17", AppLayerProtoDetectTest17);
+    UtRegisterTest("AppLayerProtoDetectTest18", AppLayerProtoDetectTest18);
+    UtRegisterTest("AppLayerProtoDetectTest19", AppLayerProtoDetectTest19);
+    UtRegisterTest("AppLayerProtoDetectTest20", AppLayerProtoDetectTest20);
 
     SCReturn;
 }

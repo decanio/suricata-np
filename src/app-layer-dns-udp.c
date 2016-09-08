@@ -277,27 +277,29 @@ static int DNSUDPResponseParse(Flow *f, void *dstate,
         }
     }
 
-    /* parse rcode, e.g. "noerror" or "nxdomain" */
-    uint8_t rcode = ntohs(dns_header->flags) & 0x0F;
-    if (rcode <= DNS_RCODE_NOTZONE) {
-        SCLogDebug("rcode %u", rcode);
-        if (tx != NULL)
-            tx->rcode = rcode;
-    } else {
-        /* this is not invalid, rcodes can be user defined */
-        SCLogDebug("unexpected DNS rcode %u", rcode);
+    /* if we previously didn't have a tx, it could have been created by the
+     * above code, so lets check again */
+    if (tx == NULL) {
+        tx = DNSTransactionFindByTxId(dns_state, ntohs(dns_header->tx_id));
     }
-
-    if (ntohs(dns_header->flags) & 0x0080) {
-        SCLogDebug("recursion desired");
-        if (tx != NULL)
-            tx->recursion_desired = 1;
-    }
-
     if (tx != NULL) {
+        /* parse rcode, e.g. "noerror" or "nxdomain" */
+        uint8_t rcode = ntohs(dns_header->flags) & 0x0F;
+        if (rcode <= DNS_RCODE_NOTZONE) {
+            SCLogDebug("rcode %u", rcode);
+            tx->rcode = rcode;
+        } else {
+            /* this is not invalid, rcodes can be user defined */
+            SCLogDebug("unexpected DNS rcode %u", rcode);
+        }
+
+        if (ntohs(dns_header->flags) & 0x0080) {
+            SCLogDebug("recursion desired");
+            tx->recursion_desired = 1;
+        }
+
         tx->replied = 1;
     }
-
     SCReturnInt(1);
 
 bad_data:
@@ -334,7 +336,7 @@ static void DNSUDPConfigure(void)
             request_flood = value;
         }
     }
-    SCLogInfo("DNS request flood protection level: %u", request_flood);
+    SCLogConfig("DNS request flood protection level: %u", request_flood);
     DNSConfigSetRequestFlood(request_flood);
 
     p = ConfGetNode("app-layer.protocols.dns.state-memcap");
@@ -346,7 +348,7 @@ static void DNSUDPConfigure(void)
             state_memcap = value;
         }
     }
-    SCLogInfo("DNS per flow memcap (state-memcap): %u", state_memcap);
+    SCLogConfig("DNS per flow memcap (state-memcap): %u", state_memcap);
     DNSConfigSetStateMemcap(state_memcap);
 
     p = ConfGetNode("app-layer.protocols.dns.global-memcap");
@@ -358,7 +360,7 @@ static void DNSUDPConfigure(void)
             global_memcap = value;
         }
     }
-    SCLogInfo("DNS global memcap: %"PRIu64, global_memcap);
+    SCLogConfig("DNS global memcap: %"PRIu64, global_memcap);
     DNSConfigSetGlobalMemcap(global_memcap);
 }
 
@@ -418,9 +420,11 @@ void RegisterDNSUDPParsers(void)
                                     DNSGetTx);
         AppLayerParserRegisterGetTxCnt(IPPROTO_UDP, ALPROTO_DNS,
                                        DNSGetTxCnt);
+        AppLayerParserRegisterLoggerFuncs(IPPROTO_UDP, ALPROTO_DNS, DNSGetTxLogged,
+                                          DNSSetTxLogged);
         AppLayerParserRegisterGetStateProgressFunc(IPPROTO_UDP, ALPROTO_DNS,
                                                    DNSGetAlstateProgress);
-        AppLayerParserRegisterGetStateProgressCompletionStatus(IPPROTO_UDP, ALPROTO_DNS,
+        AppLayerParserRegisterGetStateProgressCompletionStatus(ALPROTO_DNS,
                                                                DNSGetAlstateProgressCompletionStatus);
 
         DNSAppLayerRegisterGetEventInfo(IPPROTO_UDP, ALPROTO_DNS);
@@ -626,10 +630,10 @@ end:
 
 void DNSUDPParserRegisterTests(void)
 {
-    UtRegisterTest("DNSUDPParserTest01", DNSUDPParserTest01, 1);
-    UtRegisterTest("DNSUDPParserTest02", DNSUDPParserTest02, 1);
-    UtRegisterTest("DNSUDPParserTest03", DNSUDPParserTest03, 1);
-    UtRegisterTest("DNSUDPParserTest04", DNSUDPParserTest04, 1);
-    UtRegisterTest("DNSUDPParserTest05", DNSUDPParserTest05, 1);
+    UtRegisterTest("DNSUDPParserTest01", DNSUDPParserTest01);
+    UtRegisterTest("DNSUDPParserTest02", DNSUDPParserTest02);
+    UtRegisterTest("DNSUDPParserTest03", DNSUDPParserTest03);
+    UtRegisterTest("DNSUDPParserTest04", DNSUDPParserTest04);
+    UtRegisterTest("DNSUDPParserTest05", DNSUDPParserTest05);
 }
 #endif

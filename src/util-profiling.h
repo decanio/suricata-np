@@ -32,6 +32,7 @@
 
 extern int profiling_rules_enabled;
 extern int profiling_packets_enabled;
+extern int profiling_sghs_enabled;
 extern __thread int profiling_rules_entered;
 
 void SCProfilingPrintPacketProfile(Packet *);
@@ -95,6 +96,12 @@ PktProfiling *SCProfilePacketStart(void);
             (p)->profile->ticks_start = UtilCpuGetTicks();          \
     }
 
+#define PACKET_PROFILING_RESTART(p)                                 \
+    if (profiling_packets_enabled) {                                \
+        if ((p)->profile != NULL)                                   \
+            (p)->profile->ticks_start = UtilCpuGetTicks();          \
+    }
+
 #define PACKET_PROFILING_END(p)                                     \
     if (profiling_packets_enabled && (p)->profile != NULL) {        \
         (p)->profile->ticks_end = UtilCpuGetTicks();                \
@@ -153,6 +160,20 @@ PktProfiling *SCProfilePacketStart(void);
         if ((id) < TMM_SIZE) {                                      \
             PACKET_PROFILING_COPY_LOCKS((p), (id));                 \
             (p)->profile->tmm[(id)].ticks_end = UtilCpuGetTicks();  \
+        }                                                           \
+    }
+
+#define FLOWWORKER_PROFILING_START(p, id)                           \
+    if (profiling_packets_enabled && (p)->profile != NULL) {        \
+        if ((id) < PROFILE_FLOWWORKER_SIZE) {                       \
+            (p)->profile->flowworker[(id)].ticks_start = UtilCpuGetTicks();\
+        }                                                           \
+    }
+
+#define FLOWWORKER_PROFILING_END(p, id)                             \
+    if (profiling_packets_enabled && (p)->profile != NULL) {        \
+        if ((id) < PROFILE_FLOWWORKER_SIZE) {                       \
+            (p)->profile->flowworker[(id)].ticks_end = UtilCpuGetTicks();  \
         }                                                           \
     }
 
@@ -229,6 +250,11 @@ PktProfiling *SCProfilePacketStart(void);
         }                                                           \
     }
 
+#define SGH_PROFILING_RECORD(det_ctx, sgh)                          \
+    if (profiling_sghs_enabled) {                                   \
+        SCProfilingSghUpdateCounter((det_ctx), (sgh));              \
+    }
+
 
 void SCProfilingRulesGlobalInit(void);
 void SCProfilingRuleDestroyCtx(struct SCProfileDetectCtx_ *);
@@ -243,6 +269,13 @@ void SCProfilingKeywordInitCounters(DetectEngineCtx *);
 void SCProfilingKeywordUpdateCounter(DetectEngineThreadCtx *det_ctx, int id, uint64_t ticks, int match);
 void SCProfilingKeywordThreadSetup(struct SCProfileKeywordDetectCtx_ *, DetectEngineThreadCtx *);
 void SCProfilingKeywordThreadCleanup(DetectEngineThreadCtx *);
+
+void SCProfilingSghsGlobalInit(void);
+void SCProfilingSghDestroyCtx(DetectEngineCtx *);
+void SCProfilingSghInitCounters(DetectEngineCtx *);
+void SCProfilingSghUpdateCounter(DetectEngineThreadCtx *det_ctx, const SigGroupHead *sgh);
+void SCProfilingSghThreadSetup(struct SCProfileSghDetectCtx_ *, DetectEngineThreadCtx *);
+void SCProfilingSghThreadCleanup(DetectEngineThreadCtx *);
 
 void SCProfilingInit(void);
 void SCProfilingDestroy(void);
@@ -259,6 +292,7 @@ void SCProfilingDump(void);
 #define KEYWORD_PROFILING_END(a,b,c)
 
 #define PACKET_PROFILING_START(p)
+#define PACKET_PROFILING_RESTART(p)
 #define PACKET_PROFILING_END(p)
 
 #define PACKET_PROFILING_TMM_START(p, id)
@@ -276,6 +310,11 @@ void SCProfilingDump(void);
 
 #define PACKET_PROFILING_DETECT_START(p, id)
 #define PACKET_PROFILING_DETECT_END(p, id)
+
+#define SGH_PROFILING_RECORD(det_ctx, sgh)
+
+#define FLOWWORKER_PROFILING_START(p, id)
+#define FLOWWORKER_PROFILING_END(p, id)
 
 #endif /* PROFILING */
 

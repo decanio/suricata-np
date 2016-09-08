@@ -71,7 +71,7 @@
 
 /* the name of our binary */
 #define PROG_NAME "Suricata"
-#define PROG_VER "2.1dev"
+#define PROG_VER "3.1dev"
 
 /* workaround SPlint error (don't know __gnuc_va_list) */
 #ifdef S_SPLINT_S
@@ -119,6 +119,8 @@ enum {
 #define IS_SURI_HOST_MODE_SNIFFER_ONLY(host_mode)  ((host_mode) == SURI_HOST_IS_SNIFFER_ONLY)
 #define IS_SURI_HOST_MODE_ROUTER(host_mode)  ((host_mode) == SURI_HOST_IS_ROUTER)
 
+#include "runmodes.h"
+
 /* queue's between various other threads
  * XXX move to the TmQueue structure later
  */
@@ -127,7 +129,7 @@ PacketQueue trans_q[256];
 SCDQDataQueue data_queues[256];
 
 typedef struct SCInstance_ {
-    int run_mode;
+    enum RunModes run_mode;
 
     char pcap_dev[128];
     char *sig_file;
@@ -155,6 +157,8 @@ typedef struct SCInstance_ {
     struct timeval start_time;
 
     char *log_dir;
+    const char *progname; /**< pointer to argv[0] */
+    const char *conf_filename;
 } SCInstance;
 
 
@@ -165,8 +169,6 @@ extern volatile uint8_t suricata_ctl_flags;
 
 /* uppercase to lowercase conversion lookup table */
 uint8_t g_u8_lowercasetable[256];
-
-extern char *conf_filename;
 
 /* marco to do the actual lookup */
 //#define u8_tolower(c) g_u8_lowercasetable[(c)]
@@ -181,11 +183,6 @@ extern char *conf_filename;
 void EngineStop(void);
 void EngineKill(void);
 void EngineDone(void);
-
-/* live rule swap required this to be made static */
-void SignalHandlerSigusr2(int);
-void SignalHandlerSigusr2EngineShutdown(int);
-void SignalHandlerSigusr2Idle(int sig);
 
 int RunmodeIsUnittests(void);
 int RunmodeGetCurrent(void);

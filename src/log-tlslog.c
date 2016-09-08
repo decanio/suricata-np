@@ -56,9 +56,6 @@
 
 #define DEFAULT_LOG_FILENAME "tls.log"
 
-static char tls_logfile_base_dir[PATH_MAX] = "/tmp";
-SC_ATOMIC_DECLARE(unsigned int, cert_id);
-
 #define MODULE_NAME "LogTlsLog"
 
 #define OUTPUT_BUFFER_SIZE 65535
@@ -79,14 +76,15 @@ typedef struct LogTlsLogThread_ {
     uint32_t tls_cnt;
 
     MemBuffer *buffer;
-    uint8_t*   enc_buf;
-    size_t     enc_buf_len;
 } LogTlsLogThread;
 
 static void LogTlsLogExtended(LogTlsLogThread *aft, SSLState * state)
 {
     if (state->server_connp.cert0_fingerprint != NULL) {
         MemBufferWriteString(aft->buffer, " SHA1='%s'", state->server_connp.cert0_fingerprint);
+    }
+    if (state->client_connp.sni != NULL) {
+        MemBufferWriteString(aft->buffer, " SNI='%s'", state->client_connp.sni);
     }
     switch (state->server_connp.version) {
         case TLS_VERSION_UNKNOWN:
@@ -115,7 +113,7 @@ static void LogTlsLogExtended(LogTlsLogThread *aft, SSLState * state)
     MemBufferWriteString(aft->buffer, "\n");
 }
 
-static int GetIPInformations(const Packet *p, char* srcip, size_t srcip_len,
+int TLSGetIPInformations(const Packet *p, char* srcip, size_t srcip_len,
                              Port* sp, char* dstip, size_t dstip_len,
                              Port* dp, int ipproto)
 {
@@ -153,162 +151,6 @@ static int GetIPInformations(const Packet *p, char* srcip, size_t srcip_len,
     return 1;
 }
 
-static int CreateFileName(LogTlsFileCtx *log, const Packet *p, SSLState *state, char *filename)
-{
-#define FILELEN 64  //filename len + extention + ending path / + some space
-
-    int filenamelen = FILELEN + strlen(tls_logfile_base_dir);
-    int file_id = SC_ATOMIC_ADD(cert_id, 1);
-
-    if (filenamelen + 1 > PATH_MAX) {
-        return 0;
-    }
-
-    /* Use format : packet time + incremental ID
-     * When running on same pcap it will overwrite
-     * On a live device, we will not be able to overwrite */
-    snprintf(filename, filenamelen, "%s/%ld.%ld-%d.pem",
-             tls_logfile_base_dir,
-             (long int)p->ts.tv_sec,
-             (long int)p->ts.tv_usec,
-             file_id);
-    return 1;
-}
-
-static void LogTlsLogPem(LogTlsLogThread *aft, const Packet *p, SSLState *state, LogTlsFileCtx *log, int ipproto)
-{
-#define PEMHEADER "-----BEGIN CERTIFICATE-----\n"
-#define PEMFOOTER "-----END CERTIFICATE-----\n"
-    //Logging pem certificate
-    char filename[PATH_MAX] = "";
-    FILE* fp = NULL;
-    FILE* fpmeta = NULL;
-    unsigned long pemlen;
-    unsigned char* pembase64ptr = NULL;
-    int ret;
-    uint8_t *ptmp;
-    SSLCertsChain *cert;
-
-    if ((state->server_connp.cert_input == NULL) || (state->server_connp.cert_input_len == 0))
-        SCReturn;
-
-    CreateFileName(log, p, state, filename);
-    if (strlen(filename) == 0) {
-        SCLogWarning(SC_ERR_FOPEN, "Can't create PEM filename");
-        SCReturn;
-    }
-
-    fp = fopen(filename, "w");
-    if (fp == NULL) {
-        SCLogWarning(SC_ERR_FOPEN, "Can't create PEM file: %s", filename);
-        SCReturn;
-    }
-
-    TAILQ_FOREACH(cert, &state->server_connp.certs, next) {
-        pemlen = (4 * (cert->cert_len + 2) / 3) +1;
-        if (pemlen > aft->enc_buf_len) {
-            ptmp = (uint8_t*) SCRealloc(aft->enc_buf, sizeof(uint8_t) * pemlen);
-            if (ptmp == NULL) {
-                SCFree(aft->enc_buf);
-                aft->enc_buf = NULL;
-                SCLogWarning(SC_ERR_MEM_ALLOC, "Can't allocate data for base64 encoding");
-                goto end_fp;
-            }
-            aft->enc_buf = ptmp;
-            aft->enc_buf_len = pemlen;
-        }
-
-        memset(aft->enc_buf, 0, aft->enc_buf_len);
-
-        ret = Base64Encode((unsigned char*) cert->cert_data, cert->cert_len, aft->enc_buf, &pemlen);
-        if (ret != SC_BASE64_OK) {
-            SCLogWarning(SC_ERR_INVALID_ARGUMENTS, "Invalid return of Base64Encode function");
-            goto end_fwrite_fp;
-        }
-
-        if (fprintf(fp, PEMHEADER)  < 0)
-            goto end_fwrite_fp;
-
-        pembase64ptr = aft->enc_buf;
-        while (pemlen > 0) {
-            size_t loffset = pemlen >= 64 ? 64 : pemlen;
-            if (fwrite(pembase64ptr, 1, loffset, fp) != loffset)
-                goto end_fwrite_fp;
-            if (fwrite("\n", 1, 1, fp) != 1)
-                goto end_fwrite_fp;
-            pembase64ptr += 64;
-            if (pemlen < 64)
-                break;
-            pemlen -= 64;
-        }
-
-        if (fprintf(fp, PEMFOOTER) < 0)
-            goto end_fwrite_fp;
-    }
-    fclose(fp);
-
-    //Logging certificate informations
-    memcpy(filename + (strlen(filename) - 3), "meta", 4);
-    fpmeta = fopen(filename, "w");
-    if (fpmeta != NULL) {
-        #define PRINT_BUF_LEN 46
-        char srcip[PRINT_BUF_LEN], dstip[PRINT_BUF_LEN];
-        char timebuf[64];
-        Port sp, dp;
-        CreateTimeString(&p->ts, timebuf, sizeof(timebuf));
-        if (!GetIPInformations(p, srcip, PRINT_BUF_LEN, &sp, dstip, PRINT_BUF_LEN, &dp, ipproto))
-            goto end_fwrite_fpmeta;
-        if (fprintf(fpmeta, "TIME:              %s\n", timebuf) < 0)
-            goto end_fwrite_fpmeta;
-        if (p->pcap_cnt > 0) {
-            if (fprintf(fpmeta, "PCAP PKT NUM:      %"PRIu64"\n", p->pcap_cnt) < 0)
-                goto end_fwrite_fpmeta;
-        }
-        if (fprintf(fpmeta, "SRC IP:            %s\n", srcip) < 0)
-            goto end_fwrite_fpmeta;
-        if (fprintf(fpmeta, "DST IP:            %s\n", dstip) < 0)
-            goto end_fwrite_fpmeta;
-        if (fprintf(fpmeta, "PROTO:             %" PRIu32 "\n", p->proto) < 0)
-            goto end_fwrite_fpmeta;
-        if (PKT_IS_TCP(p) || PKT_IS_UDP(p)) {
-            if (fprintf(fpmeta, "SRC PORT:          %" PRIu16 "\n", sp) < 0)
-                goto end_fwrite_fpmeta;
-            if (fprintf(fpmeta, "DST PORT:          %" PRIu16 "\n", dp) < 0)
-                goto end_fwrite_fpmeta;
-        }
-
-        if (fprintf(fpmeta, "TLS SUBJECT:       %s\n"
-                    "TLS ISSUERDN:      %s\n"
-                    "TLS FINGERPRINT:   %s\n",
-                state->server_connp.cert0_subject,
-                state->server_connp.cert0_issuerdn,
-                state->server_connp.cert0_fingerprint) < 0)
-            goto end_fwrite_fpmeta;
-
-        fclose(fpmeta);
-    } else {
-        SCLogWarning(SC_ERR_FOPEN, "Can't open meta file: %s",
-                     filename); 
-        SCReturn;
-    }
-
-    /* Reset the store flag */
-    state->server_connp.cert_log_flag &= ~SSL_TLS_LOG_PEM;
-    SCReturn;
-
-end_fwrite_fp:
-    fclose(fp);
-    SCLogWarning(SC_ERR_FWRITE, "Unable to write certificate");
-end_fwrite_fpmeta:
-    if (fpmeta) {
-        fclose(fpmeta);
-        SCLogWarning(SC_ERR_FWRITE, "Unable to write certificate metafile");
-    }
-    SCReturn;
-end_fp:
-    fclose(fp);
-}
-
 static TmEcode LogTlsLogThreadInit(ThreadVars *t, void *initdata, void **data)
 {
     LogTlsLogThread *aft = SCMalloc(sizeof(LogTlsLogThread));
@@ -322,38 +164,11 @@ static TmEcode LogTlsLogThreadInit(ThreadVars *t, void *initdata, void **data)
         return TM_ECODE_FAILED;
     }
 
-    struct stat stat_buf;
-    if (stat(tls_logfile_base_dir, &stat_buf) != 0) {
-        int ret;
-        ret = mkdir(tls_logfile_base_dir, S_IRWXU|S_IXGRP|S_IRGRP);
-        if (ret != 0) {
-            int err = errno;
-            if (err != EEXIST) {
-                SCLogError(SC_ERR_LOGDIR_CONFIG,
-                        "Cannot create certs drop directory %s: %s",
-                        tls_logfile_base_dir, strerror(err));
-                exit(EXIT_FAILURE);
-            }
-        } else {
-            SCLogInfo("Created certs drop directory %s",
-                    tls_logfile_base_dir);
-        }
-
-    }
-
     aft->buffer = MemBufferCreateNew(OUTPUT_BUFFER_SIZE);
     if (aft->buffer == NULL) {
         SCFree(aft);
         return TM_ECODE_FAILED;
     }
-
-    aft->enc_buf = SCMalloc(CERT_ENC_BUFFER_SIZE);
-    if (aft->enc_buf == NULL) {
-        SCFree(aft);
-        return TM_ECODE_FAILED;
-    }
-    aft->enc_buf_len = CERT_ENC_BUFFER_SIZE;
-    memset(aft->enc_buf, 0, aft->enc_buf_len);
 
     /* Use the Ouptut Context (file pointer and mutex) */
     aft->tlslog_ctx = ((OutputCtx *) initdata)->data;
@@ -379,10 +194,7 @@ static TmEcode LogTlsLogThreadDeinit(ThreadVars *t, void *data)
 
 static void LogTlsLogDeInitCtx(OutputCtx *output_ctx)
 {
-    OutputTlsLoggerDisable();
-
     LogTlsFileCtx *tlslog_ctx = (LogTlsFileCtx *) output_ctx->data;
-    OutputUnregisterFileRotationFlag(&tlslog_ctx->file_ctx->rotation_flag);
     LogFileFreeCtx(tlslog_ctx->file_ctx);
     SCFree(tlslog_ctx);
     SCFree(output_ctx);
@@ -404,12 +216,6 @@ static void LogTlsLogExitPrintStats(ThreadVars *tv, void *data)
  * */
 static OutputCtx *LogTlsLogInitCtx(ConfNode *conf)
 {
-    if (OutputTlsLoggerEnable() != 0) {
-        SCLogError(SC_ERR_CONF_YAML_ERROR, "only one 'tls' logger "
-            "can be enabled");
-        return NULL;
-    }
-
     LogFileCtx* file_ctx = LogFileNewCtx();
 
     if (file_ctx == NULL) {
@@ -418,28 +224,9 @@ static OutputCtx *LogTlsLogInitCtx(ConfNode *conf)
         return NULL;
     }
 
-    char *s_default_log_dir = NULL;
-    s_default_log_dir = ConfigGetLogDirectory();
-
-    const char *s_base_dir = NULL;
-    s_base_dir = ConfNodeLookupChildValue(conf, "certs-log-dir");
-    if (s_base_dir == NULL || strlen(s_base_dir) == 0) {
-        strlcpy(tls_logfile_base_dir,
-                s_default_log_dir, sizeof(tls_logfile_base_dir));
-    } else {
-        if (PathIsAbsolute(s_base_dir)) {
-            strlcpy(tls_logfile_base_dir,
-                    s_base_dir, sizeof(tls_logfile_base_dir));
-        } else {
-            snprintf(tls_logfile_base_dir, sizeof(tls_logfile_base_dir),
-                    "%s/%s", s_default_log_dir, s_base_dir);
-        }
-    }
-
-    if (SCConfLogOpenGeneric(conf, file_ctx, DEFAULT_LOG_FILENAME) < 0) {
+    if (SCConfLogOpenGeneric(conf, file_ctx, DEFAULT_LOG_FILENAME, 1) < 0) {
         goto filectx_error;
     }
-    OutputRegisterFileRotationFlag(&file_ctx->rotation_flag);
 
     LogTlsFileCtx *tlslog_ctx = SCCalloc(1, sizeof(LogTlsFileCtx));
     if (unlikely(tlslog_ctx == NULL))
@@ -475,91 +262,31 @@ filectx_error:
     return NULL;
 }
 
-/** \internal
- *  \brief Condition function for TLS logger
- *  \retval bool true or false -- log now?
- */
-static int LogTlsCondition(ThreadVars *tv, const Packet *p)
-{
-    if (p->flow == NULL) {
-        return FALSE;
-    }
-
-    if (!(PKT_IS_TCP(p))) {
-        return FALSE;
-    }
-
-    FLOWLOCK_RDLOCK(p->flow);
-    uint16_t proto = FlowGetAppProtocol(p->flow);
-    if (proto != ALPROTO_TLS)
-        goto dontlog;
-
-    SSLState *ssl_state = (SSLState *)FlowGetAppState(p->flow);
-    if (ssl_state == NULL) {
-        SCLogDebug("no tls state, so no request logging");
-        goto dontlog;
-    }
-
-    /* we only log the state once if we don't have to write
-     * the cert due to tls.store keyword. */
-    if (!(ssl_state->server_connp.cert_log_flag & SSL_TLS_LOG_PEM) &&
-        (ssl_state->flags & SSL_AL_FLAG_STATE_LOGGED))
-        goto dontlog;
-
-    if (ssl_state->server_connp.cert0_issuerdn == NULL ||
-            ssl_state->server_connp.cert0_subject == NULL)
-        goto dontlog;
-
-    /* todo: logic to log once */
-
-    FLOWLOCK_UNLOCK(p->flow);
-    return TRUE;
-dontlog:
-    FLOWLOCK_UNLOCK(p->flow);
-    return FALSE;
-}
-
-static int LogTlsLogger(ThreadVars *tv, void *thread_data, const Packet *p)
+static int LogTlsLogger(ThreadVars *tv, void *thread_data, const Packet *p,
+                        Flow *f, void *state, void *tx, uint64_t tx_id)
 {
     LogTlsLogThread *aft = (LogTlsLogThread *)thread_data;
     LogTlsFileCtx *hlog = aft->tlslog_ctx;
     char timebuf[64];
     int ipproto = (PKT_IS_IPV4(p)) ? AF_INET : AF_INET6;
 
-    if (unlikely(p->flow == NULL)) {
+    SSLState *ssl_state = (SSLState *)state;
+    if (unlikely(ssl_state == NULL)) {
         return 0;
     }
 
-    /* check if we have TLS state or not */
-    FLOWLOCK_WRLOCK(p->flow);
-    uint16_t proto = FlowGetAppProtocol(p->flow);
-    if (proto != ALPROTO_TLS)
-        goto end;
-
-    SSLState *ssl_state = (SSLState *)FlowGetAppState(p->flow);
-    if (unlikely(ssl_state == NULL)) {
-        goto end;
+    if (ssl_state->server_connp.cert0_issuerdn == NULL ||
+            ssl_state->server_connp.cert0_subject == NULL) {
+        return 0;
     }
-
-    if (ssl_state->server_connp.cert0_issuerdn == NULL || ssl_state->server_connp.cert0_subject == NULL)
-        goto end;
-
-    if (ssl_state->server_connp.cert_log_flag & SSL_TLS_LOG_PEM) {
-        LogTlsLogPem(aft, p, ssl_state, hlog, ipproto);
-    }
-
-    /* Don't log again the state. If we are here it was because we had
-     * to store the cert. */
-    if (ssl_state->flags & SSL_AL_FLAG_STATE_LOGGED)
-        goto end;
 
     CreateTimeString(&p->ts, timebuf, sizeof(timebuf));
 #define PRINT_BUF_LEN 46
     char srcip[PRINT_BUF_LEN], dstip[PRINT_BUF_LEN];
     Port sp, dp;
-    if (!GetIPInformations(p, srcip, PRINT_BUF_LEN,
-                           &sp, dstip, PRINT_BUF_LEN, &dp, ipproto)) {
-        goto end;
+    if (!TLSGetIPInformations(p, srcip, PRINT_BUF_LEN, &sp, dstip,
+                              PRINT_BUF_LEN, &dp, ipproto)) {
+        return 0;
     }
 
     MemBufferReset(aft->buffer);
@@ -582,10 +309,6 @@ static int LogTlsLogger(ThreadVars *tv, void *thread_data, const Packet *p)
         MEMBUFFER_OFFSET(aft->buffer), hlog->file_ctx);
     SCMutexUnlock(&hlog->file_ctx->fp_mutex);
 
-    /* we only log the state once */
-    ssl_state->flags |= SSL_AL_FLAG_STATE_LOGGED;
-end:
-    FLOWLOCK_UNLOCK(p->flow);
     return 0;
 }
 
@@ -593,15 +316,12 @@ void TmModuleLogTlsLogRegister(void)
 {
     tmm_modules[TMM_LOGTLSLOG].name = MODULE_NAME;
     tmm_modules[TMM_LOGTLSLOG].ThreadInit = LogTlsLogThreadInit;
-    tmm_modules[TMM_LOGTLSLOG].Func = NULL;
     tmm_modules[TMM_LOGTLSLOG].ThreadExitPrintStats = LogTlsLogExitPrintStats;
     tmm_modules[TMM_LOGTLSLOG].ThreadDeinit = LogTlsLogThreadDeinit;
     tmm_modules[TMM_LOGTLSLOG].RegisterTests = NULL;
     tmm_modules[TMM_LOGTLSLOG].cap_flags = 0;
     tmm_modules[TMM_LOGTLSLOG].flags = TM_FLAG_LOGAPI_TM;
 
-    OutputRegisterPacketModule(MODULE_NAME, "tls-log", LogTlsLogInitCtx,
-            LogTlsLogger, LogTlsCondition);
-
-    SC_ATOMIC_INIT(cert_id);
+    OutputRegisterTxModuleWithProgress(MODULE_NAME, "tls-log", LogTlsLogInitCtx,
+            ALPROTO_TLS, LogTlsLogger, TLS_HANDSHAKE_DONE, TLS_HANDSHAKE_DONE);
 }

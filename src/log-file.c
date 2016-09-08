@@ -303,7 +303,7 @@ static void LogFileWriteJsonRecord(LogFileLogThread *aft, const Packet *p, const
             break;
     }
     fprintf(fp, "\"stored\": %s, ", ff->flags & FILE_STORED ? "true" : "false");
-    fprintf(fp, "\"size\": %"PRIu64" ", ff->size);
+    fprintf(fp, "\"size\": %"PRIu64" ", FileSize(ff));
     fprintf(fp, "}\n");
     fflush(fp);
     SCMutexUnlock(&aft->file_ctx->fp_mutex);
@@ -388,7 +388,6 @@ void LogFileLogExitPrintStats(ThreadVars *tv, void *data)
 static void LogFileLogDeInitCtx(OutputCtx *output_ctx)
 {
     LogFileCtx *logfile_ctx = (LogFileCtx *)output_ctx->data;
-    OutputUnregisterFileRotationFlag(&logfile_ctx->rotation_flag);
     LogFileFreeCtx(logfile_ctx);
     free(output_ctx);
 }
@@ -405,11 +404,10 @@ static OutputCtx *LogFileLogInitCtx(ConfNode *conf)
         return NULL;
     }
 
-    if (SCConfLogOpenGeneric(conf, logfile_ctx, DEFAULT_LOG_FILENAME) < 0) {
+    if (SCConfLogOpenGeneric(conf, logfile_ctx, DEFAULT_LOG_FILENAME, 1) < 0) {
         LogFileFreeCtx(logfile_ctx);
         return NULL;
     }
-    OutputRegisterFileRotationFlag(&logfile_ctx->rotation_flag);
 
     OutputCtx *output_ctx = SCCalloc(1, sizeof(OutputCtx));
     if (unlikely(output_ctx == NULL))
@@ -417,6 +415,12 @@ static OutputCtx *LogFileLogInitCtx(ConfNode *conf)
 
     output_ctx->data = logfile_ctx;
     output_ctx->DeInit = LogFileLogDeInitCtx;
+
+    const char *force_filestore = ConfNodeLookupChildValue(conf, "force-filestore");
+    if (force_filestore != NULL && ConfValIsTrue(force_filestore)) {
+        FileForceFilestoreEnable();
+        SCLogInfo("forcing filestore of all files");
+    }
 
     const char *force_magic = ConfNodeLookupChildValue(conf, "force-magic");
     if (force_magic != NULL && ConfValIsTrue(force_magic)) {

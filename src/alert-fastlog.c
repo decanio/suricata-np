@@ -41,7 +41,6 @@
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
 
-#include "detect.h"
 #include "detect-parse.h"
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
@@ -234,7 +233,7 @@ void AlertFastLogExitPrintStats(ThreadVars *tv, void *data)
         return;
     }
 
-    SCLogInfo("Fast log output wrote %" PRIu64 " alerts", aft->file_ctx->alerts);
+    //SCLogInfo("Fast log output wrote %" PRIu64 " alerts", aft->file_ctx->alerts);
 }
 
 /**
@@ -250,11 +249,10 @@ OutputCtx *AlertFastLogInitCtx(ConfNode *conf)
         return NULL;
     }
 
-    if (SCConfLogOpenGeneric(conf, logfile_ctx, DEFAULT_LOG_FILENAME) < 0) {
+    if (SCConfLogOpenGeneric(conf, logfile_ctx, DEFAULT_LOG_FILENAME, 1) < 0) {
         LogFileFreeCtx(logfile_ctx);
         return NULL;
     }
-    OutputRegisterFileRotationFlag(&logfile_ctx->rotation_flag);
 
     OutputCtx *output_ctx = SCCalloc(1, sizeof(OutputCtx));
     if (unlikely(output_ctx == NULL))
@@ -268,7 +266,6 @@ OutputCtx *AlertFastLogInitCtx(ConfNode *conf)
 static void AlertFastLogDeInitCtx(OutputCtx *output_ctx)
 {
     LogFileCtx *logfile_ctx = (LogFileCtx *)output_ctx->data;
-    OutputUnregisterFileRotationFlag(&logfile_ctx->rotation_flag);
     LogFileFreeCtx(logfile_ctx);
     SCFree(output_ctx);
 }
@@ -380,8 +377,8 @@ void AlertFastLogRegisterTests(void)
 
 #ifdef UNITTESTS
 
-    UtRegisterTest("AlertFastLogTest01", AlertFastLogTest01, 1);
-    UtRegisterTest("AlertFastLogTest02", AlertFastLogTest02, 1);
+    UtRegisterTest("AlertFastLogTest01", AlertFastLogTest01);
+    UtRegisterTest("AlertFastLogTest02", AlertFastLogTest02);
 
 #endif /* UNITTESTS */
 
