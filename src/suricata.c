@@ -2467,7 +2467,7 @@ int main(int argc, char **argv)
 #ifdef HAVE_DPDK
     int retval;
 
-    rte_suri_mempool_init();
+    rte_mempool_ctor_init();
 
     retval = rte_eal_init(argc, argv);
     if (retval < 0) {
