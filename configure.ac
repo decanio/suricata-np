@@ -1223,7 +1223,97 @@
 
         AC_CHECK_HEADER(rte_common.h,,[AC_ERROR(rte_common.h not found ...)],)
 
-        LIBS="${LIBS} -lethdev -lrte_mbuf -lrte_eal -lrte_mempool -lrte_ring -ldl"
+        #LIBS="${LIBS} -lethdev -lrte_mbuf -lrte_eal -lrte_mempool -lrte_ring -ldl"
+        LDFLAGS="${LDFLAGS} -pthread"
+        CFLAGS="${CFLAGS} -pthread"
+        #
+        # Order is important: from higher level to lower level
+        #
+
+        #ifeq ($(CONFIG_RTE_EXEC_ENV_LINUXAPP),y)
+        DPDKLIBS="-lrte_kni"
+        #DPDKLIBS="${DPDKLIBS} -lrte_ivshmem"
+        #endif
+
+        DPDKLIBS="${DPDKLIBS} -lrte_pipeline"
+        DPDKLIBS="${DPDKLIBS} -lrte_table"
+        DPDKLIBS="${DPDKLIBS} -lrte_port"
+
+        DPDKLIBS="${DPDKLIBS} -lrte_pdump"
+        DPDKLIBS="${DPDKLIBS} -lrte_distributor"
+        DPDKLIBS="${DPDKLIBS} -lrte_reorder"
+        DPDKLIBS="${DPDKLIBS} -lrte_ip_frag"
+        DPDKLIBS="${DPDKLIBS} -lrte_meter"
+        DPDKLIBS="${DPDKLIBS} -lrte_sched"
+        DPDKLIBS="${DPDKLIBS} -lrte_lpm"
+        # librte_acl needs --whole-archive because of weak functions
+        DPDKLIBS="${DPDKLIBS} -Wl,--whole-archive"
+        DPDKLIBS="${DPDKLIBS} -lrte_acl"
+        DPDKLIBS="${DPDKLIBS} -Wl,--no-whole-archive"
+        DPDKLIBS="${DPDKLIBS} -lrte_jobstats"
+        DPDKLIBS="${DPDKLIBS} -lrte_power"
+        
+        DPDKLIBS="${DPDKLIBS} -Wl,--whole-archive"
+
+        DPDKLIBS="${DPDKLIBS} -lrte_timer"
+        DPDKLIBS="${DPDKLIBS} -lrte_hash"
+        DPDKLIBS="${DPDKLIBS} -lrte_vhost"
+
+        DPDKLIBS="${DPDKLIBS} -lrte_kvargs"
+        DPDKLIBS="${DPDKLIBS} -lrte_mbuf"
+        DPDKLIBS="${DPDKLIBS} -lethdev"
+        DPDKLIBS="${DPDKLIBS} -lrte_cryptodev"
+        DPDKLIBS="${DPDKLIBS} -lrte_mempool"
+        DPDKLIBS="${DPDKLIBS} -lrte_ring"
+        DPDKLIBS="${DPDKLIBS} -lrte_eal"
+        DPDKLIBS="${DPDKLIBS} -lrte_cmdline"
+        DPDKLIBS="${DPDKLIBS} -lrte_cfgfile"
+
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_bond"
+        #DPDKLIBS="${DPDKLIBS} -lrte_pmd_xenvirt -lxenstore"
+
+        #ifeq ($(CONFIG_RTE_BUILD_SHARED_LIB),n)
+        # plugins (link only if static libraries)
+
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_af_packet"
+        #DPDKLIBS="${DPDKLIBS} -lrte_pmd_bnx2x -lz"
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_bnxt"
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_cxgbe"
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_e1000"
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_ena"
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_enic"
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_fm10k"
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_i40e"
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_ixgbe"
+        #DPDKLIBS="${DPDKLIBS} -lrte_pmd_mlx4 -libverbs"
+        #DPDKLIBS="${DPDKLIBS} -lrte_pmd_mlx5 -libverbs"
+        #LIBS += -lrte_pmd_mpipe -lgxio
+        #DPDKLIBS="${DPDKLIBS} -lrte_pmd_nfp -lm"
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_null"
+        #DPDKLIBS="${DPDKLIBS} -lrte_pmd_pcap -lpcap"
+        #DPDKLIBS="${DPDKLIBS} -lrte_pmd_qede -lz"
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_ring"
+        #DPDKLIBS="${DPDKLIBS} -lrte_pmd_szedata2 -lsze2"
+        #DPDKLIBS="${DPDKLIBS} -lrte_pmd_thunderx_nicvf -lm"
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_virtio"
+        #ifeq ($(CONFIG_RTE_LIBRTE_VHOST),y)
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_vhost"
+        #endif # $(CONFIG_RTE_LIBRTE_VHOST)
+        DPDKLIBS="${DPDKLIBS} -lrte_pmd_vmxnet3_uio"
+
+        #LIBS   += -lrte_pmd_aesni_mb
+        #LIBS   += -L$(AESNI_MULTI_BUFFER_LIB_PATH) -lIPSec_MB
+        #LIBS  += -lrte_pmd_aesni_gcm -lcrypto
+        #LIBS  += -L$(AESNI_MULTI_BUFFER_LIB_PATH) -lIPSec_MB
+        #LIBS += -lrte_pmd_null_crypto
+        #LIBS        += -lrte_pmd_qat -lcrypto
+        #LIBS     += -lrte_pmd_snow3g
+        #LIBS     += -L$(LIBSSO_SNOW3G_PATH)/build -lsso_snow3g
+        #LIBS     += -lrte_pmd_kasumi
+        #LIBS    += -L$(LIBSSO_KASUMI_PATH)/build -lsso_kasumi
+        DPDKLIBS="${DPDKLIBS} -Wl,--no-whole-archive"
+
+        LIBS="${LIBS} ${DPDKLIBS} -lrt -lm -ldl -Wl,-export-dynamic -Wl,--as-needed"
   ])
 
   # Netmap support

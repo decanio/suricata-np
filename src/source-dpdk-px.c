@@ -205,6 +205,7 @@ typedef struct DPDKThreadVars_
     /* dst interface for IPS mode */
     DPDKDevice *ifdst;
 
+    int threads;
     int thread_idx;
     int flags;
 
@@ -270,16 +271,8 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
     ntv->rte_ring_mode = aconf->in.rte_ring_mode;
     ntv->num_mbufs = aconf->in.num_mbufs;
     ntv->copy_mode = aconf->in.copy_mode;
+    ntv->threads = aconf->in.threads;
     ntv->thread_idx = SC_ATOMIC_ADD(threads_run, 1) - 1;
-
-    if ((ntv->rte_ring_mode == 0) && (ntv->thread_idx == 0)) {
-        /* initialize the mbuf pools */
-        ntv->ifsrc->mp = rte_pktmbuf_pool_create(PKTMBUF_POOL_NAME,
-                                                 ntv->num_mbufs,
-                                                 MBUF_CACHE_SIZE, 0,
-                                                 RTE_MBUF_DEFAULT_BUF_SIZE,
-                                                 rte_socket_id());
-    }
 
     ntv->livedev = LiveGetDevice(aconf->iface_name);
     if (ntv->livedev == NULL) {
@@ -294,7 +287,38 @@ static TmEcode ReceiveDPDKThreadInit(ThreadVars *tv, void *initdata, void **data
     }
     memset(ntv->ifsrc, 0, sizeof(*ntv->ifsrc));
 
-    if (ntv->rte_ring_mode) {
+    if (ntv->rte_ring_mode == 0) {
+        /* iface_name is really a DPDK port number */
+        ntv->ifsrc->port_id = atoi(aconf->iface_name);
+        if (ntv->thread_idx == 0) {
+            /* for port configuration all features are off by default */
+            const struct rte_eth_conf port_conf = {
+                    .rxmode = {
+                            .mq_mode = ETH_MQ_RX_RSS
+                    }
+            };
+            int retval;
+
+            /* initialize the mbuf pools */
+            ntv->ifsrc->mp = rte_pktmbuf_pool_create(PKTMBUF_POOL_NAME,
+                                                     ntv->num_mbufs,
+                                                     MBUF_CACHE_SIZE, 0,
+                                                     RTE_MBUF_DEFAULT_BUF_SIZE,
+                                                     rte_socket_id());
+
+            uint8_t count = rte_eth_dev_count();
+            SCLogInfo("Found %d ethernet interfaces", count);
+
+            retval = rte_eth_dev_configure(ntv->ifsrc->port_id,
+                                           ntv->threads,
+                                           ntv->threads,
+                                           &port_conf);
+            if (retval != 0) {
+                SCLogError(SC_ERR_INVALID_VALUE, "Unable to configure DPDK port %x", ntv->ifsrc->port_id);
+                goto error_src;
+            }
+        }
+    } else {
         char ringname[DPDK_IFACE_NAME_LENGTH];
 
         snprintf(ringname, sizeof(ringname)-1, aconf->in.rx_ring, ntv->thread_idx);
@@ -446,6 +470,7 @@ static TmEcode ReceiveDPDKLoop(ThreadVars *tv, void *data, void *slot)
 
     if (ntv->rte_ring_mode == 0) {
         uint8_t port_id = ntv->ifsrc->port_id;
+        uint16_t queue_id = ntv->thread_idx;
 
         /* consume packets from ethernet interface */
         for (;;) {
@@ -457,7 +482,7 @@ static TmEcode ReceiveDPDKLoop(ThreadVars *tv, void *data, void *slot)
                 break;
             }
 
-            rx_count = rte_eth_rx_burst(port_id, 0, buf, PACKET_READ_SIZE);
+            rx_count = rte_eth_rx_burst(port_id, queue_id, buf, PACKET_READ_SIZE);
 
             for (i = 0; i < rx_count; i++) {
                 DPDKPacketInput(ntv, buf[i]);

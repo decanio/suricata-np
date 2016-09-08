@@ -179,6 +179,7 @@
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
+#include <rte_ring.h>
 #include <rte_debug.h>
 #endif
 
@@ -2465,6 +2466,8 @@ int main(int argc, char **argv)
 
 #ifdef HAVE_DPDK
     int retval;
+
+    rte_suri_mempool_init();
 
     retval = rte_eal_init(argc, argv);
     if (retval < 0) {
