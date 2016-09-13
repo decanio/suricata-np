@@ -521,7 +521,9 @@ next_record:
         DNSTcpHeader *dns_tcp_header = (DNSTcpHeader *)input;
         SCLogDebug("DNS %p", dns_tcp_header);
 
-        if (ntohs(dns_tcp_header->len) == (input_len-2)) {
+        if (ntohs(dns_tcp_header->len) == 0) {
+            goto bad_data;
+        } else if (ntohs(dns_tcp_header->len) == (input_len-2)) {
             /* we have all data, so process w/o buffering */
             if (DNSReponseParseData(f, dns_state, input+2, input_len-2) < 0)
                 goto bad_data;
@@ -660,9 +662,11 @@ void RegisterDNSTCPParsers(void)
 
         AppLayerParserRegisterGetTx(IPPROTO_TCP, ALPROTO_DNS, DNSGetTx);
         AppLayerParserRegisterGetTxCnt(IPPROTO_TCP, ALPROTO_DNS, DNSGetTxCnt);
+        AppLayerParserRegisterLoggerFuncs(IPPROTO_TCP, ALPROTO_DNS, DNSGetTxLogged,
+                                          DNSSetTxLogged);
         AppLayerParserRegisterGetStateProgressFunc(IPPROTO_TCP, ALPROTO_DNS,
                                                    DNSGetAlstateProgress);
-        AppLayerParserRegisterGetStateProgressCompletionStatus(IPPROTO_TCP, ALPROTO_DNS,
+        AppLayerParserRegisterGetStateProgressCompletionStatus(ALPROTO_DNS,
                                                                DNSGetAlstateProgressCompletionStatus);
         DNSAppLayerRegisterGetEventInfo(IPPROTO_TCP, ALPROTO_DNS);
     } else {

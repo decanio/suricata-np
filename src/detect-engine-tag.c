@@ -132,7 +132,6 @@ int TagFlowAdd(Packet *p, DetectTagDataEntry *tde)
     if (p->flow == NULL)
         return 1;
 
-    FLOWLOCK_WRLOCK(p->flow);
     iter = FlowGetStorageById(p->flow, flow_tag_id);
     if (iter != NULL) {
         /* First iterate installed entries searching a duplicated sid/gid */
@@ -169,7 +168,6 @@ int TagFlowAdd(Packet *p, DetectTagDataEntry *tde)
         SCLogDebug("Max tags for sessions reached (%"PRIu16")", tag_cnt);
     }
 
-    FLOWLOCK_UNLOCK(p->flow);
     return updated;
 }
 
@@ -516,9 +514,7 @@ void TagHandlePacket(DetectEngineCtx *de_ctx,
 
     /* First update and get session tags */
     if (p->flow != NULL) {
-        FLOWLOCK_WRLOCK(p->flow);
         TagHandlePacketFlow(p->flow, p);
-        FLOWLOCK_UNLOCK(p->flow);
     }
 
     Host *src = HostLookupHostFromHash(&p->src);
@@ -1507,13 +1503,13 @@ end:
 void DetectEngineTagRegisterTests(void)
 {
 #ifdef UNITTESTS
-    UtRegisterTest("DetectTagTestPacket01", DetectTagTestPacket01, 1);
-    UtRegisterTest("DetectTagTestPacket02", DetectTagTestPacket02, 1);
-    UtRegisterTest("DetectTagTestPacket03", DetectTagTestPacket03, 1);
-    UtRegisterTest("DetectTagTestPacket04", DetectTagTestPacket04, 1);
-    UtRegisterTest("DetectTagTestPacket05", DetectTagTestPacket05, 1);
-    UtRegisterTest("DetectTagTestPacket06", DetectTagTestPacket06, 1);
-    UtRegisterTest("DetectTagTestPacket07", DetectTagTestPacket07, 1);
+    UtRegisterTest("DetectTagTestPacket01", DetectTagTestPacket01);
+    UtRegisterTest("DetectTagTestPacket02", DetectTagTestPacket02);
+    UtRegisterTest("DetectTagTestPacket03", DetectTagTestPacket03);
+    UtRegisterTest("DetectTagTestPacket04", DetectTagTestPacket04);
+    UtRegisterTest("DetectTagTestPacket05", DetectTagTestPacket05);
+    UtRegisterTest("DetectTagTestPacket06", DetectTagTestPacket06);
+    UtRegisterTest("DetectTagTestPacket07", DetectTagTestPacket07);
 #endif /* UNITTESTS */
 }
 

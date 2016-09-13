@@ -69,11 +69,16 @@ char *SCRuleVarsGetConfVar(const DetectEngineCtx *de_ctx,
     SCEnter();
 
     const char *conf_var_type_name = NULL;
-    char conf_var_full_name[2048] = "";
+    char conf_var_full_name[2048];
     char *conf_var_full_name_value = NULL;
 
     if (conf_var_name == NULL)
         goto end;
+
+    while (conf_var_name[0] != '\0' && isspace((unsigned char)conf_var_name[0])) {
+        conf_var_name++;
+    }
+
     (conf_var_name[0] == '$') ? conf_var_name++ : conf_var_name;
     conf_var_type_name = SCMapEnumValueToName(conf_vars_type,
                                               sc_rule_vars_type_map);
@@ -212,6 +217,11 @@ int SCRuleVarsPositiveTest01(void)
                       "any") == 0);
     result &= (SCRuleVarsGetConfVar(NULL,"$AIM_SERVERS", SC_RULE_VARS_ADDRESS_GROUPS) != NULL &&
                strcmp(SCRuleVarsGetConfVar(NULL,"$AIM_SERVERS", SC_RULE_VARS_ADDRESS_GROUPS),
+                      "any") == 0);
+
+    /* Test that a leading space is stripped. */
+    result &= (SCRuleVarsGetConfVar(NULL," $AIM_SERVERS", SC_RULE_VARS_ADDRESS_GROUPS) != NULL &&
+               strcmp(SCRuleVarsGetConfVar(NULL," $AIM_SERVERS", SC_RULE_VARS_ADDRESS_GROUPS),
                       "any") == 0);
 
     /* check for port-groups */
@@ -510,12 +520,12 @@ end:
 void SCRuleVarsRegisterTests(void)
 {
 #ifdef UNITTESTS
-    UtRegisterTest("SCRuleVarsPositiveTest01", SCRuleVarsPositiveTest01, 1);
-    UtRegisterTest("SCRuleVarsNegativeTest02", SCRuleVarsNegativeTest02, 1);
-    UtRegisterTest("SCRuleVarsPositiveTest03", SCRuleVarsPositiveTest03, 1);
-    UtRegisterTest("SCRuleVarsNegativeTest04", SCRuleVarsNegativeTest04, 1);
+    UtRegisterTest("SCRuleVarsPositiveTest01", SCRuleVarsPositiveTest01);
+    UtRegisterTest("SCRuleVarsNegativeTest02", SCRuleVarsNegativeTest02);
+    UtRegisterTest("SCRuleVarsPositiveTest03", SCRuleVarsPositiveTest03);
+    UtRegisterTest("SCRuleVarsNegativeTest04", SCRuleVarsNegativeTest04);
 
-    UtRegisterTest("SCRuleVarsMTest01", SCRuleVarsMTest01, 1);
+    UtRegisterTest("SCRuleVarsMTest01", SCRuleVarsMTest01);
 #endif
 
     return;

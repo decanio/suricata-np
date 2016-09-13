@@ -545,7 +545,12 @@ static int LuaCallbackLogInfo(lua_State *luastate)
     const char *msg = LuaGetStringArgument(luastate, 1);
     if (msg == NULL)
         return LuaCallbackError(luastate, "1st argument missing, empty or wrong type");
-    SCLogInfo("%s", msg);
+
+    lua_Debug ar;
+    lua_getstack(luastate, 1, &ar);
+    lua_getinfo(luastate, "nSl", &ar);
+    const char *funcname = ar.name ? ar.name : ar.what;
+    SCLogInfoRaw(ar.short_src, funcname, ar.currentline, "%s", msg);
     return 0;
 }
 
@@ -554,7 +559,12 @@ static int LuaCallbackLogNotice(lua_State *luastate)
     const char *msg = LuaGetStringArgument(luastate, 1);
     if (msg == NULL)
         return LuaCallbackError(luastate, "1st argument missing, empty or wrong type");
-    SCLogNotice("%s", msg);
+
+    lua_Debug ar;
+    lua_getstack(luastate, 1, &ar);
+    lua_getinfo(luastate, "nSl", &ar);
+    const char *funcname = ar.name ? ar.name : ar.what;
+    SCLogNoticeRaw(ar.short_src, funcname, ar.currentline, "%s", msg);
     return 0;
 }
 
@@ -563,7 +573,12 @@ static int LuaCallbackLogWarning(lua_State *luastate)
     const char *msg = LuaGetStringArgument(luastate, 1);
     if (msg == NULL)
         return LuaCallbackError(luastate, "1st argument missing, empty or wrong type");
-    SCLogWarning(SC_WARN_LUA_SCRIPT, "%s", msg);
+
+    lua_Debug ar;
+    lua_getstack(luastate, 1, &ar);
+    lua_getinfo(luastate, "nSl", &ar);
+    const char *funcname = ar.name ? ar.name : ar.what;
+    SCLogWarningRaw(SC_WARN_LUA_SCRIPT, ar.short_src, funcname, ar.currentline, "%s", msg);
     return 0;
 }
 
@@ -572,7 +587,11 @@ static int LuaCallbackLogError(lua_State *luastate)
     const char *msg = LuaGetStringArgument(luastate, 1);
     if (msg == NULL)
         return LuaCallbackError(luastate, "1st argument missing, empty or wrong type");
-    SCLogError(SC_ERR_LUA_SCRIPT, "%s", msg);
+    lua_Debug ar;
+    lua_getstack(luastate, 1, &ar);
+    lua_getinfo(luastate, "nSl", &ar);
+    const char *funcname = ar.name ? ar.name : ar.what;
+    SCLogErrorRaw(SC_ERR_LUA_SCRIPT, ar.short_src, funcname, ar.currentline, "%s", msg);
     return 0;
 }
 
@@ -605,7 +624,7 @@ static int LuaCallbackFileInfoPushToStackFromFile(lua_State *luastate, const Fil
     lua_pushnumber(luastate, file->file_id);
     lua_pushnumber(luastate, file->txid);
     lua_pushlstring(luastate, (char *)file->name, file->name_len);
-    lua_pushnumber(luastate, file->size);
+    lua_pushnumber(luastate, FileSize(file));
     lua_pushstring (luastate, file->magic);
     lua_pushstring(luastate, md5ptr);
     return 6;

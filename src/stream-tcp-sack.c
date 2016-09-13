@@ -254,8 +254,13 @@ int StreamTcpSackUpdatePacket(TcpStream *stream, Packet *p)
 {
     int records = TCP_GET_SACK_CNT(p);
     int record = 0;
+    const uint8_t *data = TCP_GET_SACK_PTR(p);
 
-    TCPOptSackRecord *sack_rec = (TCPOptSackRecord *)(TCP_GET_SACK_PTR(p));
+    if (records == 0 || data == NULL)
+        return 0;
+
+    TCPOptSackRecord rec[records], *sack_rec = rec;
+    memcpy(&rec, data, sizeof(TCPOptSackRecord) * records);
 
     for (record = 0; record < records; record++) {
         SCLogDebug("%p last_ack %u, left edge %u, right edge %u", sack_rec,
@@ -391,6 +396,7 @@ static int StreamTcpSackTest01 (void)
 
     retval = 1;
 end:
+    StreamTcpSackFreeList(&stream);
     SCReturnInt(retval);
 }
 
@@ -427,6 +433,7 @@ static int StreamTcpSackTest02 (void)
 
     retval = 1;
 end:
+    StreamTcpSackFreeList(&stream);
     SCReturnInt(retval);
 }
 
@@ -465,6 +472,7 @@ static int StreamTcpSackTest03 (void)
 
     retval = 1;
 end:
+    StreamTcpSackFreeList(&stream);
     SCReturnInt(retval);
 }
 
@@ -500,6 +508,7 @@ static int StreamTcpSackTest04 (void)
 
     retval = 1;
 end:
+    StreamTcpSackFreeList(&stream);
     SCReturnInt(retval);
 }
 
@@ -535,6 +544,7 @@ static int StreamTcpSackTest05 (void)
 
     retval = 1;
 end:
+    StreamTcpSackFreeList(&stream);
     SCReturnInt(retval);
 }
 
@@ -572,6 +582,7 @@ static int StreamTcpSackTest06 (void)
 
     retval = 1;
 end:
+    StreamTcpSackFreeList(&stream);
     SCReturnInt(retval);
 }
 
@@ -618,6 +629,7 @@ static int StreamTcpSackTest07 (void)
 
     retval = 1;
 end:
+    StreamTcpSackFreeList(&stream);
     SCReturnInt(retval);
 }
 
@@ -664,6 +676,7 @@ static int StreamTcpSackTest08 (void)
 
     retval = 1;
 end:
+    StreamTcpSackFreeList(&stream);
     SCReturnInt(retval);
 }
 
@@ -711,6 +724,7 @@ static int StreamTcpSackTest09 (void)
 
     retval = 1;
 end:
+    StreamTcpSackFreeList(&stream);
     SCReturnInt(retval);
 }
 
@@ -757,6 +771,7 @@ static int StreamTcpSackTest10 (void)
 
     retval = 1;
 end:
+    StreamTcpSackFreeList(&stream);
     SCReturnInt(retval);
 }
 
@@ -803,6 +818,7 @@ static int StreamTcpSackTest11 (void)
 
     retval = 1;
 end:
+    StreamTcpSackFreeList(&stream);
     SCReturnInt(retval);
 }
 
@@ -856,6 +872,7 @@ static int StreamTcpSackTest12 (void)
 
     retval = 1;
 end:
+    StreamTcpSackFreeList(&stream);
     SCReturnInt(retval);
 }
 
@@ -888,6 +905,7 @@ static int StreamTcpSackTest13 (void) {
 
     retval = 1;
 end:
+    StreamTcpSackFreeList(&stream);
     SCReturnInt(retval);
 }
 
@@ -920,6 +938,7 @@ static int StreamTcpSackTest14 (void) {
 
     retval = 1;
 end:
+    StreamTcpSackFreeList(&stream);
     SCReturnInt(retval);
 }
 
@@ -928,33 +947,23 @@ end:
 void StreamTcpSackRegisterTests (void)
 {
 #ifdef UNITTESTS
-    UtRegisterTest("StreamTcpSackTest01 -- Insertion",
-                    StreamTcpSackTest01, 1);
-    UtRegisterTest("StreamTcpSackTest02 -- Insertion",
-                    StreamTcpSackTest02, 1);
-    UtRegisterTest("StreamTcpSackTest03 -- Insertion",
-                    StreamTcpSackTest03, 1);
-    UtRegisterTest("StreamTcpSackTest04 -- Insertion",
-                    StreamTcpSackTest04, 1);
-    UtRegisterTest("StreamTcpSackTest05 -- Insertion",
-                    StreamTcpSackTest05, 1);
-    UtRegisterTest("StreamTcpSackTest06 -- Insertion",
-                    StreamTcpSackTest06, 1);
-    UtRegisterTest("StreamTcpSackTest07 -- Pruning",
-                    StreamTcpSackTest07, 1);
-    UtRegisterTest("StreamTcpSackTest08 -- Pruning",
-                    StreamTcpSackTest08, 1);
-    UtRegisterTest("StreamTcpSackTest09 -- Pruning",
-                    StreamTcpSackTest09, 1);
-    UtRegisterTest("StreamTcpSackTest10 -- Pruning",
-                    StreamTcpSackTest10, 1);
+    UtRegisterTest("StreamTcpSackTest01 -- Insertion", StreamTcpSackTest01);
+    UtRegisterTest("StreamTcpSackTest02 -- Insertion", StreamTcpSackTest02);
+    UtRegisterTest("StreamTcpSackTest03 -- Insertion", StreamTcpSackTest03);
+    UtRegisterTest("StreamTcpSackTest04 -- Insertion", StreamTcpSackTest04);
+    UtRegisterTest("StreamTcpSackTest05 -- Insertion", StreamTcpSackTest05);
+    UtRegisterTest("StreamTcpSackTest06 -- Insertion", StreamTcpSackTest06);
+    UtRegisterTest("StreamTcpSackTest07 -- Pruning", StreamTcpSackTest07);
+    UtRegisterTest("StreamTcpSackTest08 -- Pruning", StreamTcpSackTest08);
+    UtRegisterTest("StreamTcpSackTest09 -- Pruning", StreamTcpSackTest09);
+    UtRegisterTest("StreamTcpSackTest10 -- Pruning", StreamTcpSackTest10);
     UtRegisterTest("StreamTcpSackTest11 -- Insertion && Pruning",
-                    StreamTcpSackTest11, 1);
+                   StreamTcpSackTest11);
     UtRegisterTest("StreamTcpSackTest12 -- Insertion && Pruning",
-                    StreamTcpSackTest12, 1);
+                   StreamTcpSackTest12);
     UtRegisterTest("StreamTcpSackTest13 -- Insertion out of window",
-                    StreamTcpSackTest13, 1);
+                   StreamTcpSackTest13);
     UtRegisterTest("StreamTcpSackTest14 -- Insertion out of window",
-                    StreamTcpSackTest14, 1);
+                   StreamTcpSackTest14);
 #endif
 }

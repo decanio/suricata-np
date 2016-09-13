@@ -85,6 +85,14 @@ int DecodeEthernet(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
             DecodeMPLS(tv, dtv, p, pkt + ETHERNET_HEADER_LEN,
                        len - ETHERNET_HEADER_LEN, pq);
             break;
+        case ETHERNET_TYPE_DCE:
+            if (unlikely(len < ETHERNET_DCE_HEADER_LEN)) {
+                ENGINE_SET_INVALID_EVENT(p, DCE_PKT_TOO_SMALL);
+            } else {
+                DecodeEthernet(tv, dtv, p, pkt + ETHERNET_DCE_HEADER_LEN,
+                    len - ETHERNET_DCE_HEADER_LEN, pq);
+            }
+            break;
         default:
             SCLogDebug("p %p pkt %p ether type %04x not supported", p,
                        pkt, ntohs(p->ethh->eth_type));
@@ -132,7 +140,7 @@ static int DecodeEthernetTest01 (void)
     DecodeEthernet(&tv, &dtv, p, raw_eth, sizeof(raw_eth), NULL);
 
     SCFree(p);
-    return 0;
+    return 1;
 }
 #endif /* UNITTESTS */
 
@@ -144,7 +152,7 @@ static int DecodeEthernetTest01 (void)
 void DecodeEthernetRegisterTests(void)
 {
 #ifdef UNITTESTS
-    UtRegisterTest("DecodeEthernetTest01", DecodeEthernetTest01, 0);
+    UtRegisterTest("DecodeEthernetTest01", DecodeEthernetTest01);
 #endif /* UNITTESTS */
 }
 /**

@@ -128,6 +128,7 @@ void TmModuleReceivePcapRegister (void)
     tmm_modules[TMM_RECEIVEPCAP].ThreadInit = ReceivePcapThreadInit;
     tmm_modules[TMM_RECEIVEPCAP].Func = NULL;
     tmm_modules[TMM_RECEIVEPCAP].PktAcqLoop = ReceivePcapLoop;
+    tmm_modules[TMM_RECEIVEPCAP].PktAcqBreakLoop = NULL;
     tmm_modules[TMM_RECEIVEPCAP].ThreadExitPrintStats = ReceivePcapThreadExitStats;
     tmm_modules[TMM_RECEIVEPCAP].ThreadDeinit = NULL;
     tmm_modules[TMM_RECEIVEPCAP].RegisterTests = NULL;
@@ -338,6 +339,8 @@ TmEcode ReceivePcapLoop(ThreadVars *tv, void *data, void *slot)
         } else if (ptv->cb_result == TM_ECODE_FAILED) {
             SCLogError(SC_ERR_PCAP_DISPATCH, "Pcap callback PcapCallbackLoop failed");
             SCReturnInt(TM_ECODE_FAILED);
+        } else if (unlikely(r == 0)) {
+            TmThreadsCaptureInjectPacket(tv, ptv->slot, NULL);
         }
 
         StatsSyncCountersIfSignalled(tv);
@@ -507,15 +510,8 @@ TmEcode ReceivePcapThreadInit(ThreadVars *tv, void *initdata, void **data)
         SCMutexUnlock(&pcap_bpf_compile_lock);
     }
 
-    /* Making it conditional to Linux even if GetIfaceOffloading return 0
-     * for non Linux. */
-#ifdef HAVE_LINUX_ETHTOOL_H
-    if (GetIfaceOffloading(pcapconfig->iface) == 1) {
-        SCLogWarning(SC_ERR_PCAP_CREATE,
-                "Using Pcap capture with GRO or LRO activated can lead to "
-                "capture problems.");
-    }
-#endif /* HAVE_LINUX_ETHTOOL_H */
+    /* no offloading supported at all */
+    (void)GetIfaceOffloading(pcapconfig->iface, 1, 1);
 
     ptv->datalink = pcap_datalink(ptv->pcap_handle);
 
@@ -554,6 +550,7 @@ TmEcode ReceivePcapThreadInit(ThreadVars *tv, void *initdata, void **data)
     ptv->livedev = LiveGetDevice(pcapconfig->iface);
     if (ptv->livedev == NULL) {
         SCLogError(SC_ERR_INVALID_VALUE, "Unable to find Live device");
+        SCFree(ptv);
         SCReturnInt(TM_ECODE_FAILED);
     }
 

@@ -147,26 +147,12 @@ int FlowUpdateSpareFlows(void)
     return 1;
 }
 
-/** \brief Set the IPOnly scanned flag for 'direction'. This function
-  *        handles the locking too.
-  * \param f Flow to set the flag in
-  * \param direction direction to set the flag in
-  */
-void FlowSetIPOnlyFlag(Flow *f, char direction)
-{
-    FLOWLOCK_WRLOCK(f);
-    direction ? (f->flags |= FLOW_TOSERVER_IPONLY_SET) :
-        (f->flags |= FLOW_TOCLIENT_IPONLY_SET);
-    FLOWLOCK_UNLOCK(f);
-    return;
-}
-
 /** \brief Set the IPOnly scanned flag for 'direction'.
   *
   * \param f Flow to set the flag in
   * \param direction direction to set the flag in
   */
-void FlowSetIPOnlyFlagNoLock(Flow *f, char direction)
+void FlowSetIPOnlyFlag(Flow *f, int direction)
 {
     direction ? (f->flags |= FLOW_TOSERVER_IPONLY_SET) :
         (f->flags |= FLOW_TOCLIENT_IPONLY_SET);
@@ -226,37 +212,6 @@ static inline int FlowUpdateSeenFlag(const Packet *p)
     return 1;
 }
 
-/**
- *
- *  Remove packet from flow. This assumes this happens *before* the packet
- *  is added to the stream engine and other higher state.
- *
- *  \todo we can't restore the lastts
- */
-void FlowHandlePacketUpdateRemove(Flow *f, Packet *p)
-{
-    if (p->flowflags & FLOW_PKT_TOSERVER) {
-        f->todstpktcnt--;
-        f->todstbytecnt -= GET_PKT_LEN(p);
-        p->flowflags &= ~(FLOW_PKT_TOSERVER|FLOW_PKT_TOSERVER_FIRST);
-    } else {
-        f->tosrcpktcnt--;
-        f->tosrcbytecnt -= GET_PKT_LEN(p);
-        p->flowflags &= ~(FLOW_PKT_TOCLIENT|FLOW_PKT_TOCLIENT_FIRST);
-    }
-    p->flowflags &= ~FLOW_PKT_ESTABLISHED;
-
-    /*set the detection bypass flags*/
-    if (f->flags & FLOW_NOPACKET_INSPECTION) {
-        SCLogDebug("unsetting FLOW_NOPACKET_INSPECTION flag on flow %p", f);
-        DecodeUnsetNoPacketInspectionFlag(p);
-    }
-    if (f->flags & FLOW_NOPAYLOAD_INSPECTION) {
-        SCLogDebug("unsetting FLOW_NOPAYLOAD_INSPECTION flag on flow %p", f);
-        DecodeUnsetNoPayloadInspectionFlag(p);
-    }
-}
-
 /** \brief Update Packet and Flow
  *
  *  Updates packet and flow based on the new packet.
@@ -269,9 +224,6 @@ void FlowHandlePacketUpdateRemove(Flow *f, Packet *p)
 void FlowHandlePacketUpdate(Flow *f, Packet *p)
 {
     SCLogDebug("packet %"PRIu64" -- flow %p", p->pcap_cnt, f);
-
-    /* Point the Packet at the Flow */
-    FlowReference(&p->flow, f);
 
     /* update flags and counters */
     if (FlowGetPacketDirection(f, p) == TOSERVER) {
@@ -329,13 +281,9 @@ void FlowHandlePacket(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p)
     /* Get this packet's flow from the hash. FlowHandlePacket() will setup
      * a new flow if nescesary. If we get NULL, we're out of flow memory.
      * The returned flow is locked. */
-    Flow *f = FlowGetFlowFromHash(tv, dtv, p);
+    Flow *f = FlowGetFlowFromHash(tv, dtv, p, &p->flow);
     if (f == NULL)
         return;
-
-    FlowHandlePacketUpdate(f, p);
-
-    FLOWLOCK_UNLOCK(f);
 
     /* set the flow in the packet */
     p->flags |= PKT_HAS_FLOW;
@@ -355,10 +303,11 @@ void FlowInitConfig(char quiet)
     FlowQueueInit(&flow_spare_q);
     FlowQueueInit(&flow_recycle_q);
 
+#ifndef AFLFUZZ_NO_RANDOM
     unsigned int seed = RandomTimePreseed();
     /* set defaults */
     flow_config.hash_rand   = (int)( FLOW_DEFAULT_HASHSIZE * (rand_r(&seed) / RAND_MAX + 1.0));
-
+#endif
     flow_config.hash_size   = FLOW_DEFAULT_HASHSIZE;
     flow_config.memcap      = FLOW_DEFAULT_MEMCAP;
     flow_config.prealloc    = FLOW_DEFAULT_PREALLOC;
@@ -421,7 +370,7 @@ void FlowInitConfig(char quiet)
                 (uintmax_t)sizeof(FlowBucket));
         exit(EXIT_FAILURE);
     }
-    flow_hash = SCCalloc(flow_config.hash_size, sizeof(FlowBucket));
+    flow_hash = SCMallocAligned(flow_config.hash_size * sizeof(FlowBucket), CLS);
     if (unlikely(flow_hash == NULL)) {
         SCLogError(SC_ERR_FATAL, "Fatal error encountered in FlowInitConfig. Exiting...");
         exit(EXIT_FAILURE);
@@ -435,7 +384,7 @@ void FlowInitConfig(char quiet)
     (void) SC_ATOMIC_ADD(flow_memuse, (flow_config.hash_size * sizeof(FlowBucket)));
 
     if (quiet == FALSE) {
-        SCLogInfo("allocated %llu bytes of memory for the flow hash... "
+        SCLogConfig("allocated %llu bytes of memory for the flow hash... "
                   "%" PRIu32 " buckets of size %" PRIuMAX "",
                   SC_ATOMIC_GET(flow_memuse), flow_config.hash_size,
                   (uintmax_t)sizeof(FlowBucket));
@@ -443,7 +392,7 @@ void FlowInitConfig(char quiet)
 
     /* pre allocate flows */
     for (i = 0; i < flow_config.prealloc; i++) {
-        if (!(FLOW_CHECK_MEMCAP(sizeof(Flow)))) {
+        if (!(FLOW_CHECK_MEMCAP(sizeof(Flow) + FlowStorageSize()))) {
             SCLogError(SC_ERR_FLOW_INIT, "preallocating flows failed: "
                     "max flow memcap reached. Memcap %"PRIu64", "
                     "Memuse %"PRIu64".", flow_config.memcap,
@@ -461,9 +410,9 @@ void FlowInitConfig(char quiet)
     }
 
     if (quiet == FALSE) {
-        SCLogInfo("preallocated %" PRIu32 " flows of size %" PRIuMAX "",
-                flow_spare_q.len, (uintmax_t)sizeof(Flow));
-        SCLogInfo("flow memory usage: %llu bytes, maximum: %"PRIu64,
+        SCLogConfig("preallocated %" PRIu32 " flows of size %" PRIuMAX "",
+                flow_spare_q.len, (uintmax_t)(sizeof(Flow) + + FlowStorageSize()));
+        SCLogConfig("flow memory usage: %llu bytes, maximum: %"PRIu64,
                 SC_ATOMIC_GET(flow_memuse), flow_config.memcap);
     }
 
@@ -476,10 +425,6 @@ void FlowInitConfig(char quiet)
  *  \warning Not thread safe */
 static void FlowPrintStats (void)
 {
-#ifdef FLOWBITS_STATS
-    SCLogInfo("flowbits added: %" PRIu32 ", removed: %" PRIu32 ", max memory usage: %" PRIu32 "",
-        flowbits_added, flowbits_removed, flowbits_memuse_max);
-#endif /* FLOWBITS_STATS */
     return;
 }
 
@@ -518,7 +463,7 @@ void FlowShutdown(void)
 
             FBLOCK_DESTROY(&flow_hash[u]);
         }
-        SCFree(flow_hash);
+        SCFreeAligned(flow_hash);
         flow_hash = NULL;
     }
     (void) SC_ATOMIC_SUB(flow_memuse, flow_config.hash_size * sizeof(FlowBucket));
@@ -870,10 +815,40 @@ void *FlowGetAppState(const Flow *f)
     return f->alstate;
 }
 
+/**
+ *  \brief get 'disruption' flags: GAP/DEPTH/PASS
+ *  \param f locked flow
+ *  \param flags existing flags to be ammended
+ *  \retval flags original flags + disrupt flags (if any)
+ *  \TODO handle UDP
+ */
+uint8_t FlowGetDisruptionFlags(const Flow *f, uint8_t flags)
+{
+    if (f->proto != IPPROTO_TCP) {
+        return flags;
+    }
+    if (f->protoctx == NULL) {
+        return flags;
+    }
+
+    uint8_t newflags = flags;
+    TcpSession *ssn = f->protoctx;
+    TcpStream *stream = flags & STREAM_TOSERVER ? &ssn->client : &ssn->server;
+
+    if (stream->flags & STREAMTCP_STREAM_FLAG_DEPTH_REACHED) {
+        newflags |= STREAM_DEPTH;
+    }
+    if (stream->flags & STREAMTCP_STREAM_FLAG_GAP) {
+        newflags |= STREAM_GAP;
+    }
+    /* todo: handle pass case (also for UDP!) */
+
+    return newflags;
+}
+
 /************************************Unittests*******************************/
 
 #ifdef UNITTESTS
-#include "stream-tcp-private.h"
 #include "threads.h"
 
 /**
@@ -1104,11 +1079,15 @@ static int FlowTest09 (void)
 void FlowRegisterTests (void)
 {
 #ifdef UNITTESTS
-    UtRegisterTest("FlowTest01 -- Protocol Specific Timeouts", FlowTest01, 1);
-    UtRegisterTest("FlowTest02 -- Setting Protocol Specific Free Function", FlowTest02, 1);
-    UtRegisterTest("FlowTest07 -- Test flow Allocations when it reach memcap", FlowTest07, 1);
-    UtRegisterTest("FlowTest08 -- Test flow Allocations when it reach memcap", FlowTest08, 1);
-    UtRegisterTest("FlowTest09 -- Test flow Allocations when it reach memcap", FlowTest09, 1);
+    UtRegisterTest("FlowTest01 -- Protocol Specific Timeouts", FlowTest01);
+    UtRegisterTest("FlowTest02 -- Setting Protocol Specific Free Function",
+                   FlowTest02);
+    UtRegisterTest("FlowTest07 -- Test flow Allocations when it reach memcap",
+                   FlowTest07);
+    UtRegisterTest("FlowTest08 -- Test flow Allocations when it reach memcap",
+                   FlowTest08);
+    UtRegisterTest("FlowTest09 -- Test flow Allocations when it reach memcap",
+                   FlowTest09);
 
     FlowMgrRegisterTests();
     RegisterFlowStorageTests();

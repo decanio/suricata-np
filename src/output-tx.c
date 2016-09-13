@@ -47,19 +47,31 @@ typedef struct OutputLoggerThreadData_ {
 typedef struct OutputTxLogger_ {
     AppProto alproto;
     TxLogger LogFunc;
+    TxLoggerCondition LogCondition;
     OutputCtx *output_ctx;
     struct OutputTxLogger_ *next;
     const char *name;
     TmmId module_id;
+    uint32_t id;
+    int tc_log_progress;
+    int ts_log_progress;
 } OutputTxLogger;
 
 static OutputTxLogger *list = NULL;
 
-int OutputRegisterTxLogger(const char *name, AppProto alproto, TxLogger LogFunc, OutputCtx *output_ctx)
+int OutputRegisterTxLogger(const char *name, AppProto alproto, TxLogger LogFunc,
+                           OutputCtx *output_ctx, int tc_log_progress,
+                           int ts_log_progress, TxLoggerCondition LogCondition)
 {
     int module_id = TmModuleGetIdByName(name);
     if (module_id < 0)
         return -1;
+
+    if (!(AppLayerParserIsTxAware(alproto))) {
+        SCLogNotice("%s logger not enabled: protocol %s is disabled",
+            name, AppProtoToString(alproto));
+        return -1;
+    }
 
     OutputTxLogger *op = SCMalloc(sizeof(*op));
     if (op == NULL)
@@ -68,16 +80,39 @@ int OutputRegisterTxLogger(const char *name, AppProto alproto, TxLogger LogFunc,
 
     op->alproto = alproto;
     op->LogFunc = LogFunc;
+    op->LogCondition = LogCondition;
     op->output_ctx = output_ctx;
     op->name = name;
     op->module_id = (TmmId) module_id;
 
-    if (list == NULL)
+    if (tc_log_progress < 0) {
+        op->tc_log_progress =
+            AppLayerParserGetStateProgressCompletionStatus(alproto,
+                                                           STREAM_TOCLIENT);
+    } else {
+        op->tc_log_progress = tc_log_progress;
+    }
+
+    if (ts_log_progress < 0) {
+        op->ts_log_progress =
+            AppLayerParserGetStateProgressCompletionStatus(alproto,
+                                                           STREAM_TOSERVER);
+    } else {
+        op->ts_log_progress = ts_log_progress;
+    }
+
+    if (list == NULL) {
+        op->id = 1;
         list = op;
-    else {
+    } else {
         OutputTxLogger *t = list;
         while (t->next)
             t = t->next;
+        if (t->id * 2 > UINT32_MAX) {
+            SCLogError(SC_ERR_FATAL, "Too many loggers registered.");
+            exit(EXIT_FAILURE);
+        }
+        op->id = t->id * 2;
         t->next = op;
     }
 
@@ -104,14 +139,14 @@ static TmEcode OutputTxLog(ThreadVars *tv, Packet *p, void *thread_data, PacketQ
     Flow * const f = p->flow;
 
     FLOWLOCK_WRLOCK(f); /* WRITE lock before we updated flow logged id */
-    AppProto alproto = f->alproto;//AppLayerGetProtoFromPacket(p);
+    AppProto alproto = f->alproto;
 
     if (AppLayerParserProtocolIsTxAware(p->proto, alproto) == 0)
         goto end;
     if (AppLayerParserProtocolHasLogger(p->proto, alproto) == 0)
         goto end;
 
-    void *alstate = f->alstate;//AppLayerGetProtoStateFromPacket((const Packet *)p);
+    void *alstate = f->alstate;
     if (alstate == NULL) {
         SCLogDebug("no alstate");
         goto end;
@@ -119,34 +154,25 @@ static TmEcode OutputTxLog(ThreadVars *tv, Packet *p, void *thread_data, PacketQ
 
     uint64_t total_txs = AppLayerParserGetTxCnt(p->proto, alproto, alstate);
     uint64_t tx_id = AppLayerParserGetTransactionLogId(f->alparser);
-    int tx_progress_done_value_ts =
-        AppLayerParserGetStateProgressCompletionStatus(p->proto, alproto, 0);
-    int tx_progress_done_value_tc =
-        AppLayerParserGetStateProgressCompletionStatus(p->proto, alproto, 1);
-    int proto_logged = 0;
 
     for (; tx_id < total_txs; tx_id++)
     {
+        int logger_not_logged = 0;
+
         void *tx = AppLayerParserGetTx(p->proto, alproto, alstate, tx_id);
         if (tx == NULL) {
             SCLogDebug("tx is NULL not logging");
             continue;
         }
 
-        if (!(AppLayerParserStateIssetFlag(f->alparser, APP_LAYER_PARSER_EOF)))
-        {
-            int tx_progress = AppLayerParserGetStateProgress(p->proto, alproto, tx, 0);
-            if (tx_progress < tx_progress_done_value_ts) {
-                SCLogDebug("progress not far enough, not logging");
-                break;
-            }
+        int tx_progress_ts = AppLayerParserGetStateProgress(p->proto, alproto,
+                tx, FlowGetDisruptionFlags(f, STREAM_TOSERVER));
 
-            tx_progress = AppLayerParserGetStateProgress(p->proto, alproto, tx, 1);
-            if (tx_progress < tx_progress_done_value_tc) {
-                SCLogDebug("progress not far enough, not logging");
-                break;
-            }
-        }
+        int tx_progress_tc = AppLayerParserGetStateProgress(p->proto, alproto,
+                tx, FlowGetDisruptionFlags(f, STREAM_TOCLIENT));
+
+        SCLogDebug("tx_progress_ts %d tx_progress_tc %d",
+                tx_progress_ts, tx_progress_tc);
 
         // call each logger here (pseudo code)
         logger = list;
@@ -154,15 +180,52 @@ static TmEcode OutputTxLog(ThreadVars *tv, Packet *p, void *thread_data, PacketQ
         while (logger && store) {
             BUG_ON(logger->LogFunc == NULL);
 
-            SCLogDebug("logger %p", logger);
+            SCLogDebug("logger %p, LogCondition %p, ts_log_progress %d "
+                    "tc_log_progress %d", logger, logger->LogCondition,
+                    logger->ts_log_progress, logger->tc_log_progress);
             if (logger->alproto == alproto) {
                 SCLogDebug("alproto match, logging tx_id %ju", tx_id);
+
+                if (AppLayerParserGetTxLogged(p->proto, alproto, alstate, tx,
+                        logger->id)) {
+                    SCLogDebug("logger has already logged this transaction");
+
+                    goto next;
+                }
+
+                if (!(AppLayerParserStateIssetFlag(f->alparser,
+                                                   APP_LAYER_PARSER_EOF))) {
+                    if (logger->LogCondition) {
+                        int r = logger->LogCondition(tv, p, alstate, tx, tx_id);
+                        if (r == FALSE) {
+                            SCLogDebug("conditions not met, not logging");
+                            logger_not_logged = 1;
+                            goto next;
+                        }
+                    } else {
+                        if (tx_progress_tc < logger->tc_log_progress) {
+                            SCLogDebug("progress not far enough, not logging");
+                            logger_not_logged = 1;
+                            goto next;
+                        }
+
+                        if (tx_progress_ts < logger->ts_log_progress) {
+                            SCLogDebug("progress not far enough, not logging");
+                            logger_not_logged = 1;
+                            goto next;
+                        }
+                    }
+                }
+
                 PACKET_PROFILING_TMM_START(p, logger->module_id);
                 logger->LogFunc(tv, store->thread_data, p, f, alstate, tx, tx_id);
                 PACKET_PROFILING_TMM_END(p, logger->module_id);
-                proto_logged = 1;
+
+                AppLayerParserSetTxLogged(p->proto, alproto, alstate, tx,
+                                          logger->id);
             }
 
+next:
             logger = logger->next;
             store = store->next;
 
@@ -170,7 +233,7 @@ static TmEcode OutputTxLog(ThreadVars *tv, Packet *p, void *thread_data, PacketQ
             BUG_ON(logger != NULL && store == NULL);
         }
 
-        if (proto_logged) {
+        if (!logger_not_logged) {
             SCLogDebug("updating log tx_id %ju", tx_id);
             AppLayerParserSetTransactionLogId(f->alparser);
         }
@@ -256,6 +319,8 @@ static TmEcode OutputTxLogThreadDeinit(ThreadVars *tv, void *thread_data)
         store = next_store;
         logger = logger->next;
     }
+
+    SCFree(op_thread_data);
     return TM_ECODE_OK;
 }
 

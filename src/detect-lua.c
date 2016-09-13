@@ -111,6 +111,10 @@ static int DetectLuaMatch (ThreadVars *, DetectEngineThreadCtx *,
         Packet *, Signature *, const SigMatchCtx *);
 static int DetectLuaAppMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
         Flow *f, uint8_t flags, void *state, Signature *s, SigMatch *m);
+static int DetectLuaAppTxMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+                                Flow *f, uint8_t flags,
+                                void *state, void *txv, const Signature *s,
+                                const SigMatchCtx *ctx);
 static int DetectLuaSetup (DetectEngineCtx *, Signature *, char *);
 static void DetectLuaRegisterTests(void);
 static void DetectLuaFree(void *);
@@ -126,6 +130,7 @@ void DetectLuaRegister(void)
     sigmatch_table[DETECT_LUA].url = "https://redmine.openinfosecfoundation.org/projects/suricata/wiki/Lua_scripting";
     sigmatch_table[DETECT_LUA].Match = DetectLuaMatch;
     sigmatch_table[DETECT_LUA].AppLayerMatch = DetectLuaAppMatch;
+    sigmatch_table[DETECT_LUA].AppLayerTxMatch = DetectLuaAppTxMatch;
     sigmatch_table[DETECT_LUA].Setup = DetectLuaSetup;
     sigmatch_table[DETECT_LUA].Free  = DetectLuaFree;
     sigmatch_table[DETECT_LUA].RegisterTests = DetectLuaRegisterTests;
@@ -156,6 +161,12 @@ void DetectLuaRegister(void)
 #define DATATYPE_HTTP_RESPONSE_HEADERS_RAW  (1<<14)
 
 #define DATATYPE_DNS_RRNAME                 (1<<15)
+#define DATATYPE_DNS_REQUEST                (1<<16)
+#define DATATYPE_DNS_RESPONSE               (1<<17)
+
+#define DATATYPE_TLS                        (1<<18)
+#define DATATYPE_SSH                        (1<<19)
+#define DATATYPE_SMTP                       (1<<20)
 
 #ifdef HAVE_LUAJIT
 static void *LuaStatePoolAlloc(void)
@@ -181,12 +192,18 @@ int DetectLuajitSetupStatesPool(int num, int reloads)
     pthread_mutex_lock(&luajit_states_lock);
 
     if (luajit_states == NULL) {
-        int cnt = 0;
-        char *conf_val = NULL;
+        intmax_t cnt = 0;
+        ConfNode *denode = NULL;
+        ConfNode *decnf = ConfGetNode("detect-engine");
+        if (decnf != NULL) {
+            TAILQ_FOREACH(denode, &decnf->head, next) {
+                if (strcmp(denode->val, "luajit-states") == 0) {
+                    ConfGetChildValueInt(denode, "luajit-states", &cnt);
+                }
+            }
+        }
 
-        if ((ConfGet("detect-engine.luajit-states", &conf_val)) == 1) {
-            cnt = (int)atoi(conf_val);
-        } else {
+        if (cnt == 0) {
             int cpus = UtilCpuGetNumProcessorsOnline();
             if (cpus == 0) {
                 cpus = 10;
@@ -276,7 +293,7 @@ void LuaDumpStack(lua_State *state)
 
 int DetectLuaMatchBuffer(DetectEngineThreadCtx *det_ctx, Signature *s, SigMatch *sm,
         uint8_t *buffer, uint32_t buffer_len, uint32_t offset,
-        Flow *f, int flow_lock)
+        Flow *f)
 {
     SCEnter();
     int ret = 0;
@@ -293,8 +310,12 @@ int DetectLuaMatchBuffer(DetectEngineThreadCtx *det_ctx, Signature *s, SigMatch 
         SCReturnInt(0);
 
     /* setup extension data for use in lua c functions */
+    int flow_lock = (f != NULL) ? /* if we have a flow, it's locked */
+        LUA_FLOW_LOCKED_BY_PARENT :
+        LUA_FLOW_NOT_LOCKED_BY_PARENT;
+
     LuaExtensionsMatchSetup(tluajit->luastate, luajit, det_ctx,
-            f, flow_lock, /* no packet in the ctx */NULL);
+            f, flow_lock, /* no packet in the ctx */NULL, 0);
 
     /* prepare data to pass to script */
     lua_getglobal(tluajit->luastate, "match");
@@ -395,8 +416,20 @@ static int DetectLuaMatch (ThreadVars *tv, DetectEngineThreadCtx *det_ctx,
         SCReturnInt(0);
 
     /* setup extension data for use in lua c functions */
+    uint8_t flags = 0;
+    if (p->flowflags & FLOW_PKT_TOSERVER)
+        flags = STREAM_TOSERVER;
+    else if (p->flowflags & FLOW_PKT_TOCLIENT)
+        flags = STREAM_TOCLIENT;
+
+    LuaStateSetThreadVars(tluajit->luastate, tv);
+
+    int flow_lock = (p->flow != NULL) ? /* if we have a flow, it's locked */
+        LUA_FLOW_LOCKED_BY_PARENT :
+        LUA_FLOW_NOT_LOCKED_BY_PARENT;
+
     LuaExtensionsMatchSetup(tluajit->luastate, luajit, det_ctx,
-            p->flow, /* flow not locked */LUA_FLOW_NOT_LOCKED_BY_PARENT, p);
+            p->flow, flow_lock, p, flags);
 
     if ((tluajit->flags & DATATYPE_PAYLOAD) && p->payload_len == 0)
         SCReturnInt(0);
@@ -406,10 +439,7 @@ static int DetectLuaMatch (ThreadVars *tv, DetectEngineThreadCtx *det_ctx,
         if (p->flow == NULL)
             SCReturnInt(0);
 
-        FLOWLOCK_RDLOCK(p->flow);
-        int alproto = p->flow->alproto;
-        FLOWLOCK_UNLOCK(p->flow);
-
+        AppProto alproto = p->flow->alproto;
         if (tluajit->alproto != alproto)
             SCReturnInt(0);
     }
@@ -428,7 +458,6 @@ static int DetectLuaMatch (ThreadVars *tv, DetectEngineThreadCtx *det_ctx,
         lua_settable(tluajit->luastate, -3);
     }
     if (tluajit->alproto == ALPROTO_HTTP) {
-        FLOWLOCK_RDLOCK(p->flow);
         HtpState *htp_state = p->flow->alstate;
         if (htp_state != NULL && htp_state->connp != NULL) {
             htp_tx_t *tx = NULL;
@@ -450,7 +479,6 @@ static int DetectLuaMatch (ThreadVars *tv, DetectEngineThreadCtx *det_ctx,
                 }
             }
         }
-        FLOWLOCK_UNLOCK(p->flow);
     }
 
     int retval = lua_pcall(tluajit->luastate, 1, 1, 0);
@@ -510,23 +538,13 @@ static int DetectLuaMatch (ThreadVars *tv, DetectEngineThreadCtx *det_ctx,
     SCReturnInt(ret);
 }
 
-/**
- * \brief match the specified lua script in AMATCH
- *
- * \param t thread local vars
- * \param det_ctx pattern matcher thread local data
- * \param s signature being inspected
- * \param m sigmatch that we will cast into DetectLuaData
- *
- * \retval 0 no match
- * \retval 1 match
- */
-static int DetectLuaAppMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
-        Flow *f, uint8_t flags, void *state, Signature *s, SigMatch *m)
+static int DetectLuaAppMatchCommon (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+        Flow *f, uint8_t flags, void *state,
+        const Signature *s, const SigMatchCtx *ctx)
 {
     SCEnter();
     int ret = 0;
-    DetectLuaData *luajit = (DetectLuaData *)m->ctx;
+    DetectLuaData *luajit = (DetectLuaData *)ctx;
     if (luajit == NULL)
         SCReturnInt(0);
 
@@ -536,7 +554,8 @@ static int DetectLuaAppMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
 
     /* setup extension data for use in lua c functions */
     LuaExtensionsMatchSetup(tluajit->luastate, luajit, det_ctx,
-            f, /* flow is locked */LUA_FLOW_LOCKED_BY_PARENT, NULL);
+            f, /* flow is locked */LUA_FLOW_LOCKED_BY_PARENT,
+            NULL, flags);
 
     if (tluajit->alproto != ALPROTO_UNKNOWN) {
         int alproto = f->alproto;
@@ -620,6 +639,42 @@ static int DetectLuaAppMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
     }
 
     SCReturnInt(ret);
+}
+
+/**
+ * \brief match the specified lua script in AMATCH
+ *
+ * \param t thread local vars
+ * \param det_ctx pattern matcher thread local data
+ * \param s signature being inspected
+ * \param m sigmatch that we will cast into DetectLuaData
+ *
+ * \retval 0 no match
+ * \retval 1 match
+ */
+static int DetectLuaAppMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+        Flow *f, uint8_t flags, void *state, Signature *s, SigMatch *m)
+{
+    return DetectLuaAppMatchCommon(t, det_ctx, f, flags, state, s, m->ctx);
+}
+
+/**
+ * \brief match the specified lua script in a list with a tx
+ *
+ * \param t thread local vars
+ * \param det_ctx pattern matcher thread local data
+ * \param s signature being inspected
+ * \param m sigmatch that we will cast into DetectLuaData
+ *
+ * \retval 0 no match
+ * \retval 1 match
+ */
+static int DetectLuaAppTxMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+                                Flow *f, uint8_t flags,
+                                void *state, void *txv, const Signature *s,
+                                const SigMatchCtx *ctx)
+{
+    return DetectLuaAppMatchCommon(t, det_ctx, f, flags, state, s, ctx);
 }
 
 #ifdef UNITTESTS
@@ -946,6 +1001,10 @@ static int DetectLuaSetupPrime(DetectEngineCtx *de_ctx, DetectLuaData *ld)
 
             if (strcmp(k, "dns.rrname") == 0)
                 ld->flags |= DATATYPE_DNS_RRNAME;
+            else if (strcmp(k, "dns.request") == 0)
+                ld->flags |= DATATYPE_DNS_REQUEST;
+            else if (strcmp(k, "dns.response") == 0)
+                ld->flags |= DATATYPE_DNS_RESPONSE;
 
             else {
                 SCLogError(SC_ERR_LUA_ERROR, "unsupported dns data type %s", k);
@@ -956,6 +1015,24 @@ static int DetectLuaSetupPrime(DetectEngineCtx *de_ctx, DetectLuaData *ld)
                 SCLogError(SC_ERR_LUA_ERROR, "alloc error");
                 goto error;
             }
+        } else if (strncmp(k, "tls", 3) == 0 && strcmp(v, "true") == 0) {
+
+            ld->alproto = ALPROTO_TLS;
+
+            ld->flags |= DATATYPE_TLS;
+
+        } else if (strncmp(k, "ssh", 3) == 0 && strcmp(v, "true") == 0) {
+
+            ld->alproto = ALPROTO_SSH;
+
+            ld->flags |= DATATYPE_SSH;
+
+        } else if (strncmp(k, "smtp", 4) == 0 && strcmp(v, "true") == 0) {
+
+            ld->alproto = ALPROTO_SMTP;
+
+            ld->flags |= DATATYPE_SMTP;
+
         } else {
             SCLogError(SC_ERR_LUA_ERROR, "unsupported data type %s", k);
             goto error;
@@ -1044,7 +1121,19 @@ static int DetectLuaSetup (DetectEngineCtx *de_ctx, Signature *s, char *str)
         else
             SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_HRLMATCH);
     } else if (luajit->alproto == ALPROTO_DNS) {
-        SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_DNSQUERY_MATCH);
+        if (luajit->flags & DATATYPE_DNS_RRNAME) {
+            SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_DNSQUERYNAME_MATCH);
+        } else if (luajit->flags & DATATYPE_DNS_REQUEST) {
+            SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_DNSREQUEST_MATCH);
+        } else if (luajit->flags & DATATYPE_DNS_RESPONSE) {
+            SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_DNSRESPONSE_MATCH);
+        }
+    } else if (luajit->alproto == ALPROTO_TLS) {
+        SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_AMATCH);
+    } else if (luajit->alproto == ALPROTO_SSH) {
+        SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_AMATCH);
+    } else if (luajit->alproto == ALPROTO_SMTP) {
+        SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_AMATCH);
     } else {
         SCLogError(SC_ERR_LUA_ERROR, "luajit can't be used with protocol %s",
                    AppLayerGetProtoName(luajit->alproto));
@@ -2000,12 +2089,12 @@ end:
 void DetectLuaRegisterTests(void)
 {
 #ifdef UNITTESTS
-    UtRegisterTest("LuaMatchTest01", LuaMatchTest01, 1);
-    UtRegisterTest("LuaMatchTest02", LuaMatchTest02, 1);
-    UtRegisterTest("LuaMatchTest03", LuaMatchTest03, 1);
-    UtRegisterTest("LuaMatchTest04", LuaMatchTest04, 1);
-    UtRegisterTest("LuaMatchTest05", LuaMatchTest05, 1);
-    UtRegisterTest("LuaMatchTest06", LuaMatchTest06, 1);
+    UtRegisterTest("LuaMatchTest01", LuaMatchTest01);
+    UtRegisterTest("LuaMatchTest02", LuaMatchTest02);
+    UtRegisterTest("LuaMatchTest03", LuaMatchTest03);
+    UtRegisterTest("LuaMatchTest04", LuaMatchTest04);
+    UtRegisterTest("LuaMatchTest05", LuaMatchTest05);
+    UtRegisterTest("LuaMatchTest06", LuaMatchTest06);
 #endif
 }
 

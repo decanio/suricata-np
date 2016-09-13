@@ -51,7 +51,7 @@ char SCRConfReferenceHashCompareFunc(void *data1, uint16_t datalen1,
 void SCRConfReferenceHashFree(void *ch);
 
 /* used to get the reference.config file path */
-static char *SCRConfGetConfFilename(void);
+static char *SCRConfGetConfFilename(const DetectEngineCtx *de_ctx);
 
 void SCReferenceConfInit(void)
 {
@@ -122,7 +122,7 @@ static FILE *SCRConfInitContextAndLocalResources(DetectEngineCtx *de_ctx, FILE *
      * instead use an input stream against a buffer containing the
      * reference strings */
     if (fd == NULL) {
-        filename = SCRConfGetConfFilename();
+        filename = SCRConfGetConfFilename(de_ctx);
         if ((fd = fopen(filename, "r")) == NULL) {
 #ifdef UNITTESTS
             if (RunmodeIsUnittests())
@@ -159,11 +159,26 @@ static FILE *SCRConfInitContextAndLocalResources(DetectEngineCtx *de_ctx, FILE *
  * \retval log_filename Pointer to a string containing the path for the
  *                      reference.config file.
  */
-static char *SCRConfGetConfFilename(void)
+static char *SCRConfGetConfFilename(const DetectEngineCtx *de_ctx)
 {
     char *path = NULL;
-    if (ConfGet("reference-config-file", &path) != 1) {
-        return (char *)SC_RCONF_DEFAULT_FILE_PATH;
+
+    if (de_ctx != NULL && strlen(de_ctx->config_prefix) > 0) {
+        char config_value[256];
+        snprintf(config_value, sizeof(config_value),
+                 "%s.reference-config-file", de_ctx->config_prefix);
+
+        /* try loading prefix setting, fall back to global if that
+         * fails. */
+        if (ConfGet(config_value, &path) != 1) {
+            if (ConfGet("reference-config-file", &path) != 1) {
+                return (char *)SC_RCONF_DEFAULT_FILE_PATH;
+            }
+        }
+    } else {
+        if (ConfGet("reference-config-file", &path) != 1) {
+            return (char *)SC_RCONF_DEFAULT_FILE_PATH;
+        }
     }
     return path;
 }
@@ -781,12 +796,12 @@ void SCRConfRegisterTests(void)
 {
 
 #ifdef UNITTESTS
-    UtRegisterTest("SCRConfTest01", SCRConfTest01, 1);
-    UtRegisterTest("SCRConfTest02", SCRConfTest02, 1);
-    UtRegisterTest("SCRConfTest03", SCRConfTest03, 1);
-    UtRegisterTest("SCRConfTest04", SCRConfTest04, 1);
-    UtRegisterTest("SCRConfTest05", SCRConfTest05, 1);
-    UtRegisterTest("SCRConfTest06", SCRConfTest06, 1);
+    UtRegisterTest("SCRConfTest01", SCRConfTest01);
+    UtRegisterTest("SCRConfTest02", SCRConfTest02);
+    UtRegisterTest("SCRConfTest03", SCRConfTest03);
+    UtRegisterTest("SCRConfTest04", SCRConfTest04);
+    UtRegisterTest("SCRConfTest05", SCRConfTest05);
+    UtRegisterTest("SCRConfTest06", SCRConfTest06);
 #endif /* UNITTESTS */
 
     return;

@@ -46,7 +46,6 @@
 
 #include "util-spm.h"
 #include "util-debug.h"
-#include "app-layer-htp.h"
 #include "util-time.h"
 
 #include "util-unittest.h"
@@ -76,13 +75,15 @@
  *  \retval -1 error
  *  \retval -2 not handling files on this flow
  */
-int HTPFileOpen(HtpState *s, uint8_t *filename, uint16_t filename_len,
-        uint8_t *data, uint32_t data_len, uint16_t txid, uint8_t direction)
+int HTPFileOpen(HtpState *s, const uint8_t *filename, uint16_t filename_len,
+        const uint8_t *data, uint32_t data_len,
+        uint64_t txid, uint8_t direction)
 {
     int retval = 0;
     uint8_t flags = 0;
     FileContainer *files = NULL;
     FileContainer *files_opposite = NULL;
+    const StreamingBufferConfig *sbcfg = NULL;
 
     SCLogDebug("data %p data_len %"PRIu32, data, data_len);
 
@@ -120,6 +121,9 @@ int HTPFileOpen(HtpState *s, uint8_t *filename, uint16_t filename_len,
         if (!(flags & FILE_STORE) && (s->f->flags & FLOW_FILE_NO_STORE_TC)) {
             flags |= FILE_NOSTORE;
         }
+
+        sbcfg = &s->cfg->response.sbcfg;
+
     } else {
         if (s->files_ts == NULL) {
             s->files_ts = FileContainerAlloc();
@@ -149,6 +153,8 @@ int HTPFileOpen(HtpState *s, uint8_t *filename, uint16_t filename_len,
         if (!(flags & FILE_STORE) && (s->f->flags & FLOW_FILE_NO_STORE_TS)) {
             flags |= FILE_NOSTORE;
         }
+
+        sbcfg = &s->cfg->request.sbcfg;
     }
 
     /* if the previous file is in the same txid, we reset the file part of the
@@ -176,7 +182,7 @@ int HTPFileOpen(HtpState *s, uint8_t *filename, uint16_t filename_len,
         }
     }
 
-    if (FileOpenFile(files, filename, filename_len,
+    if (FileOpenFile(files, sbcfg, filename, filename_len,
                 data, data_len, flags) == NULL)
     {
         retval = -1;
@@ -201,7 +207,7 @@ end:
  *  \retval -1 error
  *  \retval -2 file doesn't need storing
  */
-int HTPFileStoreChunk(HtpState *s, uint8_t *data, uint32_t data_len,
+int HTPFileStoreChunk(HtpState *s, const uint8_t *data, uint32_t data_len,
         uint8_t direction)
 {
     SCEnter();
@@ -255,7 +261,7 @@ end:
  *  \retval -1 error
  *  \retval -2 not storing files on this flow/tx
  */
-int HTPFileClose(HtpState *s, uint8_t *data, uint32_t data_len,
+int HTPFileClose(HtpState *s, const uint8_t *data, uint32_t data_len,
         uint8_t flags, uint8_t direction)
 {
     SCEnter();
@@ -629,8 +635,12 @@ static int HTPFileParserTest03(void)
         goto end;
     }
 
-    if (http_state->files_ts->head->chunks_head->len != 11) {
-        printf("filedata len not 11 but %u: ", http_state->files_ts->head->chunks_head->len);
+    if (http_state->files_ts->head == NULL ||
+        FileSize(http_state->files_ts->head) != 11)
+    {
+        if (http_state->files_ts->head != NULL)
+            printf("filedata len not 11 but %"PRIu64": ",
+                    FileSize(http_state->files_ts->head));
         goto end;
     }
 
@@ -879,31 +889,18 @@ static int HTPFileParserTest05(void)
     if (http_state->files_ts->head->next != http_state->files_ts->tail)
         goto end;
 
-    if (http_state->files_ts->head->chunks_head->len != 11) {
-        printf("expected 11 but file is %u bytes instead: ",
-                http_state->files_ts->head->chunks_head->len);
-        PrintRawDataFp(stdout, http_state->files_ts->head->chunks_head->data,
-                http_state->files_ts->head->chunks_head->len);
+    if (StreamingBufferCompareRawData(http_state->files_ts->head->sb,
+                (uint8_t *)"filecontent", 11) != 1)
+    {
         goto end;
     }
 
-    if (memcmp("filecontent", http_state->files_ts->head->chunks_head->data,
-                http_state->files_ts->head->chunks_head->len) != 0) {
+    if (StreamingBufferCompareRawData(http_state->files_ts->tail->sb,
+                (uint8_t *)"FILECONTENT", 11) != 1)
+    {
         goto end;
     }
 
-    if (http_state->files_ts->tail->chunks_head->len != 11) {
-        printf("expected 11 but file is %u bytes instead: ",
-                http_state->files_ts->tail->chunks_head->len);
-        PrintRawDataFp(stdout, http_state->files_ts->tail->chunks_head->data,
-                http_state->files_ts->tail->chunks_head->len);
-        goto end;
-    }
-
-    if (memcmp("FILECONTENT", http_state->files_ts->tail->chunks_head->data,
-                http_state->files_ts->tail->chunks_head->len) != 0) {
-        goto end;
-    }
     result = 1;
 end:
     if (alp_tctx != NULL)
@@ -1004,31 +1001,18 @@ static int HTPFileParserTest06(void)
     if (http_state->files_ts->head->next != http_state->files_ts->tail)
         goto end;
 
-    if (http_state->files_ts->head->chunks_head->len != 11) {
-        printf("expected 11 but file is %u bytes instead: ",
-                http_state->files_ts->head->chunks_head->len);
-        PrintRawDataFp(stdout, http_state->files_ts->head->chunks_head->data,
-                http_state->files_ts->head->chunks_head->len);
+    if (StreamingBufferCompareRawData(http_state->files_ts->head->sb,
+                (uint8_t *)"filecontent", 11) != 1)
+    {
         goto end;
     }
 
-    if (memcmp("filecontent", http_state->files_ts->head->chunks_head->data,
-                http_state->files_ts->head->chunks_head->len) != 0) {
+    if (StreamingBufferCompareRawData(http_state->files_ts->tail->sb,
+                (uint8_t *)"FILECONTENT", 11) != 1)
+    {
         goto end;
     }
 
-    if (http_state->files_ts->tail->chunks_head->len != 11) {
-        printf("expected 11 but file is %u bytes instead: ",
-                http_state->files_ts->tail->chunks_head->len);
-        PrintRawDataFp(stdout, http_state->files_ts->tail->chunks_head->data,
-                http_state->files_ts->tail->chunks_head->len);
-        goto end;
-    }
-
-    if (memcmp("FILECONTENT", http_state->files_ts->tail->chunks_head->data,
-                http_state->files_ts->tail->chunks_head->len) != 0) {
-        goto end;
-    }
     result = 1;
 end:
     if (alp_tctx != NULL)
@@ -1113,16 +1097,9 @@ static int HTPFileParserTest07(void)
         goto end;
     }
 
-    if (http_state->files_ts->head->chunks_head->len != 11) {
-        printf("expected 11 but file is %u bytes instead: ",
-                http_state->files_ts->head->chunks_head->len);
-        PrintRawDataFp(stdout, http_state->files_ts->head->chunks_head->data,
-                http_state->files_ts->head->chunks_head->len);
-        goto end;
-    }
-
-    if (memcmp("FILECONTENT", http_state->files_ts->head->chunks_head->data,
-                http_state->files_ts->head->chunks_head->len) != 0) {
+    if (StreamingBufferCompareRawData(http_state->files_ts->tail->sb,
+                (uint8_t *)"FILECONTENT", 11) != 1)
+    {
         goto end;
     }
 
@@ -1591,16 +1568,9 @@ static int HTPFileParserTest11(void)
         goto end;
     }
 
-    if (http_state->files_ts->head->chunks_head->len != 11) {
-        printf("expected 11 but file is %u bytes instead: ",
-                http_state->files_ts->head->chunks_head->len);
-        PrintRawDataFp(stdout, http_state->files_ts->head->chunks_head->data,
-                http_state->files_ts->head->chunks_head->len);
-        goto end;
-    }
-
-    if (memcmp("FILECONTENT", http_state->files_ts->head->chunks_head->data,
-                http_state->files_ts->head->chunks_head->len) != 0) {
+    if (StreamingBufferCompareRawData(http_state->files_ts->head->sb,
+                (uint8_t *)"FILECONTENT", 11) != 1)
+    {
         goto end;
     }
 
@@ -1620,16 +1590,16 @@ end:
 void HTPFileParserRegisterTests(void)
 {
 #ifdef UNITTESTS
-    UtRegisterTest("HTPFileParserTest01", HTPFileParserTest01, 1);
-    UtRegisterTest("HTPFileParserTest02", HTPFileParserTest02, 1);
-    UtRegisterTest("HTPFileParserTest03", HTPFileParserTest03, 1);
-    UtRegisterTest("HTPFileParserTest04", HTPFileParserTest04, 1);
-    UtRegisterTest("HTPFileParserTest05", HTPFileParserTest05, 1);
-    UtRegisterTest("HTPFileParserTest06", HTPFileParserTest06, 1);
-    UtRegisterTest("HTPFileParserTest07", HTPFileParserTest07, 1);
-    UtRegisterTest("HTPFileParserTest08", HTPFileParserTest08, 1);
-    UtRegisterTest("HTPFileParserTest09", HTPFileParserTest09, 1);
-    UtRegisterTest("HTPFileParserTest10", HTPFileParserTest10, 1);
-    UtRegisterTest("HTPFileParserTest11", HTPFileParserTest11, 1);
+    UtRegisterTest("HTPFileParserTest01", HTPFileParserTest01);
+    UtRegisterTest("HTPFileParserTest02", HTPFileParserTest02);
+    UtRegisterTest("HTPFileParserTest03", HTPFileParserTest03);
+    UtRegisterTest("HTPFileParserTest04", HTPFileParserTest04);
+    UtRegisterTest("HTPFileParserTest05", HTPFileParserTest05);
+    UtRegisterTest("HTPFileParserTest06", HTPFileParserTest06);
+    UtRegisterTest("HTPFileParserTest07", HTPFileParserTest07);
+    UtRegisterTest("HTPFileParserTest08", HTPFileParserTest08);
+    UtRegisterTest("HTPFileParserTest09", HTPFileParserTest09);
+    UtRegisterTest("HTPFileParserTest10", HTPFileParserTest10);
+    UtRegisterTest("HTPFileParserTest11", HTPFileParserTest11);
 #endif /* UNITTESTS */
 }

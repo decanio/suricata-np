@@ -49,6 +49,10 @@
 #include <stdio.h>
 #endif
 
+#if HAVE_STDDEF_H
+#include <stddef.h>
+#endif
+
 #if HAVE_STDINT_h
 #include <stdint.h>
 #endif
@@ -83,6 +87,10 @@
 
 #if HAVE_STRING_H
 #include <string.h>
+#endif
+
+#if HAVE_STRINGS_H
+#include <strings.h>
 #endif
 
 #if HAVE_FCNTL_H
@@ -206,6 +214,13 @@
 #endif
 #endif /* !__CYGWIN__ */
 
+#ifdef HAVE_LIBJANSSON
+#include <jansson.h>
+#ifndef JSON_ESCAPE_SLASH
+#define JSON_ESCAPE_SLASH 0
+#endif
+#endif
+
 #if CPPCHECK==1
 #define BUG_ON(x) if (((x))) exit(1)
 #else
@@ -226,11 +241,11 @@
  *  extensively keeping this as small as possible reduces the overall memory
  *  footprint of the engine. Set to uint32_t if the engine needs to support
  *  more than 64k sigs. */
-#define SigIntId uint16_t
-//#define SigIntId uint32_t
+//#define SigIntId uint16_t
+#define SigIntId uint32_t
 
 /** same for pattern id's */
-#define PatIntId uint16_t
+#define PatIntId uint32_t
 
 /** FreeBSD does not define __WORDSIZE, but it uses __LONG_BIT */
 #ifndef __WORDSIZE
@@ -286,6 +301,13 @@
 #define MIN(x, y) (((x)<(y))?(x):(y))
 #endif
 
+#ifndef MAX
+#define MAX(x, y) (((x)<(y))?(y):(x))
+#endif
+
+#define BIT_U32(n) (1UL  << (n))
+#define BIT_U64(n) (1ULL << (n))
+
 typedef enum PacketProfileDetectId_ {
     PROF_DETECT_MPM,
     PROF_DETECT_MPM_PACKET,         /* PKT MPM */
@@ -305,6 +327,7 @@ typedef enum PacketProfileDetectId_ {
     PROF_DETECT_MPM_HHHD,
     PROF_DETECT_MPM_HRHHD,
     PROF_DETECT_MPM_DNSQUERY,
+    PROF_DETECT_MPM_TLSSNI,
     PROF_DETECT_IPONLY,
     PROF_DETECT_RULES,
     PROF_DETECT_STATEFUL,

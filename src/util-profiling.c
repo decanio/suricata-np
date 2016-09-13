@@ -30,6 +30,7 @@
 #include "decode.h"
 #include "detect.h"
 #include "conf.h"
+#include "flow-worker.h"
 
 #include "tm-threads.h"
 
@@ -85,6 +86,13 @@ SCProfilePacketData packet_profile_app_pd_data6[257];
 
 SCProfilePacketData packet_profile_detect_data4[PROF_DETECT_SIZE][257];
 SCProfilePacketData packet_profile_detect_data6[PROF_DETECT_SIZE][257];
+
+struct ProfileProtoRecords {
+    SCProfilePacketData records4[257];
+    SCProfilePacketData records6[257];
+};
+
+struct ProfileProtoRecords packet_profile_flowworker_data[PROFILE_FLOWWORKER_SIZE];
 
 int profiling_packets_enabled = 0;
 int profiling_packets_csv_enabled = 0;
@@ -159,6 +167,7 @@ SCProfilingInit(void)
             memset(&packet_profile_app_pd_data6, 0, sizeof(packet_profile_app_pd_data6));
             memset(&packet_profile_detect_data4, 0, sizeof(packet_profile_detect_data4));
             memset(&packet_profile_detect_data6, 0, sizeof(packet_profile_detect_data6));
+            memset(&packet_profile_flowworker_data, 0, sizeof(packet_profile_flowworker_data));
 
             const char *filename = ConfNodeLookupChildValue(conf, "filename");
             if (filename != NULL) {
@@ -217,7 +226,7 @@ SCProfilingInit(void)
                 for (i = 0; i < ALPROTO_MAX; i++) {
                     fprintf(packet_profile_csv_fp, "%s,", AppProtoToString(i));
                 }
-                fprintf(packet_profile_csv_fp, "STREAM (no app),proto detect,");
+                fprintf(packet_profile_csv_fp, "proto detect,");
                 for (i = 0; i < PROF_DETECT_SIZE; i++) {
                     fprintf(packet_profile_csv_fp, "%s,", PacketProfileDetectIdToString(i));
                 }
@@ -299,7 +308,56 @@ void
 SCProfilingDump(void)
 {
     SCProfilingDumpPacketStats();
-    SCLogInfo("Done dumping profiling data.");
+    SCLogPerf("Done dumping profiling data.");
+}
+
+static void DumpFlowWorkerIP(FILE *fp, int ipv, uint64_t total)
+{
+    char totalstr[256];
+
+    enum ProfileFlowWorkerId fwi;
+    for (fwi = 0; fwi < PROFILE_FLOWWORKER_SIZE; fwi++) {
+        struct ProfileProtoRecords *r = &packet_profile_flowworker_data[fwi];
+        for (int p = 0; p < 257; p++) {
+            SCProfilePacketData *pd = ipv == 4 ? &r->records4[p] : &r->records6[p];
+            if (pd->cnt == 0) {
+                continue;
+            }
+
+            FormatNumber(pd->tot, totalstr, sizeof(totalstr));
+            double percent = (long double)pd->tot /
+                (long double)total * 100;
+
+            fprintf(fp, "%-20s    IPv%d     %3d  %12"PRIu64"     %12"PRIu64"   %12"PRIu64"  %12"PRIu64"  %12s  %-6.2f\n",
+                    ProfileFlowWorkerIdToString(fwi), ipv, p, pd->cnt,
+                    pd->min, pd->max, (uint64_t)(pd->tot / pd->cnt), totalstr, percent);
+        }
+    }
+}
+
+static void DumpFlowWorker(FILE *fp)
+{
+    uint64_t total = 0;
+
+    enum ProfileFlowWorkerId fwi;
+    for (fwi = 0; fwi < PROFILE_FLOWWORKER_SIZE; fwi++) {
+        struct ProfileProtoRecords *r = &packet_profile_flowworker_data[fwi];
+        for (int p = 0; p < 257; p++) {
+            SCProfilePacketData *pd = &r->records4[p];
+            total += pd->tot;
+            pd = &r->records6[p];
+            total += pd->tot;
+        }
+    }
+
+    fprintf(fp, "\n%-20s   %-6s   %-5s   %-12s   %-12s   %-12s   %-12s\n",
+            "Flow Worker", "IP ver", "Proto", "cnt", "min", "max", "avg");
+    fprintf(fp, "%-20s   %-6s   %-5s   %-12s   %-12s   %-12s   %-12s\n",
+            "--------------------", "------", "-----", "----------", "------------", "------------", "-----------");
+    DumpFlowWorkerIP(fp, 4, total);
+    DumpFlowWorkerIP(fp, 6, total);
+    fprintf(fp, "Note: %s includes app-layer for TCP\n",
+            ProfileFlowWorkerIdToString(PROFILE_FLOWWORKER_STREAM));
 }
 
 void SCProfilingDumpPacketStats(void)
@@ -450,7 +508,8 @@ void SCProfilingDumpPacketStats(void)
                     TmModuleTmmIdToString(m), p, pd->cnt, pd->min, pd->max, (uint64_t)(pd->tot / pd->cnt), totalstr, percent);
         }
     }
-    fprintf(fp, "Note: TMM_STREAMTCP includes TCP app layer parsers, see below.\n");
+
+    DumpFlowWorker(fp);
 
     fprintf(fp, "\nPer App layer parser stats:\n");
 
@@ -694,7 +753,6 @@ void SCProfilingPrintPacketProfile(Packet *p)
 
     int i;
     uint64_t tmm_total = 0;
-    uint64_t tmm_streamtcp_tcp = 0;
 
     for (i = 0; i < TMM_SIZE; i++) {
         PktProfilingTmmData *pdt = &p->profile->tmm[i];
@@ -702,10 +760,6 @@ void SCProfilingPrintPacketProfile(Packet *p)
         uint64_t tmm_delta = pdt->ticks_end - pdt->ticks_start;
         fprintf(packet_profile_csv_fp, "%"PRIu64",", tmm_delta);
         tmm_total += tmm_delta;
-
-        if (p->proto == IPPROTO_TCP && i == TMM_STREAMTCP) {
-            tmm_streamtcp_tcp = tmm_delta;
-        }
     }
 
     fprintf(packet_profile_csv_fp, "%"PRIu64",", delta - tmm_total);
@@ -720,11 +774,6 @@ void SCProfilingPrintPacketProfile(Packet *p)
             app_total += pdt->ticks_spent;
         }
     }
-
-    uint64_t real_tcp = 0;
-    if (tmm_streamtcp_tcp > app_total)
-        real_tcp = tmm_streamtcp_tcp - app_total;
-    fprintf(packet_profile_csv_fp, "%"PRIu64",", real_tcp);
 
     fprintf(packet_profile_csv_fp, "%"PRIu64",", p->profile->proto_detect);
 
@@ -892,6 +941,49 @@ void SCProfilingUpdatePacketTmmRecords(Packet *p)
     }
 }
 
+static inline void SCProfilingUpdatePacketGenericRecord(PktProfilingData *pdt,
+        SCProfilePacketData *pd)
+{
+    if (pdt == NULL || pd == NULL) {
+        return;
+    }
+
+    uint64_t delta = pdt->ticks_end - pdt->ticks_start;
+    if (pd->min == 0 || delta < pd->min) {
+        pd->min = delta;
+    }
+    if (pd->max < delta) {
+        pd->max = delta;
+    }
+
+    pd->tot += delta;
+    pd->cnt ++;
+}
+
+static void SCProfilingUpdatePacketGenericRecords(Packet *p, PktProfilingData *pd,
+        struct ProfileProtoRecords *store, int size)
+{
+    int i;
+    for (i = 0; i < size; i++) {
+        PktProfilingData *pdt = &pd[i];
+
+        if (pdt->ticks_start == 0 || pdt->ticks_end == 0 || pdt->ticks_start > pdt->ticks_end) {
+            continue;
+        }
+
+        struct ProfileProtoRecords *r = &store[i];
+        SCProfilePacketData *store = NULL;
+
+        if (PKT_IS_IPV4(p)) {
+            store = &(r->records4[p->proto]);
+        } else {
+            store = &(r->records6[p->proto]);
+        }
+
+        SCProfilingUpdatePacketGenericRecord(pdt, store);
+    }
+}
+
 void SCProfilingAddPacket(Packet *p)
 {
     if (p == NULL || p->profile == NULL ||
@@ -933,6 +1025,9 @@ void SCProfilingAddPacket(Packet *p)
                 pd->cnt ++;
             }
 
+            SCProfilingUpdatePacketGenericRecords(p, p->profile->flowworker,
+                packet_profile_flowworker_data, PROFILE_FLOWWORKER_SIZE);
+
             SCProfilingUpdatePacketTmmRecords(p);
             SCProfilingUpdatePacketAppRecords(p);
             SCProfilingUpdatePacketDetectRecords(p);
@@ -964,6 +1059,9 @@ void SCProfilingAddPacket(Packet *p)
                 pd->tot += delta;
                 pd->cnt ++;
             }
+
+            SCProfilingUpdatePacketGenericRecords(p, p->profile->flowworker,
+                packet_profile_flowworker_data, PROFILE_FLOWWORKER_SIZE);
 
             SCProfilingUpdatePacketTmmRecords(p);
             SCProfilingUpdatePacketAppRecords(p);
@@ -1028,6 +1126,7 @@ const char * PacketProfileDetectIdToString(PacketProfileDetectId id)
         CASE_CODE (PROF_DETECT_MPM_HSCD);
         CASE_CODE (PROF_DETECT_MPM_HUAD);
         CASE_CODE (PROF_DETECT_MPM_DNSQUERY);
+        CASE_CODE (PROF_DETECT_MPM_TLSSNI);
         CASE_CODE (PROF_DETECT_IPONLY);
         CASE_CODE (PROF_DETECT_RULES);
         CASE_CODE (PROF_DETECT_PREFILTER);
@@ -1153,7 +1252,7 @@ void
 SCProfilingRegisterTests(void)
 {
 #ifdef UNITTESTS
-    UtRegisterTest("ProfilingGenericTicksTest01", ProfilingGenericTicksTest01, 1);
+    UtRegisterTest("ProfilingGenericTicksTest01", ProfilingGenericTicksTest01);
 #endif /* UNITTESTS */
 }
 

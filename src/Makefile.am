@@ -33,6 +33,7 @@ app-layer-protos.c app-layer-protos.h \
 app-layer-smb2.c app-layer-smb2.h \
 app-layer-smb.c app-layer-smb.h \
 app-layer-smtp.c app-layer-smtp.h \
+app-layer-template.c app-layer-template.h \
 app-layer-ssh.c app-layer-ssh.h \
 app-layer-ssl.c app-layer-ssl.h \
 app-layer-tls-handshake.c app-layer-tls-handshake.h \
@@ -60,6 +61,7 @@ decode-teredo.c decode-teredo.h \
 decode-udp.c decode-udp.h \
 decode-vlan.c decode-vlan.h \
 decode-mpls.c decode-mpls.h \
+decode-template.c decode-template.h \
 defrag-config.c defrag-config.h \
 defrag.c defrag.h \
 defrag-hash.c defrag-hash.h \
@@ -69,6 +71,8 @@ detect-ack.c detect-ack.h \
 detect-app-layer-event.c detect-app-layer-event.h \
 detect-app-layer-protocol.c detect-app-layer-protocol.h \
 detect-asn1.c detect-asn1.h \
+detect-base64-data.c detect-base64-data.h \
+detect-base64-decode.c detect-base64-decode.h \
 detect-byte-extract.c detect-byte-extract.h \
 detect-bytejump.c detect-bytejump.h \
 detect-bytetest.c detect-bytetest.h \
@@ -83,6 +87,7 @@ detect-depth.c detect-depth.h \
 detect-detection-filter.c detect-detection-filter.h \
 detect-distance.c detect-distance.h \
 detect-dns-query.c detect-dns-query.h \
+detect-tls-sni.c detect-tls-sni.h \
 detect-dsize.c detect-dsize.h \
 detect-engine-address.c detect-engine-address.h \
 detect-engine-address-ipv4.c detect-engine-address-ipv4.h \
@@ -94,6 +99,7 @@ detect-engine.c detect-engine.h \
 detect-engine-content-inspection.c detect-engine-content-inspection.h \
 detect-engine-dcepayload.c detect-engine-dcepayload.h \
 detect-engine-dns.c detect-engine-dns.h \
+detect-engine-tls.c detect-engine-tls.h \
 detect-engine-modbus.c detect-engine-modbus.h \
 detect-engine-event.c detect-engine-event.h \
 detect-engine-file.c detect-engine-file.h \
@@ -112,14 +118,17 @@ detect-engine-hscd.c detect-engine-hscd.h \
 detect-engine-hsmd.c detect-engine-hsmd.h \
 detect-engine-hua.c detect-engine-hua.h \
 detect-engine-iponly.c detect-engine-iponly.h \
+detect-engine-loader.c detect-engine-loader.h \
 detect-engine-mpm.c detect-engine-mpm.h \
 detect-engine-payload.c detect-engine-payload.h \
 detect-engine-port.c detect-engine-port.h \
 detect-engine-proto.c detect-engine-proto.h \
+detect-engine-profile.c detect-engine-profile.h \
 detect-engine-siggroup.c detect-engine-siggroup.h \
 detect-engine-sigorder.c detect-engine-sigorder.h \
 detect-engine-state.c detect-engine-state.h \
 detect-engine-tag.c detect-engine-tag.h \
+detect-engine-template.c detect-engine-template.h \
 detect-engine-threshold.c detect-engine-threshold.h \
 detect-engine-uri.c detect-engine-uri.h \
 detect-fast-pattern.c detect-fast-pattern.h \
@@ -191,6 +200,8 @@ detect-ssl-state.c detect-ssl-state.h \
 detect-ssl-version.c detect-ssl-version.h \
 detect-stream_size.c detect-stream_size.h \
 detect-tag.c detect-tag.h \
+detect-template.c detect-template.h \
+detect-template-buffer.c detect-template-buffer.h \
 detect-threshold.c detect-threshold.h \
 detect-tls.c detect-tls.h \
 detect-tls-version.c detect-tls-version.h \
@@ -211,6 +222,7 @@ flow-storage.c flow-storage.h \
 flow-timeout.c flow-timeout.h \
 flow-util.c flow-util.h \
 flow-var.c flow-var.h \
+flow-worker.c flow-worker.h \
 host.c host.h \
 host-bit.c host-bit.h \
 host-queue.c host-queue.h \
@@ -230,6 +242,7 @@ log-pcap.c log-pcap.h \
 log-stats.c log-stats.h \
 log-tcp-data.c log-tcp-data.h \
 log-tlslog.c log-tlslog.h \
+log-tlsstore.c log-tlsstore.h \
 output.c output.h \
 output-file.c output-file.h \
 output-filedata.c output-filedata.h \
@@ -246,6 +259,7 @@ output-json-smtp.c output-json-smtp.h \
 output-json-ssh.c output-json-ssh.h \
 output-json-stats.c output-json-stats.h \
 output-json-tls.c output-json-tls.h \
+output-json-template.c output-json-template.h \
 output-lua.c output-lua.h \
 output-packet.c output-packet.h \
 output-stats.c output-stats.h \
@@ -339,6 +353,7 @@ util-hashlist.c util-hashlist.h \
 util-hash-lookup3.c util-hash-lookup3.h \
 util-host-os-info.c util-host-os-info.h \
 util-host-info.c util-host-info.h \
+util-hyperscan.c util-hyperscan.h \
 util-ioctl.h util-ioctl.c \
 util-ip.h util-ip.c \
 util-logopenfile.h util-logopenfile.c \
@@ -347,6 +362,9 @@ util-lua.c util-lua.h \
 util-lua-common.c util-lua-common.h \
 util-lua-dns.c util-lua-dns.h \
 util-lua-http.c util-lua-http.h \
+util-lua-tls.c util-lua-tls.h \
+util-lua-ssh.c util-lua-ssh.h \
+util-lua-smtp.c util-lua-smtp.h \
 util-magic.c util-magic.h \
 util-memcmp.c util-memcmp.h \
 util-memcpy.h \
@@ -355,13 +373,10 @@ util-memrchr.c util-memrchr.h \
 util-misc.c util-misc.h \
 util-mpm-ac-bs.c util-mpm-ac-bs.h \
 util-mpm-ac.c util-mpm-ac.h \
-util-mpm-ac-gfbs.c util-mpm-ac-gfbs.h \
 util-mpm-ac-tile.c util-mpm-ac-tile.h \
 util-mpm-ac-tile-small.c \
-util-mpm-b2g.c util-mpm-b2g.h \
-util-mpm-b3g.c util-mpm-b3g.h \
+util-mpm-hs.c util-mpm-hs.h \
 util-mpm.c util-mpm.h \
-util-mpm-wumanber.c util-mpm-wumanber.h \
 util-optimize.h \
 util-path.c util-path.h \
 util-pidfile.c util-pidfile.h \
@@ -373,6 +388,7 @@ util-profiling.c util-profiling.h \
 util-profiling-locks.c util-profiling-locks.h \
 util-profiling-rules.c \
 util-profiling-keywords.c \
+util-profiling-rulegroups.c \
 util-proto-name.c util-proto-name.h \
 util-radix-tree.c util-radix-tree.h \
 util-random.c util-random.h \
@@ -386,8 +402,10 @@ util-signal.c util-signal.h \
 util-spm-bm.c util-spm-bm.h \
 util-spm-bs2bm.c util-spm-bs2bm.h \
 util-spm-bs.c util-spm-bs.h \
+util-spm-hs.c util-spm-hs.h \
 util-spm.c util-spm.h util-clock.h \
 util-storage.c util-storage.h \
+util-streaming-buffer.c util-streaming-buffer.h \
 util-strlcatu.c \
 util-strlcpyu.c \
 util-syslog.c util-syslog.h \
@@ -409,7 +427,7 @@ EXTRA_DIST = util-mpm-ac-cuda-kernel.cu ptxdump.py
 AM_CPPFLAGS = $(all_includes)
 
 # the library search path.
-suricata_LDFLAGS = $(all_libraries)
+suricata_LDFLAGS = $(all_libraries) ${SECLDFLAGS}
 suricata_LDADD = $(HTP_LDADD)
 
 # Rules to build CUDA ptx modules
@@ -421,36 +439,15 @@ util-mpm-ac-cuda-kernel.cu
 
 NVCCFLAGS=-O2
 
-SUFFIXES = \
-.ptx_sm_10 \
-.ptx_sm_11 \
-.ptx_sm_12 \
-.ptx_sm_13 \
-.ptx_sm_20 \
-.ptx_sm_21 \
-.ptx_sm_30 \
-.ptx_sm_35
-
-PTXS =  $(suricata_CUDA_KERNELS:.cu=.ptx_sm_10)
-PTXS += $(suricata_CUDA_KERNELS:.cu=.ptx_sm_11)
-PTXS += $(suricata_CUDA_KERNELS:.cu=.ptx_sm_12)
-PTXS += $(suricata_CUDA_KERNELS:.cu=.ptx_sm_13)
-PTXS += $(suricata_CUDA_KERNELS:.cu=.ptx_sm_20)
+PTXS = $(suricata_CUDA_KERNELS:.cu=.ptx_sm_20)
 PTXS += $(suricata_CUDA_KERNELS:.cu=.ptx_sm_21)
 PTXS += $(suricata_CUDA_KERNELS:.cu=.ptx_sm_30)
+PTXS += $(suricata_CUDA_KERNELS:.cu=.ptx_sm_32)
 PTXS += $(suricata_CUDA_KERNELS:.cu=.ptx_sm_35)
-
-.cu.ptx_sm_10:
-	$(NVCC) $(NVCCFLAGS) -o $@ -arch=sm_10 -ptx $<
-
-.cu.ptx_sm_11:
-	$(NVCC) $(NVCCFLAGS) -o $@ -arch=sm_11 -ptx $<
-
-.cu.ptx_sm_12:
-	$(NVCC) $(NVCCFLAGS) -o $@ -arch=sm_12 -ptx $<
-
-.cu.ptx_sm_13:
-	$(NVCC) $(NVCCFLAGS) -o $@ -arch=sm_13 -ptx $<
+PTXS += $(suricata_CUDA_KERNELS:.cu=.ptx_sm_37)
+PTXS += $(suricata_CUDA_KERNELS:.cu=.ptx_sm_50)
+PTXS += $(suricata_CUDA_KERNELS:.cu=.ptx_sm_52)
+PTXS += $(suricata_CUDA_KERNELS:.cu=.ptx_sm_53)
 
 .cu.ptx_sm_20:
 	$(NVCC) $(NVCCFLAGS) -o $@ -arch=sm_20 -ptx $<
@@ -461,8 +458,23 @@ PTXS += $(suricata_CUDA_KERNELS:.cu=.ptx_sm_35)
 .cu.ptx_sm_30:
 	$(NVCC) $(NVCCFLAGS) -o $@ -arch=sm_30 -ptx $<
 
+.cu.ptx_sm_32:
+	$(NVCC) $(NVCCFLAGS) -o $@ -arch=sm_32 -ptx $<
+
 .cu.ptx_sm_35:
 	$(NVCC) $(NVCCFLAGS) -o $@ -arch=sm_35 -ptx $<
+
+.cu.ptx_sm_37:
+	$(NVCC) $(NVCCFLAGS) -o $@ -arch=sm_37 -ptx $<
+
+.cu.ptx_sm_50:
+	$(NVCC) $(NVCCFLAGS) -o $@ -arch=sm_50 -ptx $<
+
+.cu.ptx_sm_52:
+	$(NVCC) $(NVCCFLAGS) -o $@ -arch=sm_52 -ptx $<
+
+.cu.ptx_sm_53:
+	$(NVCC) $(NVCCFLAGS) -o $@ -arch=sm_53 -ptx $<
 
 cuda-ptxdump.h: $(PTXS)
 	$(PYTHON) ptxdump.py cuda-ptxdump $(PTXS)
@@ -470,9 +482,14 @@ cuda-ptxdump.h: $(PTXS)
 CLEANFILES = $(PTXS) cuda-ptxdump.h
 endif
 
+# default CFLAGS
+AM_CFLAGS = ${OPTIMIZATION_CFLAGS} ${GCC_CFLAGS} ${CLANG_CFLAGS} ${SECCFLAGS} ${PCAP_CFLAGS} -Wall -Wno-unused-parameter -std=gnu99 -DLOCAL_STATE_DIR=\"$(localstatedir)\"
+# different flags for different cases
+if DEBUG
+AM_CFLAGS += -ggdb -O0
+endif
 
-#suricata_CFLAGS = -Wall -fno-strict-aliasing 
-AM_CFLAGS = -DLOCAL_STATE_DIR=\"$(localstatedir)\"
+AM_LDFLAGS = ${SECLDFLAGS}
 
 if BUILD_UNITTESTS
 check-am:

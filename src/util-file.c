@@ -36,6 +36,11 @@
 #include "app-layer-parser.h"
 #include "util-validate.h"
 
+/** \brief switch to force filestore on all files
+ *         regardless of the rules.
+ */
+static int g_file_force_filestore = 0;
+
 /** \brief switch to force magic checks on all files
  *         regardless of the rules.
  */
@@ -53,7 +58,11 @@ static int g_file_force_tracking = 0;
 
 /* prototypes */
 static void FileFree(File *);
-static void FileDataFree(FileData *);
+
+void FileForceFilestoreEnable(void)
+{
+    g_file_force_filestore = 1;
+}
 
 void FileForceMagicEnable(void)
 {
@@ -63,6 +72,11 @@ void FileForceMagicEnable(void)
 void FileForceMd5Enable(void)
 {
     g_file_force_md5 = 1;
+}
+
+int FileForceFilestore(void)
+{
+    return g_file_force_filestore;
 }
 
 int FileForceMagic(void)
@@ -86,60 +100,26 @@ int FileMagicSize(void)
     return 512;
 }
 
-static int FileAppendFileDataFilePtr(File *ff, FileData *ffd)
+/**
+ *  \brief get the size of the file
+ *
+ *  This doesn't reflect how much of the file we have in memory, just the
+ *  total size tracked so far.
+ */
+uint64_t FileSize(const File *file)
 {
-    SCEnter();
-
-    if (ff == NULL) {
-        SCReturnInt(-1);
+    if (file != NULL && file->sb != NULL) {
+        SCLogDebug("returning %"PRIu64,
+                file->sb->stream_offset + file->sb->buf_offset);
+        return file->sb->stream_offset + file->sb->buf_offset;
     }
-
-    if (ff->chunks_tail == NULL) {
-        ff->chunks_head = ffd;
-        ff->chunks_tail = ffd;
-        ff->content_len_so_far = ffd->len;
-    } else {
-        ff->chunks_tail->next = ffd;
-        ff->chunks_tail = ffd;
-        ff->content_len_so_far += ffd->len;
-    }
-
-#ifdef DEBUG
-    ff->chunks_cnt++;
-    if (ff->chunks_cnt > ff->chunks_cnt_max)
-        ff->chunks_cnt_max = ff->chunks_cnt;
-#endif
-
-#ifdef HAVE_NSS
-    if (ff->md5_ctx)
-        HASH_Update(ff->md5_ctx, ffd->data, ffd->len);
-#endif
-    SCReturnInt(0);
+    SCLogDebug("returning 0 (default)");
+    return 0;
 }
-
-static int FileAppendFileData(FileContainer *ffc, FileData *ffd)
-{
-    SCEnter();
-
-    if (ffc == NULL) {
-        SCReturnInt(-1);
-    }
-
-    if (FileAppendFileDataFilePtr(ffc->tail, ffd) == -1)
-    {
-        SCReturnInt(-1);
-    }
-
-    SCReturnInt(0);
-}
-
-
 
 static int FilePruneFile(File *file)
 {
     SCEnter();
-
-    SCLogDebug("file %p, file->chunks_cnt %"PRIu64, file, file->chunks_cnt);
 
     if (!(file->flags & FILE_NOMAGIC)) {
         /* need magic but haven't set it yet, bail out */
@@ -151,30 +131,23 @@ static int FilePruneFile(File *file)
         SCLogDebug("file->flags & FILE_NOMAGIC == true");
     }
 
-    /* okay, we now know we can prune */
-    FileData *fd = file->chunks_head;
-
-    while (fd != NULL) {
-        SCLogDebug("fd %p", fd);
-
-        if (file->flags & FILE_NOSTORE || fd->stored == 1) {
-            file->chunks_head = fd->next;
-            if (file->chunks_tail == fd)
-                file->chunks_tail = fd->next;
-
-            FileDataFree(fd);
-
-            fd = file->chunks_head;
-#ifdef DEBUG
-            file->chunks_cnt--;
-            SCLogDebug("file->chunks_cnt %"PRIu64, file->chunks_cnt);
-#endif
-        } else if (fd->stored == 0) {
-            fd = NULL;
-            SCReturnInt(0);
-            break;
-        }
+    uint64_t left_edge = file->content_stored;
+    if (file->flags & FILE_NOSTORE) {
+        left_edge = FileSize(file);
     }
+    if (file->flags & FILE_USE_DETECT) {
+        left_edge = MIN(left_edge, file->content_inspected);
+    }
+
+    if (left_edge) {
+        StreamingBufferSlideToOffset(file->sb, left_edge);
+    }
+
+    if (left_edge != FileSize(file)) {
+        SCReturnInt(0);
+    }
+
+    SCLogDebug("file->state %d. Is >= FILE_STATE_CLOSED: %s", file->state, (file->state >= FILE_STATE_CLOSED) ? "yes" : "no");
 
     /* file is done when state is closed+, logging/storing is done (if any) */
     if (file->state >= FILE_STATE_CLOSED &&
@@ -196,6 +169,8 @@ void FilePrune(FileContainer *ffc)
             break;
 
         BUG_ON(file != ffc->head);
+
+        SCLogDebug("removing file %p", file);
 
         File *file_next = file->next;
 
@@ -267,56 +242,6 @@ void FileContainerFree(FileContainer *ffc)
 }
 
 /**
- *  \internal
- *
- *  \brief allocate a FileData chunk and set it up
- *
- *  \param data data chunk to store in the FileData
- *  \param data_len lenght of the data
- *
- *  \retval new FileData object
- */
-static FileData *FileDataAlloc(uint8_t *data, uint32_t data_len)
-{
-    FileData *new = SCMalloc(sizeof(FileData));
-    if (unlikely(new == NULL)) {
-        return NULL;
-    }
-    memset(new, 0, sizeof(FileData));
-
-    new->data = SCMalloc(data_len);
-    if (new->data == NULL) {
-        SCFree(new);
-        return NULL;
-    }
-
-    new->len = data_len;
-    memcpy(new->data, data, data_len);
-
-    new->next = NULL;
-    return new;
-}
-
-/**
- *  \internal
- *
- *  \brief free a FileData object
- *
- *  \param ffd the flow file data object to free
- */
-static void FileDataFree(FileData *ffd)
-{
-    if (ffd == NULL)
-        return;
-
-    if (ffd->data != NULL) {
-        SCFree(ffd->data);
-    }
-
-    SCFree(ffd);
-}
-
-/**
  *  \brief Alloc a new File
  *
  *  \param name character array containing the name (not a string)
@@ -324,7 +249,7 @@ static void FileDataFree(FileData *ffd)
  *
  *  \retval new File object or NULL on error
  */
-static File *FileAlloc(uint8_t *name, uint16_t name_len)
+static File *FileAlloc(const uint8_t *name, uint16_t name_len)
 {
     File *new = SCMalloc(sizeof(File));
     if (unlikely(new == NULL)) {
@@ -357,22 +282,14 @@ static void FileFree(File *ff)
     if (ff->magic != NULL)
         SCFree(ff->magic);
 
-    if (ff->chunks_head != NULL) {
-        FileData *ffd = ff->chunks_head;
-
-        while (ffd != NULL) {
-            FileData *next_ffd = ffd->next;
-            FileDataFree(ffd);
-            ffd = next_ffd;
-        }
+    if (ff->sb != NULL) {
+        StreamingBufferFree(ff->sb);
     }
 
 #ifdef HAVE_NSS
     if (ff->md5_ctx)
         HASH_Destroy(ff->md5_ctx);
 #endif
-    SCLogDebug("ff chunks_cnt %"PRIu64", chunks_cnt_max %"PRIu64,
-            ff->chunks_cnt, ff->chunks_cnt_max);
     SCFree(ff);
 }
 
@@ -429,12 +346,24 @@ static int FileStoreNoStoreCheck(File *ff)
 
     if (ff->flags & FILE_NOSTORE) {
         if (ff->state == FILE_STATE_OPENED &&
-                ff->size >= (uint64_t)FileMagicSize())
+            FileSize(ff) >= (uint64_t)FileMagicSize())
         {
             SCReturnInt(1);
         }
     }
 
+    SCReturnInt(0);
+}
+
+static int AppendData(File *file, const uint8_t *data, uint32_t data_len)
+{
+    StreamingBufferAppendNoTrack(file->sb, data, data_len);
+
+#ifdef HAVE_NSS
+    if (file->md5_ctx) {
+        HASH_Update(file->md5_ctx, data, data_len);
+    }
+#endif
     SCReturnInt(0);
 }
 
@@ -450,7 +379,7 @@ static int FileStoreNoStoreCheck(File *ff)
  *  \retval -1 error
  *  \retval -2 no store for this file
  */
-int FileAppendData(FileContainer *ffc, uint8_t *data, uint32_t data_len)
+int FileAppendData(FileContainer *ffc, const uint8_t *data, uint32_t data_len)
 {
     SCEnter();
 
@@ -464,9 +393,6 @@ int FileAppendData(FileContainer *ffc, uint8_t *data, uint32_t data_len)
         }
         SCReturnInt(-1);
     }
-
-    ffc->tail->size += data_len;
-    SCLogDebug("file size is now %"PRIu64, ffc->tail->size);
 
     if (FileStoreNoStoreCheck(ffc->tail) == 1) {
 #ifdef HAVE_NSS
@@ -488,23 +414,11 @@ int FileAppendData(FileContainer *ffc, uint8_t *data, uint32_t data_len)
 
     SCLogDebug("appending %"PRIu32" bytes", data_len);
 
-    FileData *ffd = FileDataAlloc(data, data_len);
-    if (ffd == NULL) {
+    if (AppendData(ffc->tail, data, data_len) != 0) {
         ffc->tail->state = FILE_STATE_ERROR;
         SCReturnInt(-1);
     }
 
-    if (ffc->tail->chunks_head == NULL)
-        ffd->stream_offset = 0;
-    else
-        ffd->stream_offset = ffc->tail->size;
-
-    /* append the data */
-    if (FileAppendFileData(ffc, ffd) < 0) {
-        ffc->tail->state = FILE_STATE_ERROR;
-        FileDataFree(ffd);
-        SCReturnInt(-1);
-    }
     SCReturnInt(0);
 }
 
@@ -512,6 +426,7 @@ int FileAppendData(FileContainer *ffc, uint8_t *data, uint32_t data_len)
  *  \brief Open a new File
  *
  *  \param ffc flow container
+ *  \param sbcfg buffer config
  *  \param name filename character array
  *  \param name_len filename len
  *  \param data initial data
@@ -522,8 +437,9 @@ int FileAppendData(FileContainer *ffc, uint8_t *data, uint32_t data_len)
  *
  *  \note filename is not a string, so it's not nul terminated.
  */
-File *FileOpenFile(FileContainer *ffc, uint8_t *name,
-        uint16_t name_len, uint8_t *data, uint32_t data_len, uint8_t flags)
+File *FileOpenFile(FileContainer *ffc, const StreamingBufferConfig *sbcfg,
+        const uint8_t *name, uint16_t name_len,
+        const uint8_t *data, uint32_t data_len, uint16_t flags)
 {
     SCEnter();
 
@@ -534,8 +450,15 @@ File *FileOpenFile(FileContainer *ffc, uint8_t *name,
         SCReturnPtr(NULL, "File");
     }
 
-    if (flags & FILE_STORE) {
-        ff->flags |= FILE_STORE;
+    ff->sb = StreamingBufferInit(sbcfg);
+    if (ff->sb == NULL) {
+        FileFree(ff);
+        SCReturnPtr(NULL, "File");
+    }
+    SCLogDebug("ff->sb %p", ff->sb);
+
+    if (flags & FILE_STORE || g_file_force_filestore) {
+        FileStore(ff);
     } else if (flags & FILE_NOSTORE) {
         SCLogDebug("not storing this file");
         ff->flags |= FILE_NOSTORE;
@@ -547,6 +470,10 @@ File *FileOpenFile(FileContainer *ffc, uint8_t *name,
     if (flags & FILE_NOMD5) {
         SCLogDebug("not doing md5 for this file");
         ff->flags |= FILE_NOMD5;
+    }
+    if (flags & FILE_USE_DETECT) {
+        SCLogDebug("considering content_inspect tracker when pruning");
+        ff->flags |= FILE_USE_DETECT;
     }
 
 #ifdef HAVE_NSS
@@ -564,29 +491,18 @@ File *FileOpenFile(FileContainer *ffc, uint8_t *name,
     FileContainerAdd(ffc, ff);
 
     if (data != NULL) {
-        //PrintRawDataFp(stdout, data, data_len);
-        ff->size += data_len;
-        SCLogDebug("file size is now %"PRIu64, ff->size);
-
-        FileData *ffd = FileDataAlloc(data, data_len);
-        if (ffd == NULL) {
+        if (AppendData(ff, data, data_len) != 0) {
             ff->state = FILE_STATE_ERROR;
             SCReturnPtr(NULL, "File");
         }
-
-        /* append the data */
-        if (FileAppendFileData(ffc, ffd) < 0) {
-            ff->state = FILE_STATE_ERROR;
-            FileDataFree(ffd);
-            SCReturnPtr(NULL, "File");
-        }
+        SCLogDebug("file size is now %"PRIu64, FileSize(ff));
     }
 
     SCReturnPtr(ff, "File");
 }
 
-static int FileCloseFilePtr(File *ff, uint8_t *data,
-        uint32_t data_len, uint8_t flags)
+static int FileCloseFilePtr(File *ff, const uint8_t *data,
+        uint32_t data_len, uint16_t flags)
 {
     SCEnter();
 
@@ -598,12 +514,7 @@ static int FileCloseFilePtr(File *ff, uint8_t *data,
         SCReturnInt(-1);
     }
 
-    ff->size += data_len;
-    SCLogDebug("file size is now %"PRIu64, ff->size);
-
     if (data != NULL) {
-        //PrintRawDataFp(stdout, data, data_len);
-
         if (ff->flags & FILE_NOSTORE) {
 #ifdef HAVE_NSS
             /* no storage but md5 */
@@ -611,16 +522,8 @@ static int FileCloseFilePtr(File *ff, uint8_t *data,
                 HASH_Update(ff->md5_ctx, data, data_len);
 #endif
         } else {
-            FileData *ffd = FileDataAlloc(data, data_len);
-            if (ffd == NULL) {
+            if (AppendData(ff, data, data_len) != 0) {
                 ff->state = FILE_STATE_ERROR;
-                SCReturnInt(-1);
-            }
-
-            /* append the data */
-            if (FileAppendFileDataFilePtr(ff, ffd) < 0) {
-                ff->state = FILE_STATE_ERROR;
-                FileDataFree(ffd);
                 SCReturnInt(-1);
             }
         }
@@ -661,8 +564,8 @@ static int FileCloseFilePtr(File *ff, uint8_t *data,
  *  \retval 0 ok
  *  \retval -1 error
  */
-int FileCloseFile(FileContainer *ffc, uint8_t *data,
-        uint32_t data_len, uint8_t flags)
+int FileCloseFile(FileContainer *ffc, const uint8_t *data,
+        uint32_t data_len, uint16_t flags)
 {
     SCEnter();
 
@@ -827,7 +730,7 @@ void FileDisableStoringForFile(File *ff)
     SCLogDebug("not storing this file");
     ff->flags |= FILE_NOSTORE;
 
-    if (ff->state == FILE_STATE_OPENED && ff->size >= (uint64_t)FileMagicSize()) {
+    if (ff->state == FILE_STATE_OPENED && FileSize(ff) >= (uint64_t)FileMagicSize()) {
         if (g_file_force_md5 == 0 && g_file_force_tracking == 0) {
             (void)FileCloseFilePtr(ff, NULL, 0,
                     (FILE_TRUNCATED|FILE_NOSTORE));
@@ -873,7 +776,7 @@ void FileDisableStoringForTransaction(Flow *f, uint8_t direction, uint64_t tx_id
  *  \param fc file store
  *  \param file_id the file's id
  */
-void FileStoreFileById(FileContainer *fc, uint16_t file_id)
+void FileStoreFileById(FileContainer *fc, uint32_t file_id)
 {
     File *ptr = NULL;
 
@@ -882,13 +785,13 @@ void FileStoreFileById(FileContainer *fc, uint16_t file_id)
     if (fc != NULL) {
         for (ptr = fc->head; ptr != NULL; ptr = ptr->next) {
             if (ptr->file_id == file_id) {
-                ptr->flags |= FILE_STORE;
+                FileStore(ptr);
             }
         }
     }
 }
 
-void FileStoreAllFilesForTx(FileContainer *fc, uint16_t tx_id)
+void FileStoreAllFilesForTx(FileContainer *fc, uint64_t tx_id)
 {
     File *ptr = NULL;
 
@@ -897,7 +800,7 @@ void FileStoreAllFilesForTx(FileContainer *fc, uint16_t tx_id)
     if (fc != NULL) {
         for (ptr = fc->head; ptr != NULL; ptr = ptr->next) {
             if (ptr->txid == tx_id) {
-                ptr->flags |= FILE_STORE;
+                FileStore(ptr);
             }
         }
     }
@@ -911,7 +814,7 @@ void FileStoreAllFiles(FileContainer *fc)
 
     if (fc != NULL) {
         for (ptr = fc->head; ptr != NULL; ptr = ptr->next) {
-            ptr->flags |= FILE_STORE;
+            FileStore(ptr);
         }
     }
 }

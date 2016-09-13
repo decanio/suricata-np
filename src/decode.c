@@ -109,9 +109,15 @@ void PacketFree(Packet *p)
 void PacketDecodeFinalize(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p)
 {
 
-    if (p->flags & PKT_IS_INVALID)
+    if (p->flags & PKT_IS_INVALID) {
         StatsIncr(tv, dtv->counter_invalid);
-
+        int i = 0;
+        for (i = 0; i < p->events.cnt; i++) {
+            if (EVENT_IS_DECODER_PACKET_ERROR(p->events.events[i])) {
+                StatsIncr(tv, dtv->counter_invalid_events[p->events.events[i]]);
+            }
+        }
+    }
 #ifdef __SC_CUDA_SUPPORT__
     if (dtv->cuda_vars.mpm_is_cuda)
         CudaBufferPacket(&dtv->cuda_vars, p);
@@ -274,6 +280,7 @@ Packet *PacketTunnelPktSetup(ThreadVars *tv, DecodeThreadVars *dtv, Packet *pare
     p->ts.tv_sec = parent->ts.tv_sec;
     p->ts.tv_usec = parent->ts.tv_usec;
     p->datalink = DLT_RAW;
+    p->tenant_id = parent->tenant_id;
 
     /* set the root ptr to the lowest layer */
     if (parent->root != NULL)
@@ -340,11 +347,14 @@ Packet *PacketDefragPktSetup(Packet *parent, uint8_t *pkt, uint16_t len, uint8_t
         p->root = parent;
 
     /* copy packet and set lenght, proto */
-    PacketCopyData(p, pkt, len);
+    if (pkt && len) {
+        PacketCopyData(p, pkt, len);
+    }
     p->recursion_level = parent->recursion_level; /* NOT incremented */
     p->ts.tv_sec = parent->ts.tv_sec;
     p->ts.tv_usec = parent->ts.tv_usec;
     p->datalink = DLT_RAW;
+    p->tenant_id = parent->tenant_id;
     /* tell new packet it's part of a tunnel */
     SET_TUNNEL_PKT(p);
     p->vlan_id[0] = parent->vlan_id[0];
@@ -401,6 +411,7 @@ void DecodeRegisterPerfCounters(DecodeThreadVars *dtv, ThreadVars *tv)
     dtv->counter_avg_pkt_size = StatsRegisterAvgCounter("decoder.avg_pkt_size", tv);
     dtv->counter_max_pkt_size = StatsRegisterMaxCounter("decoder.max_pkt_size", tv);
     dtv->counter_erspan = StatsRegisterMaxCounter("decoder.erspan", tv);
+    dtv->counter_flow_memcap = StatsRegisterCounter("flow.memcap", tv);
 
     dtv->counter_defrag_ipv4_fragments =
         StatsRegisterCounter("defrag.ipv4.fragments", tv);
@@ -416,7 +427,13 @@ void DecodeRegisterPerfCounters(DecodeThreadVars *dtv, ThreadVars *tv)
         StatsRegisterCounter("defrag.ipv6.timeouts", tv);
     dtv->counter_defrag_max_hit =
         StatsRegisterCounter("defrag.max_frag_hits", tv);
-
+    
+    int i = 0;
+    for (i = 0; i < DECODE_EVENT_PACKET_MAX; i++) {
+        dtv->counter_invalid_events[i] = StatsRegisterCounter(
+                DEvents[i].event_name, tv);
+    }
+    
     return;
 }
 
@@ -564,6 +581,55 @@ void CaptureStatsSetup(ThreadVars *tv, CaptureStats *s)
     s->counter_ips_rejected = StatsRegisterCounter("ips.rejected", tv);
     s->counter_ips_replaced = StatsRegisterCounter("ips.replaced", tv);
 }
+
+#ifdef AFLFUZZ_DECODER
+int DecoderParseDataFromFile(char *filename, DecoderFunc Decoder) {
+    uint8_t buffer[65536];
+    int result = 1;
+
+#ifdef AFLFUZZ_PERSISTANT_MODE
+    while (__AFL_LOOP(1000)) {
+        /* reset state */
+        memset(buffer, 0, sizeof(buffer));
+#endif /* AFLFUZZ_PERSISTANT_MODE */
+
+        FILE *fp = fopen(filename, "r");
+        BUG_ON(fp == NULL);
+
+        ThreadVars tv;
+        memset(&tv, 0, sizeof(tv));
+        DecodeThreadVars *dtv = DecodeThreadVarsAlloc(&tv);
+        DecodeRegisterPerfCounters(dtv, &tv);
+        StatsSetupPrivate(&tv);
+
+        while (1) {
+            int done = 0;
+            size_t result = fread(&buffer, 1, sizeof(buffer), fp);
+            if (result < sizeof(buffer))
+                 done = 1;
+
+            Packet *p = PacketGetFromAlloc();
+            if (p != NULL) {
+                (void) Decoder (&tv, dtv, p, buffer, result, NULL);
+                PacketFree(p);
+            }
+
+            if (done)
+                break;
+        }
+        DecodeThreadVarsFree(&tv, dtv);
+
+        fclose(fp);
+
+#ifdef AFLFUZZ_PERSISTANT_MODE
+    }
+#endif /* AFLFUZZ_PERSISTANT_MODE */
+
+    result = 0;
+    return result;
+
+}
+#endif /* AFLFUZZ_DECODER */
 
 /**
  * @}

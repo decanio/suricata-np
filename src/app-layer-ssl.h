@@ -26,6 +26,8 @@
 #ifndef __APP_LAYER_SSL_H__
 #define __APP_LAYER_SSL_H__
 
+#include "app-layer-protos.h"
+#include "app-layer-parser.h"
 #include "decode-events.h"
 #include "queue.h"
 
@@ -40,6 +42,9 @@ enum {
     TLS_DECODER_EVENT_INVALID_HEARTBEAT,
     TLS_DECODER_EVENT_OVERFLOW_HEARTBEAT,
     TLS_DECODER_EVENT_DATALEAK_HEARTBEAT_MISMATCH,
+    TLS_DECODER_EVENT_MULTIPLE_SNI_EXTENSIONS,
+    TLS_DECODER_EVENT_INVALID_SNI_TYPE,
+    TLS_DECODER_EVENT_INVALID_SNI_LENGTH,
     /* Certificates decoding messages */
     TLS_DECODER_EVENT_INVALID_CERTIFICATE,
     TLS_DECODER_EVENT_CERTIFICATE_MISSING_ELEMENT,
@@ -48,6 +53,12 @@ enum {
     TLS_DECODER_EVENT_CERTIFICATE_INVALID_STRING,
     TLS_DECODER_EVENT_ERROR_MSG_ENCOUNTERED,
     TLS_DECODER_EVENT_INVALID_SSL_RECORD,
+};
+
+enum {
+    TLS_STATE_IN_PROGRESS = 0,
+    TLS_HANDSHAKE_DONE = 1,
+    TLS_STATE_FINISHED = 2
 };
 
 /* Flag to indicate that server will now on send encrypted msgs */
@@ -71,17 +82,25 @@ enum {
 #define SSL_AL_FLAG_STATE_SERVER_KEYX           0x1000
 #define SSL_AL_FLAG_STATE_UNKNOWN               0x2000
 
-#define SSL_AL_FLAG_STATE_LOGGED                0x4000
+/* flag to indicate that session is finished */
+#define SSL_AL_FLAG_STATE_FINISHED              0x4000
 
 /* flags specific to HeartBeat state */
 #define SSL_AL_FLAG_HB_INFLIGHT                 0x8000
 #define SSL_AL_FLAG_HB_CLIENT_INIT              0x10000
-#define SSL_AL_FLAG_HB_SERVER_INIT		0x20000
+#define SSL_AL_FLAG_HB_SERVER_INIT              0x20000
+
+/* flag to indicate that handshake is done */
+#define SSL_AL_FLAG_HANDSHAKE_DONE              0x80000
 
 /* config flags */
 #define SSL_TLS_LOG_PEM                         (1 << 0)
 
+/* extensions */
+#define SSL_EXTENSION_SNI                       0x0000
 
+/* SNI types */
+#define SSL_SNI_TYPE_HOST_NAME                  0
 
 /* SSL versions.  We'll use a unified format for all, with the top byte
  * holding the major version and the lower byte the minor version */
@@ -129,6 +148,9 @@ typedef struct SSLStateConnp_ {
     char *cert0_issuerdn;
     char *cert0_fingerprint;
 
+    /* ssl server name indication extension */
+    char *sni;
+
     uint8_t *cert_input;
     uint32_t cert_input_len;
 
@@ -154,16 +176,25 @@ typedef struct SSLState_ {
     /* holds some state flags we need */
     uint32_t flags;
 
+    /* specifies which loggers are done logging */
+    uint32_t logged;
+
+    /* there might be a better place to store this*/
+    uint16_t hb_record_len;
+
+    uint16_t events;
+
     SSLStateConnp *curr_connp;
 
     SSLStateConnp client_connp;
     SSLStateConnp server_connp;
 
-    /* there might be a better place to store this*/
-    uint16_t hb_record_len;
+    DetectEngineState *de_state;
+    AppLayerDecoderEvents *decoder_events;
 } SSLState;
 
 void RegisterSSLParsers(void);
 void SSLParserRegisterTests(void);
+void SSLSetEvent(SSLState *ssl_state, uint8_t event);
 
 #endif /* __APP_LAYER_SSL_H__ */

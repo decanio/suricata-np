@@ -105,6 +105,9 @@ typedef struct FlowTimeoutCounters_ {
  */
 void FlowDisableFlowManagerThread(void)
 {
+#ifdef AFLFUZZ_DISABLE_MGTTHREADS
+    return;
+#endif
     ThreadVars *tv = NULL;
     int cnt = 0;
 
@@ -118,8 +121,11 @@ void FlowDisableFlowManagerThread(void)
     /* flow manager thread(s) is/are a part of mgmt threads */
     tv = tv_root[TVT_MGMT];
 
-    while (tv != NULL) {
-        if (strcasecmp(tv->name, "FlowManagerThread") == 0) {
+    while (tv != NULL)
+    {
+        if (strncasecmp(tv->name, thread_name_flow_mgr,
+            strlen(thread_name_flow_mgr)) == 0)
+        {
             TmThreadsSetFlag(tv, THV_KILL);
             cnt++;
 
@@ -567,7 +573,6 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
     uint32_t established_cnt = 0, new_cnt = 0, closing_cnt = 0;
     int emerg = FALSE;
     int prev_emerg = FALSE;
-    uint32_t last_sec = 0;
     struct timespec cond_time;
     int flow_update_delay_sec = FLOW_NORMAL_MODE_UPDATE_DELAY_SEC;
     int flow_update_delay_nsec = FLOW_NORMAL_MODE_UPDATE_DELAY_NSEC;
@@ -578,8 +583,6 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
     uint16_t flow_mgr_host_spare = StatsRegisterCounter("hosts.spare", th_v);
 */
     memset(&ts, 0, sizeof(ts));
-
-    FlowHashDebugInit();
 
     while (1)
     {
@@ -605,11 +608,6 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
         memset(&ts, 0, sizeof(ts));
         TimeGet(&ts);
         SCLogDebug("ts %" PRIdMAX "", (intmax_t)ts.tv_sec);
-
-        if (((uint32_t)ts.tv_sec - last_sec) > 600) {
-            FlowHashDebugPrint((uint32_t)ts.tv_sec);
-            last_sec = (uint32_t)ts.tv_sec;
-        }
 
         /* see if we still have enough spare flows */
         if (ftd->instance == 1)
@@ -690,9 +688,7 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
         StatsSyncCountersIfSignalled(th_v);
     }
 
-    FlowHashDebugDeinit();
-
-    SCLogInfo("%" PRIu32 " new flows, %" PRIu32 " established flows were "
+    SCLogPerf("%" PRIu32 " new flows, %" PRIu32 " established flows were "
               "timed out, %"PRIu32" flows in closed state", new_cnt,
               established_cnt, closing_cnt);
 
@@ -708,6 +704,9 @@ static uint64_t FlowGetMemuse(void)
 /** \brief spawn the flow manager thread */
 void FlowManagerThreadSpawn()
 {
+#ifdef AFLFUZZ_DISABLE_MGTTHREADS
+    return;
+#endif
     intmax_t setting = 1;
     (void)ConfGetInt("flow.managers", &setting);
 
@@ -718,20 +717,21 @@ void FlowManagerThreadSpawn()
     }
     flowmgr_number = (uint32_t)setting;
 
-    SCLogInfo("using %u flow manager threads", flowmgr_number);
+    SCLogConfig("using %u flow manager threads", flowmgr_number);
     SCCtrlCondInit(&flow_manager_ctrl_cond, NULL);
     SCCtrlMutexInit(&flow_manager_ctrl_mutex, NULL);
 
     StatsRegisterGlobalCounter("flow.memuse", FlowGetMemuse);
 
     uint32_t u;
-    for (u = 0; u < flowmgr_number; u++) {
+    for (u = 0; u < flowmgr_number; u++)
+    {
         ThreadVars *tv_flowmgr = NULL;
 
-        char name[32] = "";
-        snprintf(name, sizeof(name), "FlowManagerThread%02u", u+1);
+        char name[TM_THREAD_NAME_MAX];
+        snprintf(name, sizeof(name), "%s#%02u", thread_name_flow_mgr, u+1);
 
-        tv_flowmgr = TmThreadCreateMgmtThreadByName("FlowManagerThread",
+        tv_flowmgr = TmThreadCreateMgmtThreadByName(name,
                 "FlowManager", 0);
         BUG_ON(tv_flowmgr == NULL);
 
@@ -850,7 +850,7 @@ static TmEcode FlowRecycler(ThreadVars *th_v, void *thread_data)
         StatsSyncCountersIfSignalled(th_v);
     }
 
-    SCLogInfo("%"PRIu64" flows processed", recycled_cnt);
+    SCLogPerf("%"PRIu64" flows processed", recycled_cnt);
 
     return TM_ECODE_OK;
 }
@@ -868,6 +868,9 @@ int FlowRecyclerReadyToShutdown(void)
 /** \brief spawn the flow recycler thread */
 void FlowRecyclerThreadSpawn()
 {
+#ifdef AFLFUZZ_DISABLE_MGTTHREADS
+    return;
+#endif
     intmax_t setting = 1;
     (void)ConfGetInt("flow.recyclers", &setting);
 
@@ -878,20 +881,21 @@ void FlowRecyclerThreadSpawn()
     }
     flowrec_number = (uint32_t)setting;
 
-    SCLogInfo("using %u flow recycler threads", flowrec_number);
+    SCLogConfig("using %u flow recycler threads", flowrec_number);
 
     SCCtrlCondInit(&flow_recycler_ctrl_cond, NULL);
     SCCtrlMutexInit(&flow_recycler_ctrl_mutex, NULL);
 
 
     uint32_t u;
-    for (u = 0; u < flowrec_number; u++) {
+    for (u = 0; u < flowrec_number; u++)
+    {
         ThreadVars *tv_flowmgr = NULL;
 
-        char name[32] = "";
-        snprintf(name, sizeof(name), "FlowRecyclerThread%02u", u+1);
+        char name[TM_THREAD_NAME_MAX];
+        snprintf(name, sizeof(name), "%s#%02u", thread_name_flow_rec, u+1);
 
-        tv_flowmgr = TmThreadCreateMgmtThreadByName("FlowRecyclerThread",
+        tv_flowmgr = TmThreadCreateMgmtThreadByName(name,
                 "FlowRecycler", 0);
         BUG_ON(tv_flowmgr == NULL);
 
@@ -917,6 +921,9 @@ void FlowRecyclerThreadSpawn()
  */
 void FlowDisableFlowRecyclerThread(void)
 {
+#ifdef AFLFUZZ_DISABLE_MGTTHREADS
+    return;
+#endif
     ThreadVars *tv = NULL;
     int cnt = 0;
 
@@ -939,8 +946,11 @@ void FlowDisableFlowRecyclerThread(void)
     /* flow recycler thread(s) is/are a part of mgmt threads */
     tv = tv_root[TVT_MGMT];
 
-    while (tv != NULL) {
-        if (strcasecmp(tv->name, "FlowRecyclerThread") == 0) {
+    while (tv != NULL)
+    {
+        if (strncasecmp(tv->name, thread_name_flow_rec,
+            strlen(thread_name_flow_rec)) == 0)
+        {
             TmThreadsSetFlag(tv, THV_KILL);
             cnt++;
 
@@ -1228,10 +1238,7 @@ static int FlowMgrTest04 (void)
 static int FlowMgrTest05 (void)
 {
     int result = 0;
-    extern intmax_t max_pending_packets;
-    max_pending_packets = 128;
 
-    PacketPoolInit();
     FlowInitConfig(FLOW_QUIET);
     FlowConfig backup;
     memcpy(&backup, &flow_config, sizeof(FlowConfig));
@@ -1269,7 +1276,6 @@ static int FlowMgrTest05 (void)
 
     memcpy(&flow_config, &backup, sizeof(FlowConfig));
     FlowShutdown();
-    PacketPoolDestroy();
     return result;
 }
 #endif /* UNITTESTS */
@@ -1280,10 +1286,15 @@ static int FlowMgrTest05 (void)
 void FlowMgrRegisterTests (void)
 {
 #ifdef UNITTESTS
-    UtRegisterTest("FlowMgrTest01 -- Timeout a flow having fresh TcpSession", FlowMgrTest01, 1);
-    UtRegisterTest("FlowMgrTest02 -- Timeout a flow having TcpSession with segments", FlowMgrTest02, 1);
-    UtRegisterTest("FlowMgrTest03 -- Timeout a flow in emergency having fresh TcpSession", FlowMgrTest03, 1);
-    UtRegisterTest("FlowMgrTest04 -- Timeout a flow in emergency having TcpSession with segments", FlowMgrTest04, 1);
-    UtRegisterTest("FlowMgrTest05 -- Test flow Allocations when it reach memcap", FlowMgrTest05, 1);
+    UtRegisterTest("FlowMgrTest01 -- Timeout a flow having fresh TcpSession",
+                   FlowMgrTest01);
+    UtRegisterTest("FlowMgrTest02 -- Timeout a flow having TcpSession with segments",
+                   FlowMgrTest02);
+    UtRegisterTest("FlowMgrTest03 -- Timeout a flow in emergency having fresh TcpSession",
+                   FlowMgrTest03);
+    UtRegisterTest("FlowMgrTest04 -- Timeout a flow in emergency having TcpSession with segments",
+                   FlowMgrTest04);
+    UtRegisterTest("FlowMgrTest05 -- Test flow Allocations when it reach memcap",
+                   FlowMgrTest05);
 #endif /* UNITTESTS */
 }

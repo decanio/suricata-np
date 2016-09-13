@@ -30,6 +30,7 @@
 #include "suricata-common.h"
 #include "threadvars.h"
 #include "decode-events.h"
+#include "flow-worker.h"
 
 #ifdef __SC_CUDA_SUPPORT__
 #include "util-cuda-buffer.h"
@@ -325,6 +326,11 @@ typedef struct PktProfilingTmmData_ {
 #endif
 } PktProfilingTmmData;
 
+typedef struct PktProfilingData_ {
+    uint64_t ticks_start;
+    uint64_t ticks_end;
+} PktProfilingData;
+
 typedef struct PktProfilingDetectData_ {
     uint64_t ticks_start;
     uint64_t ticks_end;
@@ -341,6 +347,7 @@ typedef struct PktProfiling_ {
     uint64_t ticks_end;
 
     PktProfilingTmmData tmm[TMM_SIZE];
+    PktProfilingData flowworker[PROFILE_FLOWWORKER_SIZE];
     PktProfilingAppData app[ALPROTO_MAX];
     PktProfilingDetectData detect[PROF_DETECT_SIZE];
     uint64_t proto_detect;
@@ -399,6 +406,10 @@ typedef struct Packet_
 
     struct Flow_ *flow;
 
+    /* raw hash value for looking up the flow, will need to modulated to the
+     * hash size still */
+    uint32_t flow_hash;
+
     struct timeval ts;
 
     union {
@@ -456,10 +467,12 @@ typedef struct Packet_
     /* Can only be one of TCP, UDP, ICMP at any given time */
     union {
         TCPVars tcpvars;
-        UDPVars udpvars;
         ICMPV4Vars icmpv4vars;
         ICMPV6Vars icmpv6vars;
-    };
+    } l4vars;
+#define tcpvars     l4vars.tcpvars
+#define icmpv4vars  l4vars.icmpv4vars
+#define icmpv6vars  l4vars.icmpv6vars
 
     TCPHdr *tcph;
 
@@ -537,6 +550,9 @@ typedef struct Packet_
     uint16_t tunnel_rtv_cnt;
     /* tunnel packet ref count */
     uint16_t tunnel_tpr_cnt;
+
+    /** tenant id for this packet, if any. If 0 then no tenant was assigned. */
+    uint32_t tenant_id;
 
     /* The Packet pool from which this packet was allocated. Used when returning
      * the packet to its owner's stack. If NULL, then allocated with malloc.
@@ -621,6 +637,9 @@ typedef struct DecodeThreadVars_
     uint16_t counter_defrag_ipv6_timeouts;
     uint16_t counter_defrag_max_hit;
 
+    uint16_t counter_flow_memcap;
+
+     uint16_t counter_invalid_events[DECODE_EVENT_PACKET_MAX];
     /* thread data for flow logging api: only used at forced
      * flow recycle during lookups */
     void *output_flow_thread_data;
@@ -641,6 +660,10 @@ typedef struct CaptureStats_ {
 
 void CaptureStatsUpdate(ThreadVars *tv, CaptureStats *s, const Packet *p);
 void CaptureStatsSetup(ThreadVars *tv, CaptureStats *s);
+
+#define PACKET_CLEAR_L4VARS(p) do {                         \
+        memset(&(p)->l4vars, 0x00, sizeof((p)->l4vars));    \
+    } while (0)
 
 /**
  *  \brief reset these to -1(indicates that the packet is fresh from the queue)
@@ -758,6 +781,7 @@ void CaptureStatsSetup(ThreadVars *tv, CaptureStats *s);
         (p)->livedev = NULL;                    \
         PACKET_RESET_CHECKSUMS((p));            \
         PACKET_PROFILING_RESET((p));            \
+        p->tenant_id = 0;                       \
     } while (0)
 
 #define PACKET_RECYCLE(p) do { \
@@ -900,6 +924,13 @@ int DecodeERSPAN(ThreadVars *, DecodeThreadVars *, Packet *, uint8_t *, uint16_t
 
 void AddressDebugPrint(Address *);
 
+#ifdef AFLFUZZ_DECODER
+typedef int (*DecoderFunc)(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
+         uint8_t *pkt, uint16_t len, PacketQueue *pq);
+
+int DecoderParseDataFromFile(char *filename, DecoderFunc Decoder);
+#endif
+
 /** \brief Set the No payload inspection Flag for the packet.
  *
  * \param p Packet to set the flag in
@@ -950,6 +981,10 @@ void AddressDebugPrint(Address *);
     } \
     r; \
 })
+
+#ifndef IPPROTO_IPIP
+#define IPPROTO_IPIP 4
+#endif
 
 /* older libcs don't contain a def for IPPROTO_DCCP
  * inside of <netinet/in.h>
@@ -1034,6 +1069,10 @@ void AddressDebugPrint(Address *);
 #define PKT_IS_FRAGMENT                 (1<<19)     /**< Packet is a fragment */
 #define PKT_IS_INVALID                  (1<<20)
 #define PKT_PROFILE                     (1<<21)
+
+/** indication by decoder that it feels the packet should be handled by
+ *  flow engine: Packet::flow_hash will be set */
+#define PKT_WANTS_FLOW                  (1<<22)
 
 /** \brief return 1 if the packet is a pseudo packet */
 #define PKT_IS_PSEUDOPKT(p) ((p)->flags & PKT_PSEUDO_STREAM_END)

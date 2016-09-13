@@ -1,4 +1,4 @@
-/* Copyright (C) 2011-2012 Open Information Security Foundation
+/* Copyright (C) 2011-2016 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -21,9 +21,12 @@
 #include "queue.h"
 #include "unix-manager.h"
 
+#define MAX_DEVNAME 10
+
 /** storage for live device names */
 typedef struct LiveDevice_ {
     char *dev;  /**< the device (e.g. "eth0") */
+    char dev_short[MAX_DEVNAME + 1];
     int ignore_checksum;
     SC_ATOMIC_DECLARE(uint64_t, pkts);
     SC_ATOMIC_DECLARE(uint64_t, drop);
@@ -32,14 +35,15 @@ typedef struct LiveDevice_ {
 } LiveDevice;
 
 
-int LiveRegisterDevice(char *dev);
+int LiveRegisterDevice(const char *dev);
 int LiveGetDeviceCount(void);
-char *LiveGetDeviceName(int number);
-LiveDevice *LiveGetDevice(char *dev);
-int LiveBuildDeviceList(char * base);
+const char *LiveGetDeviceName(int number);
+LiveDevice *LiveGetDevice(const char *dev);
+const char *LiveGetShortName(const char *dev);
+int LiveBuildDeviceList(const char *base);
 void LiveDeviceHasNoStats(void);
 int LiveDeviceListClean(void);
-int LiveBuildDeviceListCustom(char * base, char * itemname);
+int LiveBuildDeviceListCustom(const char *base, const char *itemname);
 
 #ifdef BUILD_UNIX_SOCKET
 TmEcode LiveDeviceIfaceStat(json_t *cmd, json_t *server_msg, void *data);

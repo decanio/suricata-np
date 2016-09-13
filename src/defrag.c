@@ -337,6 +337,10 @@ Defrag4Reassemble(ThreadVars *tv, DefragTracker *tracker, Packet *p)
             if (frag->offset + frag->data_len > fragmentable_len)
                 fragmentable_len = frag->offset + frag->data_len;
         }
+
+        if (!frag->more_frags) {
+            break;
+        }
     }
 
     SCLogDebug("ip_hdr_offset %u, hlen %u, fragmentable_len %u",
@@ -460,6 +464,10 @@ Defrag6Reassemble(ThreadVars *tv, DefragTracker *tracker, Packet *p)
             if (frag->offset + frag->data_len > fragmentable_len)
                 fragmentable_len = frag->offset + frag->data_len;
         }
+
+        if (!frag->more_frags) {
+            break;
+        }
     }
 
     rp->ip6h = (IPV6Hdr *)(GET_PKT_DATA(rp) + ip_hdr_offset);
@@ -551,26 +559,27 @@ DefragInsertFrag(ThreadVars *tv, DecodeThreadVars *dtv, DefragTracker *tracker, 
     else if (tracker->af == AF_INET6) {
         more_frags = IPV6_EXTHDR_GET_FH_FLAG(p);
         frag_offset = IPV6_EXTHDR_GET_FH_OFFSET(p);
-        data_offset = (uint8_t *)p->ip6eh.ip6fh + sizeof(IPV6FragHdr) - GET_PKT_DATA(p);
-        data_len = IPV6_GET_PLEN(p) - (
-            ((uint8_t *)p->ip6eh.ip6fh + sizeof(IPV6FragHdr)) -
-                ((uint8_t *)p->ip6h + sizeof(IPV6Hdr)));
+        data_offset = p->ip6eh.fh_data_offset;
+        data_len = p->ip6eh.fh_data_len;
         frag_end = frag_offset + data_len;
         ip_hdr_offset = (uint8_t *)p->ip6h - GET_PKT_DATA(p);
-        frag_hdr_offset = (uint8_t *)p->ip6eh.ip6fh - GET_PKT_DATA(p);
+        frag_hdr_offset = p->ip6eh.fh_header_offset;
+
+        SCLogDebug("mf %s frag_offset %u data_offset %u, data_len %u, "
+                "frag_end %u, ip_hdr_offset %u, frag_hdr_offset %u",
+                more_frags ? "true" : "false", frag_offset, data_offset,
+                data_len, frag_end, ip_hdr_offset, frag_hdr_offset);
 
         /* handle unfragmentable exthdrs */
         if (ip_hdr_offset + IPV6_HEADER_LEN < frag_hdr_offset) {
-            SCLogDebug("we have exthdrs before fraghdr %u bytes (%u hdrs total)",
-                    (uint32_t)(frag_hdr_offset - (ip_hdr_offset + IPV6_HEADER_LEN)),
-                    p->ip6eh.ip6_exthdrs_cnt);
+            SCLogDebug("we have exthdrs before fraghdr %u bytes",
+                    (uint32_t)(frag_hdr_offset - (ip_hdr_offset + IPV6_HEADER_LEN)));
 
             /* get the offset of the 'next' field in exthdr before the FH,
              * relative to the buffer start */
-            int t_offset = (int)((p->ip6eh.ip6_exthdrs[p->ip6eh.ip6_exthdrs_cnt - 2].data - 2) - GET_PKT_DATA(p));
 
             /* store offset and FH 'next' value for updating frag buffer below */
-            ip6_nh_set_offset = (int)t_offset;
+            ip6_nh_set_offset = p->ip6eh.fh_prev_hdr_offset;
             ip6_nh_set_value = IPV6_EXTHDR_GET_FH_NH(p);
             SCLogDebug("offset %d, value %u", ip6_nh_set_offset, ip6_nh_set_value);
         }
@@ -747,6 +756,7 @@ insert:
     new->data_len = data_len - ltrim;
     new->ip_hdr_offset = ip_hdr_offset;
     new->frag_hdr_offset = frag_hdr_offset;
+    new->more_frags = more_frags;
 #ifdef DEBUG
     new->pcap_cnt = pcap_cnt;
 #endif
@@ -774,7 +784,11 @@ insert:
                 StatsIncr(tv, dtv->counter_defrag_ipv4_reassembled);
                 if (pq && DecodeIPV4(tv, dtv, r, (void *)r->ip4h,
                                IPV4_GET_IPLEN(r), pq) != TM_ECODE_OK) {
+
+                    UNSET_TUNNEL_PKT(r);
+                    r->root = NULL;
                     TmqhOutputPacketpool(tv, r);
+                    r = NULL;
                 } else {
                     PacketDefragPktSetupParent(p);
                 }
@@ -787,7 +801,11 @@ insert:
                 if (pq && DecodeIPV6(tv, dtv, r, (uint8_t *)r->ip6h,
                                IPV6_GET_PLEN(r) + IPV6_HEADER_LEN,
                                pq) != TM_ECODE_OK) {
+
+                    UNSET_TUNNEL_PKT(r);
+                    r->root = NULL;
                     TmqhOutputPacketpool(tv, r);
+                    r = NULL;
                 } else {
                     PacketDefragPktSetupParent(p);
                 }
@@ -969,6 +987,7 @@ void DefragDestroy(void)
     DefragHashShutdown();
     DefragContextDestroy(defrag_context);
     defrag_context = NULL;
+    DefragTreeDestroy();
 }
 
 #ifdef UNITTESTS
@@ -1052,6 +1071,10 @@ error:
     return NULL;
 }
 
+void DecodeIPV6FragHeader(Packet *p, uint8_t *pkt,
+                          uint16_t hdrextlen, uint16_t plen,
+                          uint16_t prev_hdrextlen);
+
 static Packet *
 IPV6BuildTestPacket(uint32_t id, uint16_t off, int mf, const char content,
     int content_len)
@@ -1091,7 +1114,8 @@ IPV6BuildTestPacket(uint32_t id, uint16_t off, int mf, const char content,
     fh->ip6fh_nxt = IPPROTO_ICMP;
     fh->ip6fh_ident = htonl(id);
     fh->ip6fh_offlg = htons((off << 3) | mf);
-    p->ip6eh.ip6fh = fh;
+
+    DecodeIPV6FragHeader(p, (uint8_t *)fh, 8, 8 + content_len, 0);
 
     pcontent = SCCalloc(1, content_len);
     if (unlikely(pcontent == NULL))
@@ -2328,54 +2352,239 @@ end:
     return ret;
 }
 
+static int DefragTrackerReuseTest(void)
+{
+    int ret = 0;
+    int id = 1;
+    Packet *p1 = NULL;
+    DefragTracker *tracker1 = NULL, *tracker2 = NULL;
+
+    DefragInit();
+
+    /* Build a packet, its not a fragment but shouldn't matter for
+     * this test. */
+    p1 = BuildTestPacket(id, 0, 0, 'A', 8);
+    if (p1 == NULL) {
+        goto end;
+    }
+
+    /* Get a tracker. It shouldn't look like its already in use. */
+    tracker1 = DefragGetTracker(NULL, NULL, p1);
+    if (tracker1 == NULL) {
+        goto end;
+    }
+    if (tracker1->seen_last) {
+        goto end;
+    }
+    if (tracker1->remove) {
+        goto end;
+    }
+    DefragTrackerRelease(tracker1);
+
+    /* Get a tracker again, it should be the same one. */
+    tracker2 = DefragGetTracker(NULL, NULL, p1);
+    if (tracker2 == NULL) {
+        goto end;
+    }
+    if (tracker2 != tracker1) {
+        goto end;
+    }
+    DefragTrackerRelease(tracker1);
+
+    /* Now mark the tracker for removal. It should not be returned
+     * when we get a tracker for a packet that may have the same
+     * attributes. */
+    tracker1->remove = 1;
+
+    tracker2 = DefragGetTracker(NULL, NULL, p1);
+    if (tracker2 == NULL) {
+        goto end;
+    }
+    if (tracker2 == tracker1) {
+        goto end;
+    }
+    if (tracker2->remove) {
+        goto end;
+    }
+
+    ret = 1;
+end:
+    if (p1 != NULL) {
+        SCFree(p1);
+    }
+    DefragDestroy();
+    return ret;
+}
+
+/**
+ * IPV4: Test the case where you have a packet fragmented in 3 parts
+ * and send like:
+ * - Offset: 2; MF: 1
+ * - Offset: 0; MF: 1
+ * - Offset: 1; MF: 0
+ *
+ * Only the fragments with offset 0 and 1 should be reassembled.
+ */
+static int DefragMfIpv4Test(void)
+{
+    int retval = 0;
+    int ip_id = 9;
+    Packet *p = NULL;
+
+    DefragInit();
+
+    Packet *p1 = BuildTestPacket(ip_id, 2, 1, 'C', 8);
+    Packet *p2 = BuildTestPacket(ip_id, 0, 1, 'A', 8);
+    Packet *p3 = BuildTestPacket(ip_id, 1, 0, 'B', 8);
+    if (p1 == NULL || p2 == NULL || p3 == NULL) {
+        goto end;
+    }
+
+    p = Defrag(NULL, NULL, p1, NULL);
+    if (p != NULL) {
+        goto end;
+    }
+
+    p = Defrag(NULL, NULL, p2, NULL);
+    if (p != NULL) {
+        goto end;
+    }
+
+    /* This should return a packet as MF=0. */
+    p = Defrag(NULL, NULL, p3, NULL);
+    if (p == NULL) {
+        goto end;
+    }
+
+    /* Expected IP length is 20 + 8 + 8 = 36 as only 2 of the
+     * fragments should be in the re-assembled packet. */
+    if (IPV4_GET_IPLEN(p) != 36) {
+        goto end;
+    }
+
+    retval = 1;
+end:
+    if (p1 != NULL) {
+        SCFree(p1);
+    }
+    if (p2 != NULL) {
+        SCFree(p2);
+    }
+    if (p3 != NULL) {
+        SCFree(p3);
+    }
+    if (p != NULL) {
+        SCFree(p);
+    }
+    DefragDestroy();
+    return retval;
+}
+
+/**
+ * IPV6: Test the case where you have a packet fragmented in 3 parts
+ * and send like:
+ * - Offset: 2; MF: 1
+ * - Offset: 0; MF: 1
+ * - Offset: 1; MF: 0
+ *
+ * Only the fragments with offset 0 and 1 should be reassembled.
+ */
+static int DefragMfIpv6Test(void)
+{
+    int retval = 0;
+    int ip_id = 9;
+    Packet *p = NULL;
+
+    DefragInit();
+
+    Packet *p1 = IPV6BuildTestPacket(ip_id, 2, 1, 'C', 8);
+    Packet *p2 = IPV6BuildTestPacket(ip_id, 0, 1, 'A', 8);
+    Packet *p3 = IPV6BuildTestPacket(ip_id, 1, 0, 'B', 8);
+    if (p1 == NULL || p2 == NULL || p3 == NULL) {
+        goto end;
+    }
+
+    p = Defrag(NULL, NULL, p1, NULL);
+    if (p != NULL) {
+        goto end;
+    }
+
+    p = Defrag(NULL, NULL, p2, NULL);
+    if (p != NULL) {
+        goto end;
+    }
+
+    /* This should return a packet as MF=0. */
+    p = Defrag(NULL, NULL, p3, NULL);
+    if (p == NULL) {
+        goto end;
+    }
+
+    /* For IPv6 the expected length is just the length of the payload
+     * of 2 fragments, so 16. */
+    if (IPV6_GET_PLEN(p) != 16) {
+        goto end;
+    }
+
+    retval = 1;
+end:
+    if (p1 != NULL) {
+        SCFree(p1);
+    }
+    if (p2 != NULL) {
+        SCFree(p2);
+    }
+    if (p3 != NULL) {
+        SCFree(p3);
+    }
+    if (p != NULL) {
+        SCFree(p);
+    }
+    DefragDestroy();
+    return retval;
+}
+
 #endif /* UNITTESTS */
 
 void
 DefragRegisterTests(void)
 {
 #ifdef UNITTESTS
-    UtRegisterTest("DefragInOrderSimpleTest",
-        DefragInOrderSimpleTest, 1);
-    UtRegisterTest("DefragReverseSimpleTest",
-        DefragReverseSimpleTest, 1);
-    UtRegisterTest("DefragSturgesNovakBsdTest",
-        DefragSturgesNovakBsdTest, 1);
-    UtRegisterTest("DefragSturgesNovakLinuxTest",
-        DefragSturgesNovakLinuxTest, 1);
+    UtRegisterTest("DefragInOrderSimpleTest", DefragInOrderSimpleTest);
+    UtRegisterTest("DefragReverseSimpleTest", DefragReverseSimpleTest);
+    UtRegisterTest("DefragSturgesNovakBsdTest", DefragSturgesNovakBsdTest);
+    UtRegisterTest("DefragSturgesNovakLinuxTest", DefragSturgesNovakLinuxTest);
     UtRegisterTest("DefragSturgesNovakWindowsTest",
-        DefragSturgesNovakWindowsTest, 1);
+                   DefragSturgesNovakWindowsTest);
     UtRegisterTest("DefragSturgesNovakSolarisTest",
-        DefragSturgesNovakSolarisTest, 1);
-    UtRegisterTest("DefragSturgesNovakFirstTest",
-        DefragSturgesNovakFirstTest, 1);
-    UtRegisterTest("DefragSturgesNovakLastTest",
-        DefragSturgesNovakLastTest, 1);
+                   DefragSturgesNovakSolarisTest);
+    UtRegisterTest("DefragSturgesNovakFirstTest", DefragSturgesNovakFirstTest);
+    UtRegisterTest("DefragSturgesNovakLastTest", DefragSturgesNovakLastTest);
 
-    UtRegisterTest("DefragIPv4NoDataTest", DefragIPv4NoDataTest, 1);
-    UtRegisterTest("DefragIPv4TooLargeTest", DefragIPv4TooLargeTest, 1);
+    UtRegisterTest("DefragIPv4NoDataTest", DefragIPv4NoDataTest);
+    UtRegisterTest("DefragIPv4TooLargeTest", DefragIPv4TooLargeTest);
 
-    UtRegisterTest("IPV6DefragInOrderSimpleTest",
-        IPV6DefragInOrderSimpleTest, 1);
-    UtRegisterTest("IPV6DefragReverseSimpleTest",
-        IPV6DefragReverseSimpleTest, 1);
+    UtRegisterTest("IPV6DefragInOrderSimpleTest", IPV6DefragInOrderSimpleTest);
+    UtRegisterTest("IPV6DefragReverseSimpleTest", IPV6DefragReverseSimpleTest);
     UtRegisterTest("IPV6DefragSturgesNovakBsdTest",
-        IPV6DefragSturgesNovakBsdTest, 1);
+                   IPV6DefragSturgesNovakBsdTest);
     UtRegisterTest("IPV6DefragSturgesNovakLinuxTest",
-        IPV6DefragSturgesNovakLinuxTest, 1);
+                   IPV6DefragSturgesNovakLinuxTest);
     UtRegisterTest("IPV6DefragSturgesNovakWindowsTest",
-        IPV6DefragSturgesNovakWindowsTest, 1);
+                   IPV6DefragSturgesNovakWindowsTest);
     UtRegisterTest("IPV6DefragSturgesNovakSolarisTest",
-        IPV6DefragSturgesNovakSolarisTest, 1);
+                   IPV6DefragSturgesNovakSolarisTest);
     UtRegisterTest("IPV6DefragSturgesNovakFirstTest",
-        IPV6DefragSturgesNovakFirstTest, 1);
+                   IPV6DefragSturgesNovakFirstTest);
     UtRegisterTest("IPV6DefragSturgesNovakLastTest",
-        IPV6DefragSturgesNovakLastTest, 1);
+                   IPV6DefragSturgesNovakLastTest);
 
-    UtRegisterTest("DefragVlanTest", DefragVlanTest, 1);
-    UtRegisterTest("DefragVlanQinQTest", DefragVlanQinQTest, 1);
-
-    UtRegisterTest("DefragTimeoutTest",
-        DefragTimeoutTest, 1);
+    UtRegisterTest("DefragVlanTest", DefragVlanTest);
+    UtRegisterTest("DefragVlanQinQTest", DefragVlanQinQTest);
+    UtRegisterTest("DefragTrackerReuseTest", DefragTrackerReuseTest);
+    UtRegisterTest("DefragTimeoutTest", DefragTimeoutTest);
+    UtRegisterTest("DefragMfIpv4Test", DefragMfIpv4Test);
+    UtRegisterTest("DefragMfIpv6Test", DefragMfIpv6Test);
 #endif /* UNITTESTS */
 }
 
