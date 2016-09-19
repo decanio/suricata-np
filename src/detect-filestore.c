@@ -73,7 +73,6 @@ void DetectFilestoreRegister(void)
     sigmatch_table[DETECT_FILESTORE].desc = "stores files to disk if the rule matched";
     sigmatch_table[DETECT_FILESTORE].url = "https://redmine.openinfosecfoundation.org/projects/suricata/wiki/File-keywords#filestore";
     sigmatch_table[DETECT_FILESTORE].FileMatch = DetectFilestoreMatch;
-    sigmatch_table[DETECT_FILESTORE].alproto = ALPROTO_HTTP;
     sigmatch_table[DETECT_FILESTORE].Setup = DetectFilestoreSetup;
     sigmatch_table[DETECT_FILESTORE].Free  = DetectFilestoreFree;
     sigmatch_table[DETECT_FILESTORE].RegisterTests = NULL;
@@ -385,11 +384,6 @@ static int DetectFilestoreSetup (DetectEngineCtx *de_ctx, Signature *s, char *st
         sm->ctx = (SigMatchCtx*)fd;
     } else {
         sm->ctx = (SigMatchCtx*)NULL;
-    }
-
-    if (s->alproto != ALPROTO_HTTP && s->alproto != ALPROTO_SMTP) {
-        SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting keywords.");
-        goto error;
     }
 
     if (s->alproto == ALPROTO_HTTP) {

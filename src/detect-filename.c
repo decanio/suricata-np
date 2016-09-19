@@ -49,6 +49,7 @@
 #include "stream-tcp.h"
 
 #include "detect-filename.h"
+#include "app-layer-parser.h"
 
 static int DetectFilenameMatch (ThreadVars *, DetectEngineThreadCtx *, Flow *,
         uint8_t, File *, Signature *, SigMatch *);
@@ -65,7 +66,6 @@ void DetectFilenameRegister(void)
     sigmatch_table[DETECT_FILENAME].desc = "match on the file name";
     sigmatch_table[DETECT_FILENAME].url = "https://redmine.openinfosecfoundation.org/projects/suricata/wiki/File-keywords#filename";
     sigmatch_table[DETECT_FILENAME].FileMatch = DetectFilenameMatch;
-    sigmatch_table[DETECT_FILENAME].alproto = ALPROTO_HTTP;
     sigmatch_table[DETECT_FILENAME].Setup = DetectFilenameSetup;
     sigmatch_table[DETECT_FILENAME].Free  = DetectFilenameFree;
     sigmatch_table[DETECT_FILENAME].RegisterTests = DetectFilenameRegisterTests;
@@ -214,15 +214,6 @@ static int DetectFilenameSetup (DetectEngineCtx *de_ctx, Signature *s, char *str
     sm->ctx = (void *)filename;
 
     SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_FILEMATCH);
-
-    if (s->alproto != ALPROTO_HTTP && s->alproto != ALPROTO_SMTP) {
-        SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting keywords.");
-        goto error;
-    }
-
-    if (s->alproto == ALPROTO_HTTP) {
-        AppLayerHtpNeedFileInspection();
-    }
 
     s->file_flags |= (FILE_SIG_NEED_FILE|FILE_SIG_NEED_FILENAME);
     return 0;

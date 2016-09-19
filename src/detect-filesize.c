@@ -63,7 +63,6 @@ void DetectFilesizeRegister(void)
     sigmatch_table[DETECT_FILESIZE].name = "filesize";
     sigmatch_table[DETECT_FILESIZE].desc = "match on the size of the file as it is being transferred";
     sigmatch_table[DETECT_FILESIZE].url = "https://redmine.openinfosecfoundation.org/projects/suricata/wiki/File-keywords#filesize";
-    sigmatch_table[DETECT_FILESIZE].alproto = ALPROTO_HTTP;
     sigmatch_table[DETECT_FILESIZE].FileMatch = DetectFilesizeMatch;
     sigmatch_table[DETECT_FILESIZE].Setup = DetectFilesizeSetup;
     sigmatch_table[DETECT_FILESIZE].Free = DetectFilesizeFree;
@@ -288,15 +287,6 @@ static int DetectFilesizeSetup (DetectEngineCtx *de_ctx, Signature *s, char *str
     sm->ctx = (SigMatchCtx *)fsd;
 
     SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_FILEMATCH);
-
-    if (s->alproto != ALPROTO_HTTP && s->alproto != ALPROTO_SMTP) {
-        SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting keywords.");
-        goto error;
-    }
-
-    if (s->alproto == ALPROTO_HTTP) {
-        AppLayerHtpNeedFileInspection();
-    }
 
     s->file_flags |= (FILE_SIG_NEED_FILE|FILE_SIG_NEED_SIZE);
     SCReturnInt(0);

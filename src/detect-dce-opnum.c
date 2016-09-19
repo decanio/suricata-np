@@ -63,7 +63,6 @@ void DetectDceOpnumFree(void *);
 void DetectDceOpnumRegister(void)
 {
     sigmatch_table[DETECT_DCE_OPNUM].name = "dce_opnum";
-    sigmatch_table[DETECT_DCE_OPNUM].alproto = ALPROTO_DCERPC;
     sigmatch_table[DETECT_DCE_OPNUM].Match = NULL;
     sigmatch_table[DETECT_DCE_OPNUM].AppLayerMatch = DetectDceOpnumMatch;
     sigmatch_table[DETECT_DCE_OPNUM].Setup = DetectDceOpnumSetup;
@@ -306,12 +305,12 @@ static int DetectDceOpnumSetup(DetectEngineCtx *de_ctx, Signature *s, char *arg)
     sm->type = DETECT_DCE_OPNUM;
     sm->ctx = (void *)dod;
 
-    SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_AMATCH);
-
     if (s->alproto != ALPROTO_UNKNOWN && s->alproto != ALPROTO_DCERPC) {
         SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting keywords.");
         goto error;
     }
+
+    SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_AMATCH);
 
     s->alproto = ALPROTO_DCERPC;
     /* Flagged the signature as to inspect the app layer data */

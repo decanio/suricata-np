@@ -63,7 +63,6 @@ void DetectDceIfaceFree(void *);
 void DetectDceIfaceRegister(void)
 {
     sigmatch_table[DETECT_DCE_IFACE].name = "dce_iface";
-    sigmatch_table[DETECT_DCE_IFACE].alproto = ALPROTO_DCERPC;
     sigmatch_table[DETECT_DCE_IFACE].Match = NULL;
     sigmatch_table[DETECT_DCE_IFACE].AppLayerMatch = DetectDceIfaceMatch;
     sigmatch_table[DETECT_DCE_IFACE].Setup = DetectDceIfaceSetup;
@@ -336,12 +335,12 @@ static int DetectDceIfaceSetup(DetectEngineCtx *de_ctx, Signature *s, char *arg)
     sm->type = DETECT_DCE_IFACE;
     sm->ctx = (void *)did;
 
-    SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_AMATCH);
-
     if (s->alproto != ALPROTO_UNKNOWN && s->alproto != ALPROTO_DCERPC) {
         SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting keywords.");
         goto error;
     }
+
+    SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_AMATCH);
 
     s->alproto = ALPROTO_DCERPC;
     /* Flagged the signature as to inspect the app layer data */

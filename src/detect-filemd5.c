@@ -69,7 +69,6 @@ void DetectFileMd5Register(void)
 {
     sigmatch_table[DETECT_FILEMD5].name = "filemd5";
     sigmatch_table[DETECT_FILEMD5].FileMatch = NULL;
-    sigmatch_table[DETECT_FILEMD5].alproto = ALPROTO_HTTP;
     sigmatch_table[DETECT_FILEMD5].Setup = DetectFileMd5SetupNoSupport;
     sigmatch_table[DETECT_FILEMD5].Free  = NULL;
     sigmatch_table[DETECT_FILEMD5].RegisterTests = NULL;
@@ -96,7 +95,6 @@ void DetectFileMd5Register(void)
     sigmatch_table[DETECT_FILEMD5].desc = "match file MD5 against list of MD5 checksums";
     sigmatch_table[DETECT_FILEMD5].url = "https://redmine.openinfosecfoundation.org/projects/suricata/wiki/File-keywords#filemd5";
     sigmatch_table[DETECT_FILEMD5].FileMatch = DetectFileMd5Match;
-    sigmatch_table[DETECT_FILEMD5].alproto = ALPROTO_HTTP;
     sigmatch_table[DETECT_FILEMD5].Setup = DetectFileMd5Setup;
     sigmatch_table[DETECT_FILEMD5].Free  = DetectFileMd5Free;
     sigmatch_table[DETECT_FILEMD5].RegisterTests = DetectFileMd5RegisterTests;
@@ -323,15 +321,6 @@ static int DetectFileMd5Setup (DetectEngineCtx *de_ctx, Signature *s, char *str)
     sm->ctx = (void *)filemd5;
 
     SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_FILEMATCH);
-
-    if (s->alproto != ALPROTO_HTTP && s->alproto != ALPROTO_SMTP) {
-        SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting keywords.");
-        goto error;
-    }
-
-    if (s->alproto == ALPROTO_HTTP) {
-        AppLayerHtpNeedFileInspection();
-    }
 
     s->file_flags |= (FILE_SIG_NEED_FILE|FILE_SIG_NEED_MD5);
     return 0;

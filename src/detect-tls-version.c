@@ -74,7 +74,6 @@ void DetectTlsVersionRegister (void)
     sigmatch_table[DETECT_AL_TLS_VERSION].url = "https://redmine.openinfosecfoundation.org/projects/suricata/wiki/TLS-keywords#tlsversion";
     sigmatch_table[DETECT_AL_TLS_VERSION].Match = NULL;
     sigmatch_table[DETECT_AL_TLS_VERSION].AppLayerMatch = DetectTlsVersionMatch;
-    sigmatch_table[DETECT_AL_TLS_VERSION].alproto = ALPROTO_TLS;
     sigmatch_table[DETECT_AL_TLS_VERSION].Setup = DetectTlsVersionSetup;
     sigmatch_table[DETECT_AL_TLS_VERSION].Free  = DetectTlsVersionFree;
     sigmatch_table[DETECT_AL_TLS_VERSION].RegisterTests = DetectTlsVersionRegisterTests;
@@ -228,12 +227,12 @@ static int DetectTlsVersionSetup (DetectEngineCtx *de_ctx, Signature *s, char *s
     sm->type = DETECT_AL_TLS_VERSION;
     sm->ctx = (void *)tls;
 
-    SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_AMATCH);
-
     if (s->alproto != ALPROTO_UNKNOWN && s->alproto != ALPROTO_TLS) {
         SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting keywords.");
         goto error;
     }
+
+    SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_AMATCH);
 
     s->alproto = ALPROTO_TLS;
     return 0;

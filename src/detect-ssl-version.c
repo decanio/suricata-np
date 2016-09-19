@@ -74,7 +74,6 @@ void DetectSslVersionRegister(void)
     sigmatch_table[DETECT_AL_SSL_VERSION].name = "ssl_version";
     sigmatch_table[DETECT_AL_SSL_VERSION].Match = NULL;
     sigmatch_table[DETECT_AL_SSL_VERSION].AppLayerMatch = DetectSslVersionMatch;
-    sigmatch_table[DETECT_AL_SSL_VERSION].alproto = ALPROTO_TLS;
     sigmatch_table[DETECT_AL_SSL_VERSION].Setup = DetectSslVersionSetup;
     sigmatch_table[DETECT_AL_SSL_VERSION].Free  = DetectSslVersionFree;
     sigmatch_table[DETECT_AL_SSL_VERSION].RegisterTests = DetectSslVersionRegisterTests;
@@ -292,12 +291,12 @@ static int DetectSslVersionSetup (DetectEngineCtx *de_ctx, Signature *s, char *s
     sm->type = DETECT_AL_SSL_VERSION;
     sm->ctx = (void *)ssl;
 
-    SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_AMATCH);
-
     if (s->alproto != ALPROTO_UNKNOWN && s->alproto != ALPROTO_TLS) {
         SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting keywords.");
         goto error;
     }
+
+    SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_AMATCH);
 
     s->alproto = ALPROTO_TLS;
     return 0;
