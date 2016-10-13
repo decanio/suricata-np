@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2012 Open Information Security Foundation
+/* Copyright (C) 2007-2016 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -40,22 +40,29 @@
 #define FLOW_DEFAULT_NEW_TIMEOUT 30
 #define FLOW_DEFAULT_EST_TIMEOUT 300
 #define FLOW_DEFAULT_CLOSED_TIMEOUT 0
+#define FLOW_DEFAULT_BYPASSED_TIMEOUT 100
 #define FLOW_IPPROTO_TCP_NEW_TIMEOUT 30
 #define FLOW_IPPROTO_TCP_EST_TIMEOUT 300
+#define FLOW_IPPROTO_TCP_BYPASSED_TIMEOUT 100
 #define FLOW_IPPROTO_UDP_NEW_TIMEOUT 30
 #define FLOW_IPPROTO_UDP_EST_TIMEOUT 300
+#define FLOW_IPPROTO_UDP_BYPASSED_TIMEOUT 100
 #define FLOW_IPPROTO_ICMP_NEW_TIMEOUT 30
 #define FLOW_IPPROTO_ICMP_EST_TIMEOUT 300
+#define FLOW_IPPROTO_ICMP_BYPASSED_TIMEOUT 100
 
 #define FLOW_DEFAULT_EMERG_NEW_TIMEOUT 10
 #define FLOW_DEFAULT_EMERG_EST_TIMEOUT 100
 #define FLOW_DEFAULT_EMERG_CLOSED_TIMEOUT 0
+#define FLOW_DEFAULT_EMERG_BYPASSED_TIMEOUT 50
 #define FLOW_IPPROTO_TCP_EMERG_NEW_TIMEOUT 10
 #define FLOW_IPPROTO_TCP_EMERG_EST_TIMEOUT 100
 #define FLOW_IPPROTO_UDP_EMERG_NEW_TIMEOUT 10
 #define FLOW_IPPROTO_UDP_EMERG_EST_TIMEOUT 100
 #define FLOW_IPPROTO_ICMP_EMERG_NEW_TIMEOUT 10
 #define FLOW_IPPROTO_ICMP_EMERG_EST_TIMEOUT 100
+
+#define FLOW_BYPASSED_TIMEOUT   6
 
 enum {
     FLOW_PROTO_TCP = 0,
@@ -73,7 +80,10 @@ enum {
  */
 
 /** FlowProto specific timeouts and free/state functions */
-FlowProto flow_proto[FLOW_PROTO_MAX];
+
+FlowProtoTimeout flow_timeouts_normal[FLOW_PROTO_MAX];
+FlowProtoTimeout flow_timeouts_emerg[FLOW_PROTO_MAX];
+FlowProtoFreeFunc flow_freefuncs[FLOW_PROTO_MAX];
 
 /** spare/unused/prealloced flows live here */
 FlowQueue flow_spare_q;

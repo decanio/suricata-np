@@ -122,6 +122,7 @@
 #include "app-layer-smtp.h"
 #include "app-layer-smb.h"
 #include "app-layer-modbus.h"
+#include "app-layer-enip.h"
 
 #include "util-decode-der.h"
 #include "util-radix-tree.h"
@@ -265,7 +266,11 @@ static void SignalHandlerSigterm(/*@unused@*/ int sig)
  */
 static void SignalHandlerSigusr2(int sig)
 {
-    sigusr2_count = 1;
+    if (sigusr2_count < 16) {
+        sigusr2_count++;
+    } else {
+        SCLogWarning(SC_ERR_LIVE_RULE_SWAP, "Too many USR2 signals pending, ignoring new ones!");
+    }
 }
 
 /**
@@ -1154,6 +1159,8 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
         {"afl-smb", required_argument, 0 , 0},
         {"afl-modbus-request", required_argument, 0 , 0},
         {"afl-modbus", required_argument, 0 , 0},
+        {"afl-enip-request", required_argument, 0 , 0},
+        {"afl-enip", required_argument, 0 , 0},
         {"afl-mime", required_argument, 0 , 0},
 
         {"afl-decoder-ppp", required_argument, 0 , 0},
@@ -1424,6 +1431,16 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
                 AppLayerParserSetup();
                 RegisterModbusParsers();
                 exit(AppLayerParserFromFile(ALPROTO_MODBUS, optarg));
+            } else if(strcmp((long_opts[option_index]).name, "afl-enip-request") == 0) {
+                //printf("arg: //%s\n", optarg);
+                AppLayerParserSetup();
+                RegisterENIPTCPParsers();
+                exit(AppLayerParserRequestFromFile(ALPROTO_ENIP, optarg));
+            } else if(strcmp((long_opts[option_index]).name, "afl-enip") == 0) {
+                //printf("arg: //%s\n", optarg);
+                AppLayerParserSetup();
+                RegisterENIPTCPParsers();
+                exit(AppLayerParserFromFile(ALPROTO_ENIP, optarg));
 #endif
 #ifdef AFLFUZZ_MIME
             } else if(strcmp((long_opts[option_index]).name, "afl-mime") == 0) {
@@ -2197,6 +2214,25 @@ static int PostConfLoadedSetup(SCInstance *suri)
 #endif
     SpmTableSetup();
 
+    int disable_offloading;
+    if (ConfGetBool("capture.disable-offloading", &disable_offloading) == 0)
+        disable_offloading = 1;
+    if (disable_offloading) {
+        LiveSetOffloadDisable();
+    } else {
+        LiveSetOffloadWarn();
+    }
+
+    if (suri->checksum_validation == -1) {
+        char *cv = NULL;
+        if (ConfGet("capture.checksum-validation", &cv) == 1) {
+            if (strcmp(cv, "none") == 0) {
+                suri->checksum_validation = 0;
+            } else if (strcmp(cv, "all") == 0) {
+                suri->checksum_validation = 1;
+            }
+        }
+    }
     switch (suri->checksum_validation) {
         case 0:
             ConfSet("stream.checksum-validation", "0");
@@ -2313,8 +2349,6 @@ static int PostConfLoadedSetup(SCInstance *suri)
 
     AppLayerHtpNeedFileInspection();
 
-    DetectEngineRegisterAppInspectionEngines();
-
     StorageFinalize();
 
     TmModuleRunInit();
@@ -2328,7 +2362,7 @@ static int PostConfLoadedSetup(SCInstance *suri)
 
 #ifdef HAVE_NSS
     if (suri->run_mode != RUNMODE_CONF_TEST) {
-        /* init NSS for md5 */
+        /* init NSS for hashing */
         PR_Init(PR_USER_THREAD, PR_PRIORITY_NORMAL, 0);
         NSS_NoDB_Init(NULL);
     }
@@ -2376,7 +2410,6 @@ int main(int argc, char **argv)
     /* By default use IDS mode, but if nfq or ipfw
      * are specified, IPS mode will overwrite this */
     EngineModeSetIDS();
-
 
 #ifdef OS_WIN32
     /* service initialization */
@@ -2516,9 +2549,7 @@ int main(int argc, char **argv)
     /* In Unix socket runmode, Flow manager is started on demand */
     if (suri.run_mode != RUNMODE_UNIX_SOCKET) {
         /* Spawn the unix socket manager thread */
-        int unix_socket = 0;
-        if (ConfGetBool("unix-command.enabled", &unix_socket) != 1)
-            unix_socket = 0;
+        int unix_socket = ConfUnixSocketIsEnable();
         if (unix_socket == 1) {
             UnixManagerThreadSpawn(0);
 #ifdef BUILD_UNIX_SOCKET

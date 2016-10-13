@@ -63,6 +63,7 @@ typedef struct TcpStreamCnf_ {
     uint16_t reassembly_toclient_chunk_size;
 
     int check_overlap_different_data;
+    int bypass;
 
     /** reassembly -- inline mode
      *
@@ -122,6 +123,7 @@ int StreamTcpSegmentForEach(const Packet *p, uint8_t flag,
                         StreamSegmentCallback CallbackFunc,
                         void *data);
 void StreamTcpReassembleConfigEnableOverlapCheck(void);
+void TcpSessionSetReassemblyDepth(TcpSession *ssn, uint32_t size);
 
 /** ------- Inline functions: ------ */
 
@@ -228,7 +230,8 @@ void StreamTcpSessionClear(void *ssnptr);
 void StreamTcpSessionCleanup(TcpSession *ssn);
 /* cleanup stream, but don't free the stream */
 void StreamTcpStreamCleanup(TcpStream *stream);
-
+/* check if bypass is enabled */
+int StreamTcpBypassEnabled(void);
 
 uint32_t StreamTcpGetStreamSize(TcpStream *stream);
 

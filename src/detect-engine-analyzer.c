@@ -95,6 +95,13 @@ void EngineAnalysisFP(Signature *s, char *line)
     fprintf(fp_engine_analysis_FD, "%s\n", line);
 
     fprintf(fp_engine_analysis_FD, "    Fast Pattern analysis:\n");
+    if (s->prefilter_sm != NULL) {
+        fprintf(fp_engine_analysis_FD, "        Prefilter on: %s\n",
+                sigmatch_table[s->prefilter_sm->type].name);
+        fprintf(fp_engine_analysis_FD, "\n");
+        return;
+    }
+
     if (fp_cd == NULL) {
         fprintf(fp_engine_analysis_FD, "        No content present\n");
         fprintf(fp_engine_analysis_FD, "\n");
@@ -480,6 +487,10 @@ static void EngineAnalysisRulesPrintFP(const Signature *s)
         fprintf(rule_engine_analysis_FD, "dns query name content");
     else if (list_type == DETECT_SM_LIST_TLSSNI_MATCH)
         fprintf(rule_engine_analysis_FD, "tls sni extension content");
+    else if (list_type == DETECT_SM_LIST_TLSISSUER_MATCH)
+        fprintf(rule_engine_analysis_FD, "tls issuer content");
+    else if (list_type == DETECT_SM_LIST_TLSSUBJECT_MATCH)
+        fprintf(rule_engine_analysis_FD, "tls subject content");
 
     fprintf(rule_engine_analysis_FD, "\" buffer.\n");
 
@@ -854,7 +865,12 @@ void EngineAnalysisRules(const Signature *s, const char *line)
         }
 
         /* print fast pattern info */
-        EngineAnalysisRulesPrintFP(s);
+        if (s->prefilter_sm) {
+            fprintf(rule_engine_analysis_FD, "    Prefilter on: %s.\n",
+                    sigmatch_table[s->prefilter_sm->type].name);
+        } else {
+            EngineAnalysisRulesPrintFP(s);
+        }
 
         /* this is where the warnings start */
         if (warn_pcre_no_content /*rule_pcre > 0 && rule_content == 0 && rule_content_http == 0*/) {

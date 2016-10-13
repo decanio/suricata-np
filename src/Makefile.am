@@ -19,6 +19,8 @@ app-layer-detect-proto.c app-layer-detect-proto.h \
 app-layer-dns-common.c app-layer-dns-common.h \
 app-layer-dns-tcp.c app-layer-dns-tcp.h \
 app-layer-dns-udp.c app-layer-dns-udp.h \
+app-layer-enip.c app-layer-enip.h \
+app-layer-enip-common.c app-layer-enip-common.h \
 app-layer-events.c app-layer-events.h \
 app-layer-ftp.c app-layer-ftp.h \
 app-layer-htp-body.c app-layer-htp-body.h \
@@ -76,6 +78,7 @@ detect-base64-decode.c detect-base64-decode.h \
 detect-byte-extract.c detect-byte-extract.h \
 detect-bytejump.c detect-bytejump.h \
 detect-bytetest.c detect-bytetest.h \
+detect-bypass.c detect-bypass.h \
 detect.c detect.h \
 detect-classtype.c detect-classtype.h \
 detect-content.c detect-content.h \
@@ -88,19 +91,21 @@ detect-detection-filter.c detect-detection-filter.h \
 detect-distance.c detect-distance.h \
 detect-dns-query.c detect-dns-query.h \
 detect-tls-sni.c detect-tls-sni.h \
+detect-tls-cert-issuer.c detect-tls-cert-issuer.h \
+detect-tls-cert-subject.c detect-tls-cert-subject.h \
 detect-dsize.c detect-dsize.h \
 detect-engine-address.c detect-engine-address.h \
 detect-engine-address-ipv4.c detect-engine-address-ipv4.h \
 detect-engine-address-ipv6.c detect-engine-address-ipv6.h \
 detect-engine-alert.c detect-engine-alert.h \
 detect-engine-analyzer.c detect-engine-analyzer.h \
-detect-engine-apt-event.c detect-engine-apt-event.h \
 detect-engine.c detect-engine.h \
 detect-engine-content-inspection.c detect-engine-content-inspection.h \
 detect-engine-dcepayload.c detect-engine-dcepayload.h \
 detect-engine-dns.c detect-engine-dns.h \
 detect-engine-tls.c detect-engine-tls.h \
 detect-engine-modbus.c detect-engine-modbus.h \
+detect-engine-enip.c detect-engine-enip.h \
 detect-engine-event.c detect-engine-event.h \
 detect-engine-file.c detect-engine-file.h \
 detect-engine-filedata-smtp.c detect-engine-filedata-smtp.h \
@@ -112,7 +117,6 @@ detect-engine-hmd.c detect-engine-hmd.h \
 detect-engine-hrhd.c detect-engine-hrhd.h \
 detect-engine-hrhhd.c detect-engine-hrhhd.h \
 detect-engine-hrud.c detect-engine-hrud.h \
-detect-engine-hrl.c detect-engine-hrl.h \
 detect-engine-hsbd.c detect-engine-hsbd.h \
 detect-engine-hscd.c detect-engine-hscd.h \
 detect-engine-hsmd.c detect-engine-hsmd.h \
@@ -122,6 +126,8 @@ detect-engine-loader.c detect-engine-loader.h \
 detect-engine-mpm.c detect-engine-mpm.h \
 detect-engine-payload.c detect-engine-payload.h \
 detect-engine-port.c detect-engine-port.h \
+detect-engine-prefilter.c detect-engine-prefilter.h \
+detect-engine-prefilter-common.c detect-engine-prefilter-common.h \
 detect-engine-proto.c detect-engine-proto.h \
 detect-engine-profile.c detect-engine-profile.h \
 detect-engine-siggroup.c detect-engine-siggroup.h \
@@ -136,6 +142,8 @@ detect-file-data.c detect-file-data.h \
 detect-fileext.c detect-fileext.h \
 detect-filemagic.c detect-filemagic.h \
 detect-filemd5.c detect-filemd5.h \
+detect-filesha1.c detect-filesha1.h \
+detect-filesha256.c detect-filesha256.h \
 detect-filename.c detect-filename.h \
 detect-filesize.c detect-filesize.h \
 detect-filestore.c detect-filestore.h \
@@ -158,6 +166,8 @@ detect-http-hrh.c detect-http-hrh.h \
 detect-http-method.c detect-http-method.h \
 detect-http-raw-header.c detect-http-raw-header.h \
 detect-http-raw-uri.c detect-http-raw-uri.h \
+detect-http-request-line.c detect-http-request-line.h \
+detect-http-response-line.c detect-http-response-line.h \
 detect-http-server-body.c detect-http-server-body.h \
 detect-http-stat-code.c detect-http-stat-code.h \
 detect-http-stat-msg.c detect-http-stat-msg.h \
@@ -185,6 +195,7 @@ detect-parse.c detect-parse.h \
 detect-pcre.c detect-pcre.h \
 detect-pkt-data.c detect-pkt-data.h \
 detect-pktvar.c detect-pktvar.h \
+detect-prefilter.c detect-prefilter.h \
 detect-priority.c detect-priority.h \
 detect-rawbytes.c detect-rawbytes.h \
 detect-reference.c detect-reference.h \
@@ -204,6 +215,7 @@ detect-template.c detect-template.h \
 detect-template-buffer.c detect-template-buffer.h \
 detect-threshold.c detect-threshold.h \
 detect-tls.c detect-tls.h \
+detect-tls-cert-validity.c detect-tls-cert-validity.h \
 detect-tls-version.c detect-tls-version.h \
 detect-tos.c detect-tos.h \
 detect-ttl.c detect-ttl.h \
@@ -213,6 +225,7 @@ detect-window.c detect-window.h \
 detect-within.c detect-within.h \
 detect-modbus.c detect-modbus.h \
 detect-xbits.c detect-xbits.h \
+detect-cipservice.c detect-cipservice.h \
 flow-bit.c flow-bit.h \
 flow.c flow.h \
 flow-hash.c flow-hash.h \
@@ -342,6 +355,7 @@ util-decode-asn1.c util-decode-asn1.h \
 util-decode-der.c util-decode-der.h \
 util-decode-der-get.c util-decode-der-get.h \
 util-decode-mime.c util-decode-mime.h \
+util-detect-file-hash.c util-detect-file-hash.h \
 util-device.c util-device.h \
 util-enum.c util-enum.h \
 util-error.c util-error.h \
@@ -378,10 +392,12 @@ util-mpm-ac-tile-small.c \
 util-mpm-hs.c util-mpm-hs.h \
 util-mpm.c util-mpm.h \
 util-optimize.h \
+util-pages.c util-pages.h \
 util-path.c util-path.h \
 util-pidfile.c util-pidfile.h \
 util-pool.c util-pool.h \
 util-pool-thread.c util-pool-thread.h \
+util-prefilter.c util-prefilter.h \
 util-print.c util-print.h \
 util-privs.c util-privs.h \
 util-profiling.c util-profiling.h \

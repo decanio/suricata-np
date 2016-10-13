@@ -33,7 +33,9 @@
 #include "suricata-common.h"
 #include "conf.h"
 #include "detect.h"
+#include "detect-engine.h"
 #include "app-layer-template.h"
+#include "detect-engine-template.h"
 
 static int DetectTemplateBufferSetup(DetectEngineCtx *, Signature *, char *);
 static void DetectTemplateBufferRegisterTests(void);
@@ -54,6 +56,14 @@ void DetectTemplateBufferRegister(void)
 
     sigmatch_table[DETECT_AL_TEMPLATE_BUFFER].flags |= SIGMATCH_NOOPT;
     sigmatch_table[DETECT_AL_TEMPLATE_BUFFER].flags |= SIGMATCH_PAYLOAD;
+
+    /* register inspect engines */
+    DetectAppLayerInspectEngineRegister(ALPROTO_TEMPLATE, SIG_FLAG_TOSERVER,
+            DETECT_SM_LIST_TEMPLATE_BUFFER_MATCH,
+            DetectEngineInspectTemplateBuffer);
+    DetectAppLayerInspectEngineRegister(ALPROTO_TEMPLATE, SIG_FLAG_TOCLIENT,
+            DETECT_SM_LIST_TEMPLATE_BUFFER_MATCH,
+            DetectEngineInspectTemplateBuffer);
 
     SCLogNotice("Template application layer detect registered.");
 }
@@ -126,10 +136,10 @@ static int DetectTemplateBufferTest(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&tv, (void *)de_ctx, (void *)&det_ctx);
 
-    SCMutexLock(&f.m);
-    AppLayerParserParse(alp_tctx, &f, ALPROTO_TEMPLATE, STREAM_TOSERVER,
-        request, sizeof(request));
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TEMPLATE,
+                        STREAM_TOSERVER, request, sizeof(request));
+    FLOWLOCK_UNLOCK(&f);
 
     /* Check that we have app-layer state. */
     FAIL_IF_NULL(f.alstate);

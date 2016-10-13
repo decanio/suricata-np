@@ -202,7 +202,9 @@ outputs:
             extended: yes     # enable this for extended logging information
         - files:
             force-magic: no   # force logging magic on all logged files
-            force-md5: no     # force logging of md5 checksums
+            # force logging of checksums, available hash functions are md5,
+            # sha1 and sha256
+            #force-hash: [md5]
         #- drop:
         #    alerts: yes      # log alerts that caused drops
         #    flows: all       # start or all: 'start' logs only a single drop
@@ -339,7 +341,11 @@ outputs:
       max-files: 2000
 
       mode: normal # normal, multi or sguil.
-      #sguil-base-dir: /nsm_data/
+
+      # Directory to place pcap files. If not provided the default log
+      # directory will be used. Required for "sguil" mode.
+      #dir: /nsm_data/
+
       #ts-format: usec # sec or usec second format (default) is filename.sec usec is filename.sec.usec
       use-stream-depth: no #If set to "yes" packets seen after reaching stream inspection depth are ignored. "no" logs all packets
       honor-pass-rules: no # If set to "yes", flows in which a pass rule matched will stopped being logged.
@@ -392,15 +398,20 @@ outputs:
   # file "file.<id>.meta" is created.
   #
   # File extraction depends on a lot of things to be fully done:
-  # - stream reassembly depth. For optimal results, set this to 0 (unlimited)
+  # - file-store stream-depth. For optimal results, set this to 0 (unlimited)
   # - http request / response body sizes. Again set to 0 for optimal results.
   # - rules that contain the "filestore" keyword.
   - file-store:
       enabled: no       # set to yes to enable
       log-dir: files    # directory to store the files
       force-magic: no   # force logging magic on all stored files
-      force-md5: no     # force logging of md5 checksums
+      # force logging of checksums, available hash functions are md5,
+      # sha1 and sha256
+      #force-hash: [md5]
       force-filestore: no # force storing of all files
+      # override global stream-depth for sessions in which we want to
+      # perform file extraction. Set to 0 for unlimited.
+      #stream-depth: 0
       #waldo: file.waldo # waldo file to store the file_id across runs
 
   # output module to log files tracked in a easily parsable json format
@@ -411,7 +422,9 @@ outputs:
       #filetype: regular # 'regular', 'unix_stream' or 'unix_dgram'
 
       force-magic: no   # force logging magic on all logged files
-      force-md5: no     # force logging of md5 checksums
+      # force logging of checksums, available hash functions are md5,
+      # sha1 and sha256
+      #force-hash: [md5]
 
   # Log TCP data after stream normalization
   # 2 types: file or dir. File logs into a single logfile. Dir creates
@@ -641,6 +654,10 @@ app-layer:
       detection-ports:
         dp: 443
 
+      # Completely stop processing TLS/SSL session after the handshake
+      # completed. If bypass is enabled this will also trigger flow
+      # bypass. If disabled (the default), TLS/SSL session is still
+      # tracked for Heartbleed and other anomalies.
       #no-reassemble: yes
     dcerpc:
       enabled: yes
@@ -693,6 +710,9 @@ app-layer:
       # How many unreplied Modbus requests are considered a flood.
       # If the limit is reached, app-layer-event:modbus.flooded; will match.
       #request-flood: 500
+
+      # Stream reassembly size for modbus. By default track it completely.
+      stream-depth: 0
 
       enabled: no
       detection-ports:
@@ -826,6 +846,10 @@ app-layer:
            #    double-decode-path: no
            #    double-decode-query: no
 
+    # SCADA EtherNet/IP and CIP protocol support
+    enip:
+      enabled: no
+
 # Limit for the maximum number of asn1 frames to decode (default 256)
 asn1-max-frames: 256
 
@@ -911,10 +935,11 @@ host-mode: auto
 # Unix command socket can be used to pass commands to suricata.
 # An external tool can then connect to get information from suricata
 # or trigger some modifications of the engine. Set enabled to yes
-# to activate the feature. You can use the filename variable to set
+# to activate the feature. In auto mode, the feature will only be
+# activated in live capture mode. You can use the filename variable to set
 # the file name of the socket.
 unix-command:
-  enabled: no
+  enabled: auto
   #filename: custom.socket
 
 # Magic file. The extension .mgc is added to the value here.
@@ -1048,7 +1073,9 @@ vlan:
 # of that flow). The value of "established" is the amount of
 # seconds that the engine will wait to free the flow if it spend that amount
 # without receiving new packets or closing the connection. "closed" is the
-# amount of time to wait after a flow is closed (usually zero).
+# amount of time to wait after a flow is closed (usually zero). "bypassed"
+# timeout controls locally bypassed flows. For these flows we don't do any other
+# tracking. If no packets have been seen after this timeout, the flow is discarded.
 #
 # There's an emergency mode that will become active under attack circumstances,
 # making the engine to check flow status faster. This configuration variables
@@ -1062,26 +1089,34 @@ flow-timeouts:
     new: 30
     established: 300
     closed: 0
+    bypassed: 100
     emergency-new: 10
     emergency-established: 100
     emergency-closed: 0
+    emergency-bypassed: 50
   tcp:
     new: 60
     established: 600
     closed: 60
+    bypassed: 100
     emergency-new: 5
     emergency-established: 100
     emergency-closed: 10
+    emergency-bypassed: 50
   udp:
     new: 30
     established: 300
+    bypassed: 100
     emergency-new: 10
     emergency-established: 100
+    emergency-bypassed: 50
   icmp:
     new: 30
     established: 300
+    bypassed: 100
     emergency-new: 10
     emergency-established: 100
+    emergency-bypassed: 50
 
 # Stream engine settings. Here the TCP stream tracking and reassembly
 # engine is configured.
@@ -1103,6 +1138,7 @@ flow-timeouts:
 #   async-oneside: false        # don't enable async stream handling
 #   inline: no                  # stream inline mode
 #   max-synack-queued: 5        # Max different SYN/ACKs to queue
+#   bypass: no                  # Bypass packets when stream.depth is reached
 #
 #   reassembly:
 #     memcap: 64mb              # Can be specified in kb, mb, gb.  Just a number
@@ -1226,6 +1262,12 @@ detect:
   # If set to yes, the loading of signatures will be made after the capture
   # is started. This will limit the downtime in IPS mode.
   #delayed-detect: yes
+
+  prefilter:
+    # default prefiltering setting. "mpm" only creates MPM/fast_pattern
+    # engines. "auto" also sets up prefilter engines for other keywords.
+    # Use --list-keywords=all to see which keywords support prefiltering.
+    default: mpm
 
   # the grouping values above control how many groups are created per
   # direction. Port whitelisting forces that port to get it's own group.
@@ -1410,10 +1452,16 @@ profiling:
 # by processing several packets before sending a verdict (worker runmode only).
 # On linux >= 3.6, you can set the fail-open option to yes to have the kernel
 # accept the packet if suricata is not able to keep pace.
+# bypass mark and mask can be used to implement NFQ bypass. If bypass mark is
+# set then the NFQ bypass is activated. Suricata will set the bypass mark/mask
+# on packet of a flow that need to be bypassed. The Nefilter ruleset has to
+# directly accept all packets of a flow once a packet has been marked.
 nfq:
 #  mode: accept
 #  repeat-mark: 1
 #  repeat-mask: 1
+#  bypass-mark: 1
+#  bypass-mask: 1
 #  route-queue: 2
 #  batchcount: 20
 #  fail-open: yes
@@ -1438,6 +1486,16 @@ nflog:
 ##
 ## Advanced Capture Options
 ##
+
+# general settings affecting packet capture
+capture:
+  # disable NIC offloading. It's restored when Suricata exists.
+  # Enabled by default
+  #disable-offloading: false
+  #
+  # disable checksum validation. Same as setting '-k none' on the
+  # commandline
+  #checksum-validation: none
 
 # Netmap support
 #
