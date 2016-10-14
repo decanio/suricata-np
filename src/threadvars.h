@@ -89,6 +89,9 @@ typedef struct ThreadVars_ {
     /** the type of thread as defined in tm-threads.h (TVT_PPT, TVT_MGMT) */
     uint8_t type;
 
+    /** pjsip threading stuff */
+    uint8_t sip_flags;
+
     uint16_t cpu_affinity; /** cpu or core number to set affinity to */
     uint16_t rank;
     int thread_priority; /** priority (real time) for this thread. Look at threads.h */

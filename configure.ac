@@ -661,6 +661,7 @@
         exit 1
     fi
 
+
   # libpthread
     AC_ARG_WITH(libpthread_includes,
             [  --with-libpthread-includes=DIR  libpthread include directory],
@@ -687,6 +688,34 @@
         echo "   ERROR! libpthread library not found, glibc problem?"
         echo
         exit 1
+    fi
+
+  # libpjsip
+    # On Ubuntu this requires installing libpjproject-dev
+    enable_pjsip="no"
+    AC_ARG_WITH(libpjsip_includes,
+            [  --with-libpjsip-includes=DIR  libpjsip include directory],
+            [with_libpjsip_includes="$withval"],[with_libpjsip_includes=no])
+    AC_ARG_WITH(libpjsip_libraries,
+            [  --with-libpjsip-libraries=DIR    libpjsip library directory],
+            [with_libpjsip_libraries="$withval"],[with_libpjsip_libraries="no"])
+
+    if test "$with_libpjsip_includes" != "no"; then
+        CPPFLAGS="${CPPFLAGS} -I${with_libpjsip_includes}"
+    fi
+
+    AC_CHECK_HEADER(pjlib.h,LIBPJSIP="yes",LIBPJSIP="no")
+    if test "$LIBPJSIP" = "yes"; then
+        if test "$with_libpjsip_libraries" != "no"; then
+            LDFLAGS="${LDFLAGS} -L${with_libpjsip_libraries}"
+        fi
+        AC_CHECK_LIB(pj,pj_init,,LIBPJSIP="no",-lpthread -lm -luuid)
+    fi
+
+    if test "$LIBPJSIP" != "no"; then
+        AC_DEFINE([HAVE_PJSIP],[1],[libpjsip available])
+        LIBS="${LIBS} -lpjsip -lpjlib-util -lpj -lm -luuid"
+        enable_pjsip="yes"
     fi
 
   # libjansson
@@ -1989,6 +2018,7 @@ SURICATA_BUILD_CONF="Suricata Configuration:
   libnss support:                          ${enable_nss}
   libnspr support:                         ${enable_nspr}
   libjansson support:                      ${enable_jansson}
+  libpjsip support:                        ${enable_pjsip}
   hiredis support:                         ${enable_hiredis}
   Prelude support:                         ${enable_prelude}
   PCRE jit:                                ${pcre_jit_available}

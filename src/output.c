@@ -67,6 +67,7 @@
 #include "log-tcp-data.h"
 #include "log-stats.h"
 #include "output-json.h"
+#include "output-json-sip.h"
 #include "output-json-template.h"
 #include "output-lua.h"
 
@@ -1087,6 +1088,8 @@ void OutputRegisterLoggers(void)
     /* json stats */
     JsonStatsLogRegister();
 
+    /* sip JSON logger. */
+    JsonsipLogRegister();
     /* Template JSON logger. */
     JsonTemplateLogRegister();
 }
