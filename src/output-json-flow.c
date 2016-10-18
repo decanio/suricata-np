@@ -219,6 +219,24 @@ static void JsonFlowLogJSON(JsonFlowLogThread *aft, json_t *js, Flow *f)
         state = "established";
     else if (f->flow_end_flags & FLOW_END_FLAG_STATE_CLOSED)
         state = "closed";
+    else if (f->flow_end_flags & FLOW_END_FLAG_STATE_BYPASSED) {
+        state = "bypassed";
+        int flow_state = SC_ATOMIC_GET(f->flow_state);
+        switch (flow_state) {
+            case FLOW_STATE_LOCAL_BYPASSED:
+                json_object_set_new(hjs, "bypass",
+                        json_string("local"));
+                break;
+            case FLOW_STATE_CAPTURE_BYPASSED:
+                json_object_set_new(hjs, "bypass",
+                        json_string("capture"));
+                break;
+            default:
+                SCLogError(SC_ERR_INVALID_VALUE,
+                           "Invalid flow state: %d, contact developers",
+                           flow_state);
+        }
+    }
 
     json_object_set_new(hjs, "state",
             json_string(state));
@@ -448,36 +466,23 @@ static TmEcode JsonFlowLogThreadDeinit(ThreadVars *t, void *data)
     return TM_ECODE_OK;
 }
 
-void TmModuleJsonFlowLogRegister (void)
+void JsonFlowLogRegister (void)
 {
-    tmm_modules[TMM_JSONFLOWLOG].name = "JsonFlowLog";
-    tmm_modules[TMM_JSONFLOWLOG].ThreadInit = JsonFlowLogThreadInit;
-    tmm_modules[TMM_JSONFLOWLOG].ThreadDeinit = JsonFlowLogThreadDeinit;
-    tmm_modules[TMM_JSONFLOWLOG].RegisterTests = NULL;
-    tmm_modules[TMM_JSONFLOWLOG].cap_flags = 0;
-    tmm_modules[TMM_JSONFLOWLOG].flags = TM_FLAG_LOGAPI_TM;
-
     /* register as separate module */
-    OutputRegisterFlowModule("JsonFlowLog", "flow-json-log",
-            OutputFlowLogInit, JsonFlowLogger);
+    OutputRegisterFlowModule(LOGGER_JSON_FLOW, "JsonFlowLog", "flow-json-log",
+        OutputFlowLogInit, JsonFlowLogger, JsonFlowLogThreadInit,
+        JsonFlowLogThreadDeinit, NULL);
 
     /* also register as child of eve-log */
-    OutputRegisterFlowSubModule("eve-log", "JsonFlowLog", "eve-log.flow",
-            OutputFlowLogInitSub, JsonFlowLogger);
+    OutputRegisterFlowSubModule(LOGGER_JSON_FLOW, "eve-log", "JsonFlowLog",
+        "eve-log.flow", OutputFlowLogInitSub, JsonFlowLogger,
+        JsonFlowLogThreadInit, JsonFlowLogThreadDeinit, NULL);
 }
 
 #else
 
-static TmEcode OutputJsonThreadInit(ThreadVars *t, void *initdata, void **data)
+void JsonFlowLogRegister (void)
 {
-    SCLogInfo("Can't init JSON output - JSON support was disabled during build.");
-    return TM_ECODE_FAILED;
-}
-
-void TmModuleJsonFlowLogRegister (void)
-{
-    tmm_modules[TMM_JSONFLOWLOG].name = "JsonFlowLog";
-    tmm_modules[TMM_JSONFLOWLOG].ThreadInit = OutputJsonThreadInit;
 }
 
 #endif

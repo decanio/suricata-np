@@ -28,12 +28,14 @@
 #include "app-layer-events.h"
 #include "detect-engine-state.h"
 #include "util-file.h"
+#include "stream-tcp-private.h"
 
 #define APP_LAYER_PARSER_EOF                    0x01
 #define APP_LAYER_PARSER_NO_INSPECTION          0x02
 #define APP_LAYER_PARSER_NO_REASSEMBLY          0x04
 #define APP_LAYER_PARSER_NO_INSPECTION_PAYLOAD  0x08
 
+int AppLayerParserProtoIsRegistered(uint8_t ipproto, AppProto alproto);
 
 /***** transaction handling *****/
 
@@ -148,6 +150,9 @@ void AppLayerParserRegisterDetectStateFuncs(uint8_t ipproto, AppProto alproto,
         int (*StateHasTxDetectState)(void *alstate),
         DetectEngineState *(*GetTxDetectState)(void *tx),
         int (*SetTxDetectState)(void *alstate, void *tx, DetectEngineState *));
+void AppLayerParserRegisterGetStreamDepth(uint8_t ipproto,
+                                          AppProto alproto,
+                                          uint32_t (*GetStreamDepth)(void));
 
 /***** Get and transaction functions *****/
 
@@ -185,6 +190,7 @@ uint64_t AppLayerParserGetTransactionActive(uint8_t ipproto, AppProto alproto, A
 
 uint8_t AppLayerParserGetFirstDataDir(uint8_t ipproto, AppProto alproto);
 
+int AppLayerParserSupportsFiles(uint8_t ipproto, AppProto alproto);
 int AppLayerParserSupportsTxDetectState(uint8_t ipproto, AppProto alproto);
 int AppLayerParserHasTxDetectState(uint8_t ipproto, AppProto alproto, void *alstate);
 DetectEngineState *AppLayerParserGetTxDetectState(uint8_t ipproto, AppProto alproto, void *tx);
@@ -192,7 +198,7 @@ int AppLayerParserSetTxDetectState(uint8_t ipproto, AppProto alproto, void *alst
 
 /***** General *****/
 
-int AppLayerParserParse(AppLayerParserThreadCtx *tctx, Flow *f, AppProto alproto,
+int AppLayerParserParse(ThreadVars *tv, AppLayerParserThreadCtx *tctx, Flow *f, AppProto alproto,
                    uint8_t flags, uint8_t *input, uint32_t input_len);
 void AppLayerParserSetEOF(AppLayerParserState *pstate);
 int AppLayerParserHasDecoderEvents(uint8_t ipproto, AppProto alproto, void *alstate, AppLayerParserState *pstate,
@@ -203,6 +209,8 @@ int AppLayerParserProtocolIsTxEventAware(uint8_t ipproto, AppProto alproto);
 int AppLayerParserProtocolSupportsTxs(uint8_t ipproto, AppProto alproto);
 int AppLayerParserProtocolHasLogger(uint8_t ipproto, AppProto alproto);
 void AppLayerParserTriggerRawStreamReassembly(Flow *f);
+void AppLayerParserSetStreamDepth(uint8_t ipproto, AppProto alproto, uint32_t stream_depth);
+uint32_t AppLayerParserGetStreamDepth(uint8_t ipproto, AppProto alproto);
 
 /***** Cleanup *****/
 

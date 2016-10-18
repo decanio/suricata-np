@@ -45,8 +45,10 @@
 
 #include "detect.h"
 #include "detect-parse.h"
+#include "detect-engine.h"
 
 #include "detect-modbus.h"
+#include "detect-engine-modbus.h"
 
 #include "util-debug.h"
 
@@ -404,7 +406,6 @@ void DetectModbusRegister(void)
     sigmatch_table[DETECT_AL_MODBUS].name          = "modbus";
     sigmatch_table[DETECT_AL_MODBUS].Match         = NULL;
     sigmatch_table[DETECT_AL_MODBUS].AppLayerMatch = NULL;
-    sigmatch_table[DETECT_AL_MODBUS].alproto       = ALPROTO_MODBUS;
     sigmatch_table[DETECT_AL_MODBUS].Setup         = DetectModbusSetup;
     sigmatch_table[DETECT_AL_MODBUS].Free          = DetectModbusFree;
     sigmatch_table[DETECT_AL_MODBUS].RegisterTests = DetectModbusRegisterTests;
@@ -413,11 +414,16 @@ void DetectModbusRegister(void)
             &function_parse_regex, &function_parse_regex_study);
     DetectSetupParseRegexes(PARSE_REGEX_ACCESS,
             &access_parse_regex, &access_parse_regex_study);
+
+    DetectAppLayerInspectEngineRegister(ALPROTO_MODBUS, SIG_FLAG_TOSERVER,
+            DETECT_SM_LIST_MODBUS_MATCH,
+            DetectEngineInspectModbus);
+    DetectAppLayerInspectEngineRegister(ALPROTO_MODBUS, SIG_FLAG_TOCLIENT,
+            DETECT_SM_LIST_MODBUS_MATCH,
+            DetectEngineInspectModbus);
 }
 
 #ifdef UNITTESTS /* UNITTESTS */
-#include "detect-engine.h"
-
 #include "util-unittest.h"
 
 /** \test Signature containing a function. */

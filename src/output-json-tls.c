@@ -123,6 +123,26 @@ void JsonTlsLogJSONExtended(json_t *tjs, SSLState * state)
             break;
     }
     json_object_set_new(tjs, "version", json_string(ssl_version));
+
+    /* tls.notbefore */
+    if (state->server_connp.cert0_not_before != 0) {
+        char timebuf[64];
+        struct timeval tv;
+        tv.tv_sec = state->server_connp.cert0_not_before;
+        tv.tv_usec = 0;
+        CreateUtcIsoTimeString(&tv, timebuf, sizeof(timebuf));
+        json_object_set_new(tjs, "notbefore", json_string(timebuf));
+    }
+
+    /* tls.notafter */
+    if (state->server_connp.cert0_not_after != 0) {
+        char timebuf[64];
+        struct timeval tv;
+        tv.tv_sec = state->server_connp.cert0_not_after;
+        tv.tv_usec = 0;
+        CreateUtcIsoTimeString(&tv, timebuf, sizeof(timebuf));
+       json_object_set_new(tjs, "notafter", json_string(timebuf));
+    }
 }
 
 static int JsonTlsLogger(ThreadVars *tv, void *thread_data, const Packet *p,
@@ -140,7 +160,7 @@ static int JsonTlsLogger(ThreadVars *tv, void *thread_data, const Packet *p,
             ssl_state->server_connp.cert0_subject == NULL)
         return 0;
 
-    json_t *js = CreateJSONHeader((Packet *)p, 0, "tls");
+    json_t *js = CreateJSONHeader((Packet *)p, 1, "tls");
     if (unlikely(js == NULL))
         return 0;
 
@@ -308,38 +328,25 @@ OutputCtx *OutputTlsLogInitSub(ConfNode *conf, OutputCtx *parent_ctx)
     return output_ctx;
 }
 
-void TmModuleJsonTlsLogRegister (void)
+void JsonTlsLogRegister (void)
 {
-    tmm_modules[TMM_JSONTLSLOG].name = "JsonTlsLog";
-    tmm_modules[TMM_JSONTLSLOG].ThreadInit = JsonTlsLogThreadInit;
-    tmm_modules[TMM_JSONTLSLOG].ThreadDeinit = JsonTlsLogThreadDeinit;
-    tmm_modules[TMM_JSONTLSLOG].RegisterTests = NULL;
-    tmm_modules[TMM_JSONTLSLOG].cap_flags = 0;
-    tmm_modules[TMM_JSONTLSLOG].flags = TM_FLAG_LOGAPI_TM;
-
     /* register as separate module */
-    OutputRegisterTxModuleWithProgress("JsonTlsLog", "tls-json-log",
-            OutputTlsLogInit, ALPROTO_TLS, JsonTlsLogger, TLS_HANDSHAKE_DONE,
-            TLS_HANDSHAKE_DONE);
+    OutputRegisterTxModuleWithProgress(LOGGER_JSON_TLS, "JsonTlsLog",
+        "tls-json-log", OutputTlsLogInit, ALPROTO_TLS, JsonTlsLogger,
+        TLS_HANDSHAKE_DONE, TLS_HANDSHAKE_DONE, JsonTlsLogThreadInit,
+        JsonTlsLogThreadDeinit, NULL);
 
     /* also register as child of eve-log */
-    OutputRegisterTxSubModuleWithProgress("eve-log", "JsonTlsLog",
-            "eve-log.tls", OutputTlsLogInitSub, ALPROTO_TLS, JsonTlsLogger,
-            TLS_HANDSHAKE_DONE, TLS_HANDSHAKE_DONE);
+    OutputRegisterTxSubModuleWithProgress(LOGGER_JSON_TLS, "eve-log",
+        "JsonTlsLog", "eve-log.tls", OutputTlsLogInitSub, ALPROTO_TLS,
+        JsonTlsLogger, TLS_HANDSHAKE_DONE, TLS_HANDSHAKE_DONE,
+        JsonTlsLogThreadInit, JsonTlsLogThreadDeinit, NULL);
 }
 
 #else
 
-static TmEcode OutputJsonThreadInit(ThreadVars *t, void *initdata, void **data)
+void JsonTlsLogRegister (void)
 {
-    SCLogInfo("Can't init JSON output - JSON support was disabled during build.");
-    return TM_ECODE_FAILED;
-}
-
-void TmModuleJsonTlsLogRegister (void)
-{
-    tmm_modules[TMM_JSONTLSLOG].name = "JsonTlsLog";
-    tmm_modules[TMM_JSONTLSLOG].ThreadInit = OutputJsonThreadInit;
 }
 
 #endif

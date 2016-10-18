@@ -63,7 +63,6 @@ void DetectUrilenRegister(void)
     sigmatch_table[DETECT_AL_URILEN].desc = "match on the length of the HTTP uri";
     sigmatch_table[DETECT_AL_URILEN].url = "https://redmine.openinfosecfoundation.org/projects/suricata/wiki/HTTP-keywords#Urilen";
     sigmatch_table[DETECT_AL_URILEN].Match = NULL;
-    sigmatch_table[DETECT_AL_URILEN].alproto = ALPROTO_HTTP;
     sigmatch_table[DETECT_AL_URILEN].AppLayerMatch = NULL /**< We handle this at detect-engine-uri.c now */;
     sigmatch_table[DETECT_AL_URILEN].Setup = DetectUrilenSetup;
     sigmatch_table[DETECT_AL_URILEN].Free = DetectUrilenFree;
@@ -611,14 +610,15 @@ static int DetectUrilenSigTest01(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_HTTP, STREAM_TOSERVER, httpbuf1, httplen1);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP,
+                                STREAM_TOSERVER, httpbuf1, httplen1);
     if (r != 0) {
         SCLogDebug("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        SCMutexUnlock(&f.m);
+        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_UNLOCK(&f);
 
     HtpState *htp_state = f.alstate;
     if (htp_state == NULL) {

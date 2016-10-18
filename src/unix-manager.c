@@ -154,7 +154,7 @@ int UnixNew(UnixCommand * this)
     addr.sun_family = AF_UNIX;
     strlcpy(addr.sun_path, sockettarget, sizeof(addr.sun_path));
     addr.sun_path[sizeof(addr.sun_path) - 1] = 0;
-    len = strlen(addr.sun_path) + sizeof(addr.sun_family);
+    len = strlen(addr.sun_path) + sizeof(addr.sun_family) + 1;
 
     /* create socket */
     this->socket = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -167,9 +167,10 @@ int UnixNew(UnixCommand * this)
     }
     this->select_max = this->socket + 1;
 
+#if !(defined OS_FREEBSD || defined __OpenBSD__)
     /* Set file mode: will not fully work on most system, the group
-     * permission is not changed on some Linux and *BSD won't do the
-     * chmod. */
+     * permission is not changed on some Linux. *BSD won't do the
+     * chmod: it returns EINVAL when calling fchmod on sockets. */
     ret = fchmod(this->socket, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP);
     if (ret == -1) {
         int err = errno;
@@ -178,6 +179,7 @@ int UnixNew(UnixCommand * this)
                      strerror(err),
                      err);
     }
+#endif
     /* set reuse option */
     ret = setsockopt(this->socket, SOL_SOCKET, SO_REUSEADDR,
                      (char *) &on, sizeof(on));
@@ -579,7 +581,7 @@ int UnixMain(UnixCommand * this)
         return 0;
     }
 
-    if (suricata_ctl_flags & (SURICATA_STOP | SURICATA_KILL)) {
+    if (suricata_ctl_flags & SURICATA_STOP) {
         TAILQ_FOREACH_SAFE(uclient, &this->clients, next, tclient) {
             UnixCommandClose(this, uclient->fd);
         }
@@ -662,7 +664,7 @@ TmEcode UnixManagerVersionCommand(json_t *cmd,
     SCEnter();
     json_object_set_new(server_msg, "message", json_string(
 #ifdef REVISION
-                        PROG_VER  xstr(REVISION)
+                        PROG_VER " (rev "  xstr(REVISION) ")"
 #elif defined RELEASE
                         PROG_VER " RELEASE"
 #else

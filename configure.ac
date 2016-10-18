@@ -1,4 +1,4 @@
-    AC_INIT(suricata, 3.1dev)
+    AC_INIT(suricata, 3.2dev)
     m4_ifndef([AM_SILENT_RULES], [m4_define([AM_SILENT_RULES],[])])AM_SILENT_RULES([yes])
     m4_ifndef([AS_VERSION_COMPARE], [AC_DEFUN([AS_VERSION_COMPARE],[])])
     AC_CONFIG_HEADERS([config.h])
@@ -761,6 +761,10 @@
                            [ enable_nflog="no"])
     AC_ARG_ENABLE(nfqueue,
            AS_HELP_STRING([--enable-nfqueue], [Enable NFQUEUE support for inline IDP]),[enable_nfqueue=yes],[enable_nfqueue=no])
+    if test "$enable_nfqueue" != "no"; then
+        PKG_CHECK_MODULES([libnetfilter_queue], [libnetfilter_queue], [enable_nfqueue=yes], [enable_nfqueue=no])
+        CPPFLAGS="${CPPFLAGS} ${libnetfilter_queue_CFLAGS}"
+    fi
 
     if test "x$enable_nflog" = "xyes" || test  "x$enable_nfqueue" = "xyes"; then
   # libnfnetlink
@@ -1854,7 +1858,8 @@
             echo "   from https://github.com/redis/hiredis or your distribution:"
             echo
             echo "   Ubuntu: apt-get install libhiredis-dev"
-            echo "   Fedora: yum install libhiredis-devel"
+            echo "   Fedora: dnf install hiredis-devel"
+            echo "   RHEL/CentOS: yum install hiredis-devel"
             echo
             exit 1
         fi
@@ -1876,6 +1881,17 @@
     else
         AC_DEFINE([CLS],[64],[L1 cache line size])
     fi
+
+# sphinx for documentation
+    AC_PATH_PROG(HAVE_SPHINXBUILD, sphinx-build, "no")
+    if test "$HAVE_SPHINXBUILD" = "no"; then
+       enable_sphinxbuild=no
+       if test -e "$srcdir/doc/userguide/suricata.1"; then
+           have_suricata_man=yes
+       fi
+    fi
+    AM_CONDITIONAL([HAVE_SPHINXBUILD], [test "x$enable_sphinxbuild" != "xno"])
+    AM_CONDITIONAL([HAVE_SURICATA_MAN], [test "x$have_suricata_man" = "xyes"])
 
 # get revision
     if test -f ./revision; then
@@ -1924,7 +1940,6 @@ if test "$WINDOWS_PATH" = "yes"; then
   e_sysconfdir="$e_winbase\\\\"
   e_sysconfrulesdir="$e_winbase\\\\rules\\\\"
   e_magic_file="$e_winbase\\\\magic.mgc"
-  e_magic_file_comment=""
   e_logdir="$e_winbase\\\\log"
   e_logfilesdir="$e_logdir\\\\files"
   e_logcertsdir="$e_logdir\\\\certs"
@@ -1956,7 +1971,7 @@ AC_SUBST(CONFIGURE_PREFIX)
 AC_SUBST(CONFIGURE_SYSCONDIR)
 AC_SUBST(CONFIGURE_LOCALSTATEDIR)
 
-AC_OUTPUT(Makefile src/Makefile qa/Makefile qa/coccinelle/Makefile rules/Makefile doc/Makefile contrib/Makefile contrib/file_processor/Makefile contrib/file_processor/Action/Makefile contrib/file_processor/Processor/Makefile contrib/tile_pcie_logd/Makefile suricata.yaml scripts/Makefile scripts/suricatasc/Makefile scripts/suricatasc/suricatasc)
+AC_OUTPUT(Makefile src/Makefile qa/Makefile qa/coccinelle/Makefile rules/Makefile doc/Makefile doc/userguide/Makefile contrib/Makefile contrib/file_processor/Makefile contrib/file_processor/Action/Makefile contrib/file_processor/Processor/Makefile contrib/tile_pcie_logd/Makefile suricata.yaml scripts/Makefile scripts/suricatasc/Makefile scripts/suricatasc/suricatasc)
 
 SURICATA_BUILD_CONF="Suricata Configuration:
   AF_PACKET support:                       ${enable_af_packet}

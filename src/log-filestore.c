@@ -46,6 +46,7 @@
 #include "util-atomic.h"
 #include "util-file.h"
 #include "util-time.h"
+#include "util-misc.h"
 
 #include "output.h"
 
@@ -261,6 +262,22 @@ static void LogFilestoreLogCloseMetaFile(const File *ff)
                     }
                     fprintf(fp, "\n");
                 }
+                if (ff->flags & FILE_SHA1) {
+                    fprintf(fp, "SHA1:              ");
+                    size_t x;
+                    for (x = 0; x < sizeof(ff->sha1); x++) {
+                        fprintf(fp, "%02x", ff->sha1[x]);
+                    }
+                    fprintf(fp, "\n");
+                }
+                if (ff->flags & FILE_SHA256) {
+                    fprintf(fp, "SHA256:            ");
+                    size_t x;
+                    for (x = 0; x < sizeof(ff->sha256); x++) {
+                        fprintf(fp, "%02x", ff->sha256[x]);
+                    }
+                    fprintf(fp, "\n");
+                }
 #endif
                 break;
             case FILE_STATE_TRUNCATED:
@@ -465,36 +482,35 @@ static OutputCtx *LogFilestoreLogInitCtx(ConfNode *conf)
         SCLogInfo("forcing magic lookup for stored files");
     }
 
-    const char *force_md5 = ConfNodeLookupChildValue(conf, "force-md5");
-    if (force_md5 != NULL && ConfValIsTrue(force_md5)) {
-#ifdef HAVE_NSS
-        FileForceMd5Enable();
-        SCLogInfo("forcing md5 calculation for stored files");
-#else
-        SCLogInfo("md5 calculation requires linking against libnss");
-#endif
-    }
+    FileForceHashParseCfg(conf);
     SCLogInfo("storing files in %s", g_logfile_base_dir);
+
+    const char *stream_depth_str = ConfNodeLookupChildValue(conf, "stream-depth");
+    if (stream_depth_str != NULL && strcmp(stream_depth_str, "no")) {
+        uint32_t stream_depth = 0;
+        if (ParseSizeStringU32(stream_depth_str,
+                               &stream_depth) < 0) {
+            SCLogError(SC_ERR_SIZE_PARSE, "Error parsing "
+                       "file-store.stream-depth "
+                       "from conf file - %s.  Killing engine",
+                       stream_depth_str);
+            exit(EXIT_FAILURE);
+        } else {
+            FileReassemblyDepthEnable(stream_depth);
+        }
+    }
 
     SCReturnPtr(output_ctx, "OutputCtx");
 }
 
-void TmModuleLogFilestoreRegister (void)
+void LogFilestoreRegister (void)
 {
-    tmm_modules[TMM_FILESTORE].name = MODULE_NAME;
-    tmm_modules[TMM_FILESTORE].ThreadInit = LogFilestoreLogThreadInit;
-    tmm_modules[TMM_FILESTORE].Func = NULL;
-    tmm_modules[TMM_FILESTORE].ThreadExitPrintStats = LogFilestoreLogExitPrintStats;
-    tmm_modules[TMM_FILESTORE].ThreadDeinit = LogFilestoreLogThreadDeinit;
-    tmm_modules[TMM_FILESTORE].RegisterTests = NULL;
-    tmm_modules[TMM_FILESTORE].cap_flags = 0;
-    tmm_modules[TMM_FILESTORE].flags = TM_FLAG_LOGAPI_TM;
-    tmm_modules[TMM_FILESTORE].priority = 10;
-
-    OutputRegisterFiledataModule(MODULE_NAME, "file", LogFilestoreLogInitCtx,
-            LogFilestoreLogger);
-    OutputRegisterFiledataModule(MODULE_NAME, "file-store", LogFilestoreLogInitCtx,
-            LogFilestoreLogger);
+    OutputRegisterFiledataModule(LOGGER_FILE_STORE, MODULE_NAME, "file",
+        LogFilestoreLogInitCtx, LogFilestoreLogger, LogFilestoreLogThreadInit,
+        LogFilestoreLogThreadDeinit, LogFilestoreLogExitPrintStats);
+    OutputRegisterFiledataModule(LOGGER_FILE_STORE, MODULE_NAME, "file-store",
+        LogFilestoreLogInitCtx, LogFilestoreLogger, LogFilestoreLogThreadInit,
+        LogFilestoreLogThreadDeinit, LogFilestoreLogExitPrintStats);
 
     SCLogDebug("registered");
 }

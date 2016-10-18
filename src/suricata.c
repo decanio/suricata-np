@@ -73,37 +73,6 @@
 #include "conf.h"
 #include "conf-yaml-loader.h"
 
-#include "alert-fastlog.h"
-#include "alert-unified2-alert.h"
-#include "alert-debuglog.h"
-#include "alert-prelude.h"
-#include "alert-syslog.h"
-#include "output-json-alert.h"
-
-#include "output-json-flow.h"
-#include "output-json-netflow.h"
-#include "log-droplog.h"
-#include "output-json-drop.h"
-#include "log-httplog.h"
-#include "output-json-http.h"
-#include "log-dnslog.h"
-#include "output-json-dns.h"
-#include "log-tlslog.h"
-#include "log-tlsstore.h"
-#include "output-json-tls.h"
-#include "output-json-ssh.h"
-#include "log-pcap.h"
-#include "log-file.h"
-#include "output-json-file.h"
-#include "output-json-smtp.h"
-#include "output-json-stats.h"
-#include "log-filestore.h"
-#include "log-tcp-data.h"
-#include "log-stats.h"
-
-#include "output-json.h"
-
-#include "output-json-template.h"
 
 #include "stream-tcp.h"
 
@@ -153,6 +122,7 @@
 #include "app-layer-smtp.h"
 #include "app-layer-smb.h"
 #include "app-layer-modbus.h"
+#include "app-layer-enip.h"
 
 #include "util-decode-der.h"
 #include "util-radix-tree.h"
@@ -186,13 +156,6 @@
 #include "reputation.h"
 
 #include "output.h"
-#include "output-lua.h"
-
-#include "output-packet.h"
-#include "output-tx.h"
-#include "output-file.h"
-#include "output-filedata.h"
-#include "output-streaming.h"
 
 #include "util-privs.h"
 
@@ -303,7 +266,11 @@ static void SignalHandlerSigterm(/*@unused@*/ int sig)
  */
 static void SignalHandlerSigusr2(int sig)
 {
-    sigusr2_count = 1;
+    if (sigusr2_count < 16) {
+        sigusr2_count++;
+    } else {
+        SCLogWarning(SC_ERR_LIVE_RULE_SWAP, "Too many USR2 signals pending, ignoring new ones!");
+    }
 }
 
 /**
@@ -367,17 +334,12 @@ void GlobalInits()
     CreateLowercaseTable();
 }
 
-/* XXX hack: make sure threads can stop the engine by calling this
-   function. Purpose: pcap file mode needs to be able to tell the
-   engine the file eof is reached. */
+/** \brief make sure threads can stop the engine by calling this
+ *  function. Purpose: pcap file mode needs to be able to tell the
+ *  engine the file eof is reached. */
 void EngineStop(void)
 {
     suricata_ctl_flags |= SURICATA_STOP;
-}
-
-void EngineKill(void)
-{
-    suricata_ctl_flags |= SURICATA_KILL;
 }
 
 /**
@@ -484,11 +446,15 @@ static void SetBpfStringFromFile(char *filename)
     }
     memset(bpf_filter, 0x00, bpf_len);
 
-    nm = fread(bpf_filter, bpf_len - 1, 1, fp);
-    if((ferror(fp) != 0)||( nm != 1)) {
-        *bpf_filter='\0';
+    nm = fread(bpf_filter, 1, bpf_len - 1, fp);
+    if ((ferror(fp) != 0) || (nm != (bpf_len - 1))) {
+        SCLogError(SC_ERR_BPF, "Failed to read complete BPF file %s", filename);
+        SCFree(bpf_filter);
+        fclose(fp);
+        exit(EXIT_FAILURE);
     }
     fclose(fp);
+    bpf_filter[nm] = '\0';
 
     if(strlen(bpf_filter) > 0) {
         /*replace comments with space*/
@@ -508,10 +474,18 @@ static void SetBpfStringFromFile(char *filename)
         while((bpf_comment_tmp = strchr(bpf_filter, '\n')) != NULL) {
             *bpf_comment_tmp = ' ';
         }
-        if(ConfSetFinal("bpf-filter", bpf_filter) != 1) {
-            SCLogError(SC_ERR_FOPEN, "ERROR: Failed to set bpf filter!");
-            SCFree(bpf_filter);
-            exit(EXIT_FAILURE);
+        /* cut trailing spaces */
+        while (strlen(bpf_filter) > 0 &&
+                bpf_filter[strlen(bpf_filter)-1] == ' ')
+        {
+            bpf_filter[strlen(bpf_filter)-1] = '\0';
+        }
+        if (strlen(bpf_filter) > 0) {
+            if(ConfSetFinal("bpf-filter", bpf_filter) != 1) {
+                SCLogError(SC_ERR_FOPEN, "ERROR: Failed to set bpf filter!");
+                SCFree(bpf_filter);
+                exit(EXIT_FAILURE);
+            }
         }
     }
     SCFree(bpf_filter);
@@ -860,64 +834,10 @@ void RegisterAllModules()
     /* respond-reject */
     TmModuleRespondRejectRegister();
 
-    TmModuleLuaLogRegister();
-    /* fast log */
-    TmModuleAlertFastLogRegister();
-    /* debug log */
-    TmModuleAlertDebugLogRegister();
-    /* prelue log */
-    TmModuleAlertPreludeRegister();
-    /* syslog log */
-    TmModuleAlertSyslogRegister();
-    /* unified2 log */
-    TmModuleUnified2AlertRegister();
-    /* drop log */
-    TmModuleLogDropLogRegister();
-    TmModuleJsonDropLogRegister();
-    /* json log */
-    TmModuleOutputJsonRegister();
-    /* email logs */
-    TmModuleJsonSmtpLogRegister();
-    /* http log */
-    TmModuleLogHttpLogRegister();
-    TmModuleJsonHttpLogRegister();
-    /* tls log */
-    TmModuleLogTlsLogRegister();
-    TmModuleJsonTlsLogRegister();
-    TmModuleLogTlsStoreRegister();
-    /* ssh */
-    TmModuleJsonSshLogRegister();
-    /* pcap log */
-    TmModulePcapLogRegister();
-    /* file log */
-    TmModuleLogFileLogRegister();
-    TmModuleJsonFileLogRegister();
-    TmModuleLogFilestoreRegister();
-    /* dns log */
-    TmModuleLogDnsLogRegister();
-    TmModuleJsonDnsLogRegister();
-    /* tcp streaming data */
-    TmModuleLogTcpDataLogRegister();
-    /* log stats */
-    TmModuleLogStatsLogRegister();
-
-    TmModuleJsonAlertLogRegister();
-    /* flow/netflow */
-    TmModuleJsonFlowLogRegister();
-    TmModuleJsonNetFlowLogRegister();
-    /* json stats */
-    TmModuleJsonStatsLogRegister();
-
-    /* Template JSON logger. */
-    TmModuleJsonTemplateLogRegister();
-
     /* log api */
-    TmModulePacketLoggerRegister();
-    TmModuleTxLoggerRegister();
-    TmModuleFileLoggerRegister();
-    TmModuleFiledataLoggerRegister();
-    TmModuleStreamingLoggerRegister();
+    TmModuleLoggerRegister();
     TmModuleStatsLoggerRegister();
+
     TmModuleDebugList();
     /* nflog */
     TmModuleReceiveNFLOGRegister();
@@ -1239,6 +1159,8 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
         {"afl-smb", required_argument, 0 , 0},
         {"afl-modbus-request", required_argument, 0 , 0},
         {"afl-modbus", required_argument, 0 , 0},
+        {"afl-enip-request", required_argument, 0 , 0},
+        {"afl-enip", required_argument, 0 , 0},
         {"afl-mime", required_argument, 0 , 0},
 
         {"afl-decoder-ppp", required_argument, 0 , 0},
@@ -1509,6 +1431,16 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
                 AppLayerParserSetup();
                 RegisterModbusParsers();
                 exit(AppLayerParserFromFile(ALPROTO_MODBUS, optarg));
+            } else if(strcmp((long_opts[option_index]).name, "afl-enip-request") == 0) {
+                //printf("arg: //%s\n", optarg);
+                AppLayerParserSetup();
+                RegisterENIPTCPParsers();
+                exit(AppLayerParserRequestFromFile(ALPROTO_ENIP, optarg));
+            } else if(strcmp((long_opts[option_index]).name, "afl-enip") == 0) {
+                //printf("arg: //%s\n", optarg);
+                AppLayerParserSetup();
+                RegisterENIPTCPParsers();
+                exit(AppLayerParserFromFile(ALPROTO_ENIP, optarg));
 #endif
 #ifdef AFLFUZZ_MIME
             } else if(strcmp((long_opts[option_index]).name, "afl-mime") == 0) {
@@ -2282,6 +2214,25 @@ static int PostConfLoadedSetup(SCInstance *suri)
 #endif
     SpmTableSetup();
 
+    int disable_offloading;
+    if (ConfGetBool("capture.disable-offloading", &disable_offloading) == 0)
+        disable_offloading = 1;
+    if (disable_offloading) {
+        LiveSetOffloadDisable();
+    } else {
+        LiveSetOffloadWarn();
+    }
+
+    if (suri->checksum_validation == -1) {
+        char *cv = NULL;
+        if (ConfGet("capture.checksum-validation", &cv) == 1) {
+            if (strcmp(cv, "none") == 0) {
+                suri->checksum_validation = 0;
+            } else if (strcmp(cv, "all") == 0) {
+                suri->checksum_validation = 1;
+            }
+        }
+    }
     switch (suri->checksum_validation) {
         case 0:
             ConfSet("stream.checksum-validation", "0");
@@ -2398,13 +2349,9 @@ static int PostConfLoadedSetup(SCInstance *suri)
 
     AppLayerHtpNeedFileInspection();
 
-    DetectEngineRegisterAppInspectionEngines();
-
     StorageFinalize();
 
     TmModuleRunInit();
-
-    PcapLogProfileSetup();
 
     if (MayDaemonize(suri) != TM_ECODE_OK)
         SCReturnInt(TM_ECODE_FAILED);
@@ -2415,7 +2362,7 @@ static int PostConfLoadedSetup(SCInstance *suri)
 
 #ifdef HAVE_NSS
     if (suri->run_mode != RUNMODE_CONF_TEST) {
-        /* init NSS for md5 */
+        /* init NSS for hashing */
         PR_Init(PR_USER_THREAD, PR_PRIORITY_NORMAL, 0);
         NSS_NoDB_Init(NULL);
     }
@@ -2463,7 +2410,6 @@ int main(int argc, char **argv)
     /* By default use IDS mode, but if nfq or ipfw
      * are specified, IPS mode will overwrite this */
     EngineModeSetIDS();
-
 
 #ifdef OS_WIN32
     /* service initialization */
@@ -2603,9 +2549,7 @@ int main(int argc, char **argv)
     /* In Unix socket runmode, Flow manager is started on demand */
     if (suri.run_mode != RUNMODE_UNIX_SOCKET) {
         /* Spawn the unix socket manager thread */
-        int unix_socket = 0;
-        if (ConfGetBool("unix-command.enabled", &unix_socket) != 1)
-            unix_socket = 0;
+        int unix_socket = ConfUnixSocketIsEnable();
         if (unix_socket == 1) {
             UnixManagerThreadSpawn(0);
 #ifdef BUILD_UNIX_SOCKET
@@ -2655,13 +2599,11 @@ int main(int argc, char **argv)
 
     int engine_retval = EXIT_SUCCESS;
     while(1) {
-        if (sigterm_count) {
-            suricata_ctl_flags |= SURICATA_KILL;
-        } else if (sigint_count) {
+        if (sigterm_count || sigint_count) {
             suricata_ctl_flags |= SURICATA_STOP;
         }
 
-        if (suricata_ctl_flags & (SURICATA_KILL | SURICATA_STOP)) {
+        if (suricata_ctl_flags & SURICATA_STOP) {
             SCLogNotice("Signal Received.  Stopping engine.");
             break;
         }

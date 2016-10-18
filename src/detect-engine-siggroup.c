@@ -36,6 +36,7 @@
 #include "detect-engine-address.h"
 #include "detect-engine-mpm.h"
 #include "detect-engine-siggroup.h"
+#include "detect-engine-prefilter.h"
 
 #include "detect-content.h"
 #include "detect-uricontent.h"
@@ -60,6 +61,14 @@ void SigGroupHeadInitDataFree(SigGroupHeadInitData *sghid)
         SCFree(sghid->sig_array);
         sghid->sig_array = NULL;
     }
+    if (sghid->app_mpms != NULL) {
+        SCFree(sghid->app_mpms);
+    }
+
+    PrefilterFreeEnginesList(sghid->tx_engines);
+    PrefilterFreeEnginesList(sghid->pkt_engines);
+    PrefilterFreeEnginesList(sghid->payload_engines);
+
     SCFree(sghid);
 }
 
@@ -151,16 +160,16 @@ void SigGroupHeadFree(SigGroupHead *sgh)
         sgh->match_array = NULL;
     }
 
-    if (sgh->non_mpm_other_store_array != NULL) {
-        SCFree(sgh->non_mpm_other_store_array);
-        sgh->non_mpm_other_store_array = NULL;
-        sgh->non_mpm_other_store_cnt = 0;
+    if (sgh->non_pf_other_store_array != NULL) {
+        SCFree(sgh->non_pf_other_store_array);
+        sgh->non_pf_other_store_array = NULL;
+        sgh->non_pf_other_store_cnt = 0;
     }
 
-    if (sgh->non_mpm_syn_store_array != NULL) {
-        SCFree(sgh->non_mpm_syn_store_array);
-        sgh->non_mpm_syn_store_array = NULL;
-        sgh->non_mpm_syn_store_cnt = 0;
+    if (sgh->non_pf_syn_store_array != NULL) {
+        SCFree(sgh->non_pf_syn_store_array);
+        sgh->non_pf_syn_store_array = NULL;
+        sgh->non_pf_syn_store_cnt = 0;
     }
 
     sgh->sig_cnt = 0;
@@ -170,6 +179,7 @@ void SigGroupHeadFree(SigGroupHead *sgh)
         sgh->init = NULL;
     }
 
+    PrefilterCleanupRuleGroup(sgh);
     SCFree(sgh);
 
     return;
@@ -516,7 +526,7 @@ int SigGroupHeadBuildMatchArray(DetectEngineCtx *de_ctx, SigGroupHead *sgh,
 }
 
 /**
- *  \brief Set the need md5 flag in the sgh.
+ *  \brief Set the need magic flag in the sgh.
  *
  *  \param de_ctx detection engine ctx for the signatures
  *  \param sgh sig group head to set the flag in
@@ -608,12 +618,12 @@ void SigGroupHeadSetFilesizeFlag(DetectEngineCtx *de_ctx, SigGroupHead *sgh)
 }
 
 /**
- *  \brief Set the need magic flag in the sgh.
+ *  \brief Set the need hash flag in the sgh.
  *
  *  \param de_ctx detection engine ctx for the signatures
  *  \param sgh sig group head to set the flag in
  */
-void SigGroupHeadSetFileMd5Flag(DetectEngineCtx *de_ctx, SigGroupHead *sgh)
+void SigGroupHeadSetFileHashFlag(DetectEngineCtx *de_ctx, SigGroupHead *sgh)
 {
     Signature *s = NULL;
     uint32_t sig = 0;
@@ -629,6 +639,18 @@ void SigGroupHeadSetFileMd5Flag(DetectEngineCtx *de_ctx, SigGroupHead *sgh)
         if (SignatureIsFileMd5Inspecting(s)) {
             sgh->flags |= SIG_GROUP_HEAD_HAVEFILEMD5;
             SCLogDebug("sgh %p has filemd5", sgh);
+            break;
+        }
+
+        if (SignatureIsFileSha1Inspecting(s)) {
+            sgh->flags |= SIG_GROUP_HEAD_HAVEFILESHA1;
+            SCLogDebug("sgh %p has filesha1", sgh);
+            break;
+        }
+
+        if (SignatureIsFileSha256Inspecting(s)) {
+            sgh->flags |= SIG_GROUP_HEAD_HAVEFILESHA256;
+            SCLogDebug("sgh %p has filesha256", sgh);
             break;
         }
     }
@@ -663,50 +685,50 @@ void SigGroupHeadSetFilestoreCount(DetectEngineCtx *de_ctx, SigGroupHead *sgh)
     return;
 }
 
-/** \brief build an array of rule id's for sigs with no mpm
- *  Also updated de_ctx::non_mpm_store_cnt_max to track the highest cnt
+/** \brief build an array of rule id's for sigs with no prefilter
+ *  Also updated de_ctx::non_pf_store_cnt_max to track the highest cnt
  */
-int SigGroupHeadBuildNonMpmArray(DetectEngineCtx *de_ctx, SigGroupHead *sgh)
+int SigGroupHeadBuildNonPrefilterArray(DetectEngineCtx *de_ctx, SigGroupHead *sgh)
 {
     Signature *s = NULL;
     uint32_t sig = 0;
-    uint32_t non_mpm = 0;
-    uint32_t non_mpm_syn = 0;
+    uint32_t non_pf = 0;
+    uint32_t non_pf_syn = 0;
 
     if (sgh == NULL)
         return 0;
 
-    BUG_ON(sgh->non_mpm_other_store_array != NULL);
+    BUG_ON(sgh->non_pf_other_store_array != NULL);
 
     for (sig = 0; sig < sgh->sig_cnt; sig++) {
         s = sgh->match_array[sig];
         if (s == NULL)
             continue;
 
-        if (s->mpm_sm == NULL || (s->flags & SIG_FLAG_MPM_NEG)) {
+        if (!(s->flags & SIG_FLAG_PREFILTER) || (s->flags & SIG_FLAG_MPM_NEG)) {
             if (!(DetectFlagsSignatureNeedsSynPackets(s))) {
-                non_mpm++;
+                non_pf++;
             }
-            non_mpm_syn++;
+            non_pf_syn++;
         }
     }
 
-    if (non_mpm == 0 && non_mpm_syn == 0) {
-        sgh->non_mpm_other_store_array = NULL;
-        sgh->non_mpm_syn_store_array = NULL;
+    if (non_pf == 0 && non_pf_syn == 0) {
+        sgh->non_pf_other_store_array = NULL;
+        sgh->non_pf_syn_store_array = NULL;
         return 0;
     }
 
-    if (non_mpm > 0) {
-        sgh->non_mpm_other_store_array = SCMalloc(non_mpm * sizeof(SignatureNonMpmStore));
-        BUG_ON(sgh->non_mpm_other_store_array == NULL);
-        memset(sgh->non_mpm_other_store_array, 0, non_mpm * sizeof(SignatureNonMpmStore));
+    if (non_pf > 0) {
+        sgh->non_pf_other_store_array = SCMalloc(non_pf * sizeof(SignatureNonPrefilterStore));
+        BUG_ON(sgh->non_pf_other_store_array == NULL);
+        memset(sgh->non_pf_other_store_array, 0, non_pf * sizeof(SignatureNonPrefilterStore));
     }
 
-    if (non_mpm_syn > 0) {
-        sgh->non_mpm_syn_store_array = SCMalloc(non_mpm_syn * sizeof(SignatureNonMpmStore));
-        BUG_ON(sgh->non_mpm_syn_store_array == NULL);
-        memset(sgh->non_mpm_syn_store_array, 0, non_mpm_syn * sizeof(SignatureNonMpmStore));
+    if (non_pf_syn > 0) {
+        sgh->non_pf_syn_store_array = SCMalloc(non_pf_syn * sizeof(SignatureNonPrefilterStore));
+        BUG_ON(sgh->non_pf_syn_store_array == NULL);
+        memset(sgh->non_pf_syn_store_array, 0, non_pf_syn * sizeof(SignatureNonPrefilterStore));
     }
 
     for (sig = 0; sig < sgh->sig_cnt; sig++) {
@@ -714,27 +736,27 @@ int SigGroupHeadBuildNonMpmArray(DetectEngineCtx *de_ctx, SigGroupHead *sgh)
         if (s == NULL)
             continue;
 
-        if (s->mpm_sm == NULL || (s->flags & SIG_FLAG_MPM_NEG)) {
+        if (!(s->flags & SIG_FLAG_PREFILTER) || (s->flags & SIG_FLAG_MPM_NEG)) {
             if (!(DetectFlagsSignatureNeedsSynPackets(s))) {
-                BUG_ON(sgh->non_mpm_other_store_cnt >= non_mpm);
-                BUG_ON(sgh->non_mpm_other_store_array == NULL);
-                sgh->non_mpm_other_store_array[sgh->non_mpm_other_store_cnt].id = s->num;
-                sgh->non_mpm_other_store_array[sgh->non_mpm_other_store_cnt].mask = s->mask;
-                sgh->non_mpm_other_store_cnt++;
+                BUG_ON(sgh->non_pf_other_store_cnt >= non_pf);
+                BUG_ON(sgh->non_pf_other_store_array == NULL);
+                sgh->non_pf_other_store_array[sgh->non_pf_other_store_cnt].id = s->num;
+                sgh->non_pf_other_store_array[sgh->non_pf_other_store_cnt].mask = s->mask;
+                sgh->non_pf_other_store_cnt++;
             }
 
-            BUG_ON(sgh->non_mpm_syn_store_cnt >= non_mpm_syn);
-            BUG_ON(sgh->non_mpm_syn_store_array == NULL);
-            sgh->non_mpm_syn_store_array[sgh->non_mpm_syn_store_cnt].id = s->num;
-            sgh->non_mpm_syn_store_array[sgh->non_mpm_syn_store_cnt].mask = s->mask;
-            sgh->non_mpm_syn_store_cnt++;
+            BUG_ON(sgh->non_pf_syn_store_cnt >= non_pf_syn);
+            BUG_ON(sgh->non_pf_syn_store_array == NULL);
+            sgh->non_pf_syn_store_array[sgh->non_pf_syn_store_cnt].id = s->num;
+            sgh->non_pf_syn_store_array[sgh->non_pf_syn_store_cnt].mask = s->mask;
+            sgh->non_pf_syn_store_cnt++;
         }
     }
 
     /* track highest cnt for any sgh in our de_ctx */
-    uint32_t max = MAX(sgh->non_mpm_other_store_cnt, sgh->non_mpm_syn_store_cnt);
-    if (max > de_ctx->non_mpm_store_cnt_max)
-        de_ctx->non_mpm_store_cnt_max = max;
+    uint32_t max = MAX(sgh->non_pf_other_store_cnt, sgh->non_pf_syn_store_cnt);
+    if (max > de_ctx->non_pf_store_cnt_max)
+        de_ctx->non_pf_store_cnt_max = max;
 
     return 0;
 }
@@ -1219,60 +1241,6 @@ end:
     UTHFreePackets(&p, 1);
     return result;
 }
-
-/**
- * \test sig grouping bug.
- */
-static int SigGroupHeadTest11(void)
-{
-    int result = 0;
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    Signature *s = NULL;
-    Packet *p = NULL;
-    DetectEngineThreadCtx *det_ctx = NULL;
-    ThreadVars th_v;
-
-    memset(&th_v, 0, sizeof(ThreadVars));
-
-    p = UTHBuildPacketReal(NULL, 0, IPPROTO_TCP, "192.168.1.1", "1.2.3.4", 60000, 80);
-
-    if (de_ctx == NULL || p == NULL)
-        return 0;
-
-    s = DetectEngineAppendSig(de_ctx, "alert tcp any 1024: -> any 1024: (content:\"abc\"; sid:1;)");
-    if (s == NULL) {
-        goto end;
-    }
-    s = DetectEngineAppendSig(de_ctx, "alert tcp any any -> any any (content:\"def\"; http_client_body; sid:2;)");
-    if (s == NULL) {
-        goto end;
-    }
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    AddressDebugPrint(&p->dst);
-
-    SigGroupHead *sgh = SigMatchSignaturesGetSgh(de_ctx, det_ctx, p);
-    if (sgh == NULL) {
-        goto end;
-    }
-
-    /* check if hcbd flag is set in sgh */
-    if (!(sgh->flags & SIG_GROUP_HEAD_MPM_HCBD)) {
-        printf("sgh has not SIG_GROUP_HEAD_MPM_HCBD flag set: ");
-        goto end;
-    }
-
-    /* check if sig 2 is part of the sgh */
-
-    result = 1;
-end:
-    SigCleanSignatures(de_ctx);
-    DetectEngineCtxFree(de_ctx);
-    UTHFreePackets(&p, 1);
-    return result;
-}
 #endif
 
 void SigGroupHeadRegisterTests(void)
@@ -1284,6 +1252,5 @@ void SigGroupHeadRegisterTests(void)
     UtRegisterTest("SigGroupHeadTest08", SigGroupHeadTest08);
     UtRegisterTest("SigGroupHeadTest09", SigGroupHeadTest09);
     UtRegisterTest("SigGroupHeadTest10", SigGroupHeadTest10);
-    UtRegisterTest("SigGroupHeadTest11", SigGroupHeadTest11);
 #endif
 }

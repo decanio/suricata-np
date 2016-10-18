@@ -177,9 +177,9 @@ void RunUnittests(int list_unittests, char *regex_arg)
     SCReferenceConfInit();
     SCClassConfInit();
 
-    RegisterAllModules();
+    UtInitialize();
 
-    DetectEngineRegisterAppInspectionEngines();
+    RegisterAllModules();
 
     HostBitInitCtx();
 
@@ -193,7 +193,6 @@ void RunUnittests(int list_unittests, char *regex_arg)
     AppLayerHtpEnableRequestBodyCallback();
     AppLayerHtpNeedFileInspection();
 
-    UtInitialize();
     UTHRegisterTests();
     StreamTcpRegisterTests();
     SigRegisterTests();

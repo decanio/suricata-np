@@ -290,6 +290,22 @@ static void LogFileWriteJsonRecord(LogFileLogThread *aft, const Packet *p, const
                 }
                 fprintf(fp, "\", ");
             }
+            if (ff->flags & FILE_SHA1) {
+                fprintf(fp, "\"sha1\": \"");
+                size_t x;
+                for (x = 0; x < sizeof(ff->sha1); x++) {
+                    fprintf(fp, "%02x", ff->sha1[x]);
+                }
+                fprintf(fp, "\", ");
+            }
+            if (ff->flags & FILE_SHA256) {
+                fprintf(fp, "\"sha256\": \"");
+                size_t x;
+                for (x = 0; x < sizeof(ff->sha256); x++) {
+                    fprintf(fp, "%02x", ff->sha256[x]);
+                }
+                fprintf(fp, "\", ");
+            }
 #endif
             break;
         case FILE_STATE_TRUNCATED:
@@ -428,16 +444,7 @@ static OutputCtx *LogFileLogInitCtx(ConfNode *conf)
         SCLogInfo("forcing magic lookup for logged files");
     }
 
-    const char *force_md5 = ConfNodeLookupChildValue(conf, "force-md5");
-    if (force_md5 != NULL && ConfValIsTrue(force_md5)) {
-#ifdef HAVE_NSS
-        FileForceMd5Enable();
-        SCLogInfo("forcing md5 calculation for logged files");
-#else
-        SCLogInfo("md5 calculation requires linking against libnss");
-#endif
-    }
-
+    FileForceHashParseCfg(conf);
     FileForceTrackingEnable();
     SCReturnPtr(output_ctx, "OutputCtx");
 }
@@ -453,19 +460,11 @@ int LogFileLogOpenFileCtx(LogFileCtx *file_ctx, const char *filename, const
     return 0;
 }
 
-void TmModuleLogFileLogRegister (void)
+void LogFileLogRegister (void)
 {
-    tmm_modules[TMM_FILELOG].name = MODULE_NAME;
-    tmm_modules[TMM_FILELOG].ThreadInit = LogFileLogThreadInit;
-    tmm_modules[TMM_FILELOG].Func = NULL;
-    tmm_modules[TMM_FILELOG].ThreadExitPrintStats = LogFileLogExitPrintStats;
-    tmm_modules[TMM_FILELOG].ThreadDeinit = LogFileLogThreadDeinit;
-    tmm_modules[TMM_FILELOG].RegisterTests = NULL;
-    tmm_modules[TMM_FILELOG].cap_flags = 0;
-    tmm_modules[TMM_FILELOG].flags = TM_FLAG_LOGAPI_TM;
-
-    OutputRegisterFileModule(MODULE_NAME, "file-log", LogFileLogInitCtx,
-            LogFileLogger);
+    OutputRegisterFileModule(LOGGER_FILE, MODULE_NAME, "file-log",
+        LogFileLogInitCtx, LogFileLogger, LogFileLogThreadInit,
+        LogFileLogThreadDeinit, LogFileLogExitPrintStats);
 
     SCLogDebug("registered");
 }

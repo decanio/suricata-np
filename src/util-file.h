@@ -29,18 +29,24 @@
 #include <sechash.h>
 #endif
 
+#include "conf.h"
+
 #include "util-streaming-buffer.h"
 
-#define FILE_TRUNCATED  0x0001
-#define FILE_NOMAGIC    0x0002
-#define FILE_NOMD5      0x0004
-#define FILE_MD5        0x0008
-#define FILE_LOGGED     0x0010
-#define FILE_NOSTORE    0x0020
-#define FILE_STORE      0x0040
-#define FILE_STORED     0x0080
-#define FILE_NOTRACK    0x0100 /**< track size of file */
-#define FILE_USE_DETECT 0x0200 /**< use content_inspected tracker */
+#define FILE_TRUNCATED  BIT_U16(0)
+#define FILE_NOMAGIC    BIT_U16(1)
+#define FILE_NOMD5      BIT_U16(2)
+#define FILE_MD5        BIT_U16(3)
+#define FILE_NOSHA1     BIT_U16(4)
+#define FILE_SHA1       BIT_U16(5)
+#define FILE_NOSHA256   BIT_U16(6)
+#define FILE_SHA256     BIT_U16(7)
+#define FILE_LOGGED     BIT_U16(8)
+#define FILE_NOSTORE    BIT_U16(9)
+#define FILE_STORE      BIT_U16(10)
+#define FILE_STORED     BIT_U16(11)
+#define FILE_NOTRACK    BIT_U16(12) /**< track size of file */
+#define FILE_USE_DETECT BIT_U16(13) /**< use content_inspected tracker */
 
 typedef enum FileState_ {
     FILE_STATE_NONE = 0,    /**< no state */
@@ -66,6 +72,10 @@ typedef struct File_ {
 #ifdef HAVE_NSS
     HASHContext *md5_ctx;
     uint8_t md5[MD5_LENGTH];
+    HASHContext *sha1_ctx;
+    uint8_t sha1[SHA1_LENGTH];
+    HASHContext *sha256_ctx;
+    uint8_t sha256[SHA256_LENGTH];
 #endif
     uint64_t content_inspected;     /**< used in pruning if FILE_USE_DETECT
                                      *   flag is set */
@@ -172,6 +182,8 @@ void FilePrune(FileContainer *ffc);
 
 void FileForceFilestoreEnable(void);
 int FileForceFilestore(void);
+void FileReassemblyDepthEnable(uint32_t size);
+uint32_t FileReassemblyDepth(void);
 
 void FileDisableMagic(Flow *f, uint8_t);
 void FileForceMagicEnable(void);
@@ -180,6 +192,16 @@ int FileForceMagic(void);
 void FileDisableMd5(Flow *f, uint8_t);
 void FileForceMd5Enable(void);
 int FileForceMd5(void);
+
+void FileDisableSha1(Flow *f, uint8_t);
+void FileForceSha1Enable(void);
+int FileForceSha1(void);
+
+void FileDisableSha256(Flow *f, uint8_t);
+void FileForceSha256Enable(void);
+int FileForceSha256(void);
+
+void FileForceHashParseCfg(ConfNode *);
 
 void FileForceTrackingEnable(void);
 
@@ -190,5 +212,7 @@ void FileStoreFileById(FileContainer *fc, uint32_t);
 void FileTruncateAllOpenFiles(FileContainer *);
 
 uint64_t FileSize(const File *file);
+
+uint16_t FileFlowToFlags(const Flow *flow, uint8_t direction);
 
 #endif /* __UTIL_FILE_H__ */

@@ -69,7 +69,6 @@ void DetectFilemagicRegister(void)
     sigmatch_table[DETECT_FILEMAGIC].desc = "match on the information libmagic returns about a file";
     sigmatch_table[DETECT_FILEMAGIC].url = "https://redmine.openinfosecfoundation.org/projects/suricata/wiki/File-keywords#filemagic";
     sigmatch_table[DETECT_FILEMAGIC].FileMatch = DetectFilemagicMatch;
-    sigmatch_table[DETECT_FILEMAGIC].alproto = ALPROTO_HTTP;
     sigmatch_table[DETECT_FILEMAGIC].Setup = DetectFilemagicSetup;
     sigmatch_table[DETECT_FILEMAGIC].Free  = DetectFilemagicFree;
     sigmatch_table[DETECT_FILEMAGIC].RegisterTests = DetectFilemagicRegisterTests;
@@ -338,11 +337,6 @@ static int DetectFilemagicSetup (DetectEngineCtx *de_ctx, Signature *s, char *st
     DetectFilemagicData *filemagic = NULL;
     SigMatch *sm = NULL;
 
-    if (s->alproto != ALPROTO_HTTP && s->alproto != ALPROTO_SMTP) {
-        SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rules with filemagic need to have protocol set to http or smtp.");
-        goto error;
-    }
-
     filemagic = DetectFilemagicParse(str);
     if (filemagic == NULL)
         goto error;
@@ -363,10 +357,6 @@ static int DetectFilemagicSetup (DetectEngineCtx *de_ctx, Signature *s, char *st
     sm->ctx = (void *)filemagic;
 
     SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_FILEMATCH);
-
-    if (s->alproto == ALPROTO_HTTP) {
-        AppLayerHtpNeedFileInspection();
-    }
 
     s->file_flags |= (FILE_SIG_NEED_FILE|FILE_SIG_NEED_MAGIC);
     return 0;

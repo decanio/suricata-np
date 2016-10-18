@@ -52,6 +52,7 @@
 
 #include "app-layer-htp.h"
 #include "detect-http-raw-uri.h"
+#include "detect-engine-hrud.h"
 #include "stream-tcp.h"
 
 static int DetectHttpRawUriSetup(DetectEngineCtx *, Signature *, char *);
@@ -67,12 +68,19 @@ void DetectHttpRawUriRegister(void)
     sigmatch_table[DETECT_AL_HTTP_RAW_URI].url = "https://redmine.openinfosecfoundation.org/projects/suricata/wiki/HTTP-keywords#http_uri-and-http_raw_uri";
     sigmatch_table[DETECT_AL_HTTP_RAW_URI].Match = NULL;
     sigmatch_table[DETECT_AL_HTTP_RAW_URI].AppLayerMatch = NULL;
-    sigmatch_table[DETECT_AL_HTTP_RAW_URI].alproto = ALPROTO_HTTP;
     sigmatch_table[DETECT_AL_HTTP_RAW_URI].Setup = DetectHttpRawUriSetup;
     sigmatch_table[DETECT_AL_HTTP_RAW_URI].Free = NULL;
     sigmatch_table[DETECT_AL_HTTP_RAW_URI].RegisterTests = DetectHttpRawUriRegisterTests;
     sigmatch_table[DETECT_AL_HTTP_RAW_URI].flags |= SIGMATCH_NOOPT;
     sigmatch_table[DETECT_AL_HTTP_RAW_URI].flags |= SIGMATCH_PAYLOAD;
+
+    DetectMpmAppLayerRegister("http_raw_uri", SIG_FLAG_TOSERVER,
+            DETECT_SM_LIST_HRUDMATCH, 2,
+            PrefilterTxRawUriRegister);
+
+    DetectAppLayerInspectEngineRegister(ALPROTO_HTTP, SIG_FLAG_TOSERVER,
+            DETECT_SM_LIST_HRUDMATCH,
+            DetectEngineInspectHttpRawUri);
 
     return;
 }

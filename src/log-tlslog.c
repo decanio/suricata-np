@@ -110,6 +110,22 @@ static void LogTlsLogExtended(LogTlsLogThread *aft, SSLState * state)
                                  state->server_connp.version);
             break;
     }
+    if (state->server_connp.cert0_not_before != 0) {
+        char timebuf[64];
+        struct timeval tv;
+        tv.tv_sec = state->server_connp.cert0_not_before;
+        tv.tv_usec = 0;
+        CreateUtcIsoTimeString(&tv, timebuf, sizeof(timebuf));
+        MemBufferWriteString(aft->buffer, " NOTBEFORE='%s'", timebuf);
+    }
+    if (state->server_connp.cert0_not_after != 0) {
+        char timebuf[64];
+        struct timeval tv;
+        tv.tv_sec = state->server_connp.cert0_not_after;
+        tv.tv_usec = 0;
+        CreateUtcIsoTimeString(&tv, timebuf, sizeof(timebuf));
+        MemBufferWriteString(aft->buffer, " NOTAFTER='%s'", timebuf);
+    }
     MemBufferWriteString(aft->buffer, "\n");
 }
 
@@ -312,16 +328,10 @@ static int LogTlsLogger(ThreadVars *tv, void *thread_data, const Packet *p,
     return 0;
 }
 
-void TmModuleLogTlsLogRegister(void)
+void LogTlsLogRegister(void)
 {
-    tmm_modules[TMM_LOGTLSLOG].name = MODULE_NAME;
-    tmm_modules[TMM_LOGTLSLOG].ThreadInit = LogTlsLogThreadInit;
-    tmm_modules[TMM_LOGTLSLOG].ThreadExitPrintStats = LogTlsLogExitPrintStats;
-    tmm_modules[TMM_LOGTLSLOG].ThreadDeinit = LogTlsLogThreadDeinit;
-    tmm_modules[TMM_LOGTLSLOG].RegisterTests = NULL;
-    tmm_modules[TMM_LOGTLSLOG].cap_flags = 0;
-    tmm_modules[TMM_LOGTLSLOG].flags = TM_FLAG_LOGAPI_TM;
-
-    OutputRegisterTxModuleWithProgress(MODULE_NAME, "tls-log", LogTlsLogInitCtx,
-            ALPROTO_TLS, LogTlsLogger, TLS_HANDSHAKE_DONE, TLS_HANDSHAKE_DONE);
+    OutputRegisterTxModuleWithProgress(LOGGER_TLS, MODULE_NAME, "tls-log",
+        LogTlsLogInitCtx, ALPROTO_TLS, LogTlsLogger, TLS_HANDSHAKE_DONE,
+        TLS_HANDSHAKE_DONE, LogTlsLogThreadInit, LogTlsLogThreadDeinit,
+        LogTlsLogExitPrintStats);
 }

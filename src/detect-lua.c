@@ -309,13 +309,8 @@ int DetectLuaMatchBuffer(DetectEngineThreadCtx *det_ctx, Signature *s, SigMatch 
     if (tluajit == NULL)
         SCReturnInt(0);
 
-    /* setup extension data for use in lua c functions */
-    int flow_lock = (f != NULL) ? /* if we have a flow, it's locked */
-        LUA_FLOW_LOCKED_BY_PARENT :
-        LUA_FLOW_NOT_LOCKED_BY_PARENT;
-
     LuaExtensionsMatchSetup(tluajit->luastate, luajit, det_ctx,
-            f, flow_lock, /* no packet in the ctx */NULL, 0);
+            f, /* no packet in the ctx */NULL, 0);
 
     /* prepare data to pass to script */
     lua_getglobal(tluajit->luastate, "match");
@@ -424,12 +419,8 @@ static int DetectLuaMatch (ThreadVars *tv, DetectEngineThreadCtx *det_ctx,
 
     LuaStateSetThreadVars(tluajit->luastate, tv);
 
-    int flow_lock = (p->flow != NULL) ? /* if we have a flow, it's locked */
-        LUA_FLOW_LOCKED_BY_PARENT :
-        LUA_FLOW_NOT_LOCKED_BY_PARENT;
-
     LuaExtensionsMatchSetup(tluajit->luastate, luajit, det_ctx,
-            p->flow, flow_lock, p, flags);
+            p->flow, p, flags);
 
     if ((tluajit->flags & DATATYPE_PAYLOAD) && p->payload_len == 0)
         SCReturnInt(0);
@@ -554,8 +545,7 @@ static int DetectLuaAppMatchCommon (ThreadVars *t, DetectEngineThreadCtx *det_ct
 
     /* setup extension data for use in lua c functions */
     LuaExtensionsMatchSetup(tluajit->luastate, luajit, det_ctx,
-            f, /* flow is locked */LUA_FLOW_LOCKED_BY_PARENT,
-            NULL, flags);
+            f, NULL, flags);
 
     if (tluajit->alproto != ALPROTO_UNKNOWN) {
         int alproto = f->alproto;
@@ -1119,7 +1109,7 @@ static int DetectLuaSetup (DetectEngineCtx *de_ctx, Signature *s, char *str)
         else if (luajit->flags & DATATYPE_HTTP_RESPONSE_COOKIE)
             SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_HCDMATCH);
         else
-            SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_HRLMATCH);
+            SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_HTTP_REQLINEMATCH);
     } else if (luajit->alproto == ALPROTO_DNS) {
         if (luajit->flags & DATATYPE_DNS_RRNAME) {
             SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_DNSQUERYNAME_MATCH);
@@ -1284,14 +1274,15 @@ static int LuaMatchTest01(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_HTTP, STREAM_TOSERVER, httpbuf1, httplen1);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP,
+                                STREAM_TOSERVER, httpbuf1, httplen1);
     if (r != 0) {
         printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        SCMutexUnlock(&f.m);
+        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_UNLOCK(&f);
     HtpState *http_state = f.alstate;
     if (http_state == NULL) {
         printf("no http state: ");
@@ -1307,14 +1298,15 @@ static int LuaMatchTest01(void)
         goto end;
     }
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_HTTP, STREAM_TOSERVER, httpbuf2, httplen2);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP,
+                            STREAM_TOSERVER, httpbuf2, httplen2);
     if (r != 0) {
         printf("toserver chunk 2 returned %" PRId32 ", expected 0: ", r);
-        SCMutexUnlock(&f.m);
+        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_UNLOCK(&f);
     /* do detect for p2 */
     SCLogDebug("inspecting p2");
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p2);
@@ -1718,14 +1710,15 @@ static int LuaMatchTest04(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_HTTP, STREAM_TOSERVER, httpbuf1, httplen1);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP,
+                                STREAM_TOSERVER, httpbuf1, httplen1);
     if (r != 0) {
         printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        SCMutexUnlock(&f.m);
+        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_UNLOCK(&f);
     HtpState *http_state = f.alstate;
     if (http_state == NULL) {
         printf("no http state: ");
@@ -1741,14 +1734,15 @@ static int LuaMatchTest04(void)
         goto end;
     }
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_HTTP, STREAM_TOSERVER, httpbuf2, httplen2);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP,
+                            STREAM_TOSERVER, httpbuf2, httplen2);
     if (r != 0) {
         printf("toserver chunk 2 returned %" PRId32 ", expected 0: ", r);
-        SCMutexUnlock(&f.m);
+        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_UNLOCK(&f);
     /* do detect for p2 */
     SCLogInfo("p2");
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p2);
@@ -1866,14 +1860,15 @@ static int LuaMatchTest05(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_HTTP, STREAM_TOSERVER, httpbuf1, httplen1);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP,
+                                STREAM_TOSERVER, httpbuf1, httplen1);
     if (r != 0) {
         printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        SCMutexUnlock(&f.m);
+        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_UNLOCK(&f);
     HtpState *http_state = f.alstate;
     if (http_state == NULL) {
         printf("no http state: ");
@@ -1889,14 +1884,15 @@ static int LuaMatchTest05(void)
         goto end;
     }
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_HTTP, STREAM_TOSERVER, httpbuf2, httplen2);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP,
+                            STREAM_TOSERVER, httpbuf2, httplen2);
     if (r != 0) {
         printf("toserver chunk 2 returned %" PRId32 ", expected 0: ", r);
-        SCMutexUnlock(&f.m);
+        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_UNLOCK(&f);
     /* do detect for p2 */
     SCLogInfo("p2");
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p2);
@@ -2019,14 +2015,15 @@ static int LuaMatchTest06(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_HTTP, STREAM_TOSERVER, httpbuf1, httplen1);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP,
+                                STREAM_TOSERVER, httpbuf1, httplen1);
     if (r != 0) {
         printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        SCMutexUnlock(&f.m);
+        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_UNLOCK(&f);
     HtpState *http_state = f.alstate;
     if (http_state == NULL) {
         printf("no http state: ");
@@ -2042,14 +2039,15 @@ static int LuaMatchTest06(void)
         goto end;
     }
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_HTTP, STREAM_TOSERVER, httpbuf2, httplen2);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP,
+                            STREAM_TOSERVER, httpbuf2, httplen2);
     if (r != 0) {
         printf("toserver chunk 2 returned %" PRId32 ", expected 0: ", r);
-        SCMutexUnlock(&f.m);
+        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_UNLOCK(&f);
     /* do detect for p2 */
     SCLogInfo("p2");
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p2);

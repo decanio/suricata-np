@@ -20,6 +20,7 @@
  *
  * \author Anoop Saldanha <anoopsaldanha@gmail.com>
  * \author Pierre Chifflier <pierre.chifflier@ssi.gouv.fr>
+ * \author Mats Klepsland <mats.klepsland@gmail.com>
  *
  */
 
@@ -62,6 +63,7 @@ SCEnumCharMap tls_decoder_event_table[ ] = {
     { "INVALID_HEARTBEAT_MESSAGE",   TLS_DECODER_EVENT_INVALID_HEARTBEAT },
     { "OVERFLOW_HEARTBEAT_MESSAGE",  TLS_DECODER_EVENT_OVERFLOW_HEARTBEAT },
     { "DATALEAK_HEARTBEAT_MISMATCH", TLS_DECODER_EVENT_DATALEAK_HEARTBEAT_MISMATCH },
+    { "HANDSHAKE_INVALID_LENGTH",    TLS_DECODER_EVENT_HANDSHAKE_INVALID_LENGTH },
     { "MULTIPLE_SNI_EXTENSIONS",     TLS_DECODER_EVENT_MULTIPLE_SNI_EXTENSIONS },
     { "INVALID_SNI_TYPE",            TLS_DECODER_EVENT_INVALID_SNI_TYPE },
     { "INVALID_SNI_LENGTH",          TLS_DECODER_EVENT_INVALID_SNI_LENGTH },
@@ -76,6 +78,9 @@ SCEnumCharMap tls_decoder_event_table[ ] = {
     { "INVALID_SSL_RECORD",          TLS_DECODER_EVENT_INVALID_SSL_RECORD },
     { NULL,                          -1 },
 };
+
+/* by default we keep tracking */
+#define SSL_CONFIG_DEFAULT_NOREASSEMBLE 0
 
 typedef struct SslConfig_ {
     int no_reassemble;
@@ -230,6 +235,149 @@ int SSLGetAlstateProgress(void *tx, uint8_t direction)
     return TLS_STATE_IN_PROGRESS;
 }
 
+static int TLSDecodeHandshakeHello(SSLState *ssl_state, uint8_t *input,
+                                   uint32_t input_len)
+{
+    uint8_t *initial_input = input;
+
+    /* only parse the message if it is complete */
+    if (input_len < ssl_state->curr_connp->message_length || input_len < 40)
+        return 0;
+
+    /* skip version */
+    input += SSLV3_CLIENT_HELLO_VERSION_LEN;
+
+    /* skip random */
+    input += SSLV3_CLIENT_HELLO_RANDOM_LEN;
+
+    if (!(HAS_SPACE(1)))
+        goto invalid_length;
+
+    /* skip session id */
+    uint8_t session_id_length = *(input++);
+
+    input += session_id_length;
+
+    if (!(HAS_SPACE(2)))
+        goto invalid_length;
+
+    /* skip cipher suites */
+    uint16_t cipher_suites_length = input[0] << 8 | input[1];
+    input += 2;
+
+    input += cipher_suites_length;
+
+    if (!(HAS_SPACE(1)))
+        goto invalid_length;
+
+    /* skip compression methods */
+    uint8_t compression_methods_length = *(input++);
+
+    input += compression_methods_length;
+
+    if (!(HAS_SPACE(2)))
+        goto invalid_length;
+
+    uint16_t extensions_len = input[0] << 8 | input[1];
+    input += 2;
+
+    if (!(HAS_SPACE(extensions_len)))
+        goto invalid_length;
+
+    uint16_t processed_len = 0;
+    while (processed_len < extensions_len)
+    {
+        if (!(HAS_SPACE(2)))
+            goto invalid_length;
+
+        uint16_t ext_type = input[0] << 8 | input[1];
+        input += 2;
+
+        if (!(HAS_SPACE(2)))
+            goto invalid_length;
+
+        uint16_t ext_len = input[0] << 8 | input[1];
+        input += 2;
+
+        switch (ext_type) {
+            case SSL_EXTENSION_SNI:
+            {
+                /* there must not be more than one extension of the same
+                   type (RFC5246 section 7.4.1.4) */
+                if (ssl_state->curr_connp->sni) {
+                    SCLogDebug("Multiple SNI extensions");
+                    SSLSetEvent(ssl_state,
+                            TLS_DECODER_EVENT_MULTIPLE_SNI_EXTENSIONS);
+                    return -1;
+                }
+
+                /* skip sni_list_length */
+                input += 2;
+
+                if (!(HAS_SPACE(1)))
+                    goto invalid_length;
+
+                uint8_t sni_type = *(input++);
+
+                /* currently the only type allowed is host_name
+                   (RFC6066 section 3) */
+                if (sni_type != SSL_SNI_TYPE_HOST_NAME) {
+                    SCLogDebug("Unknown SNI type");
+                    SSLSetEvent(ssl_state,
+                            TLS_DECODER_EVENT_INVALID_SNI_TYPE);
+                    return -1;
+                }
+
+                if (!(HAS_SPACE(2)))
+                    goto invalid_length;
+
+                uint16_t sni_len = input[0] << 8 | input[1];
+                input += 2;
+
+                if (!(HAS_SPACE(sni_len)))
+                    goto invalid_length;
+
+                /* host_name contains the fully qualified domain name,
+                   and should therefore be limited by the maximum domain
+                   name length */
+                if (sni_len > 255) {
+                    SCLogDebug("SNI length >255");
+                    SSLSetEvent(ssl_state,
+                            TLS_DECODER_EVENT_INVALID_SNI_LENGTH);
+                    return -1;
+                }
+
+                size_t sni_strlen = sni_len + 1;
+                ssl_state->curr_connp->sni = SCMalloc(sni_strlen);
+
+                if (unlikely(ssl_state->curr_connp->sni == NULL))
+                    goto end;
+
+                memcpy(ssl_state->curr_connp->sni, input, sni_strlen - 1);
+                ssl_state->curr_connp->sni[sni_strlen-1] = 0;
+
+                input += sni_len;
+                break;
+            }
+            default:
+            {
+                input += ext_len;
+                break;
+            }
+        }
+        processed_len += ext_len + 4;
+    }
+
+end:
+    return 0;
+
+invalid_length:
+    SCLogDebug("TLS handshake invalid length");
+    SSLSetEvent(ssl_state,
+            TLS_DECODER_EVENT_HANDSHAKE_INVALID_LENGTH);
+    return 0;
+}
+
 static int SSLv3ParseHandshakeType(SSLState *ssl_state, uint8_t *input,
                                    uint32_t input_len)
 {
@@ -244,142 +392,25 @@ static int SSLv3ParseHandshakeType(SSLState *ssl_state, uint8_t *input,
 
     switch (ssl_state->curr_connp->handshake_type) {
         case SSLV3_HS_CLIENT_HELLO:
-            ssl_state->flags |= SSL_AL_FLAG_STATE_CLIENT_HELLO;
+            ssl_state->current_flags = SSL_AL_FLAG_STATE_CLIENT_HELLO;
 
-            /* skip version */
-            input += SSLV3_CLIENT_HELLO_VERSION_LEN;
+            rc = TLSDecodeHandshakeHello(ssl_state, input, input_len);
 
-            /* skip random */
-            input += SSLV3_CLIENT_HELLO_RANDOM_LEN;
+            if (rc < 0)
+                return rc;
 
-            if (!(HAS_SPACE(1)))
-                goto end;
-
-            /* skip session id */
-            uint8_t session_id_length = *(input++);
-
-            input += session_id_length;
-
-            if (!(HAS_SPACE(2)))
-                goto end;
-
-            /* skip cipher suites */
-            uint16_t cipher_suites_length = input[0] << 8 | input[1];
-            input += 2;
-
-            input += cipher_suites_length;
-
-            if (!(HAS_SPACE(1)))
-                goto end;
-
-            /* skip compression methods */
-            uint8_t compression_methods_length = *(input++);
-
-            input += compression_methods_length;
-
-            if (!(HAS_SPACE(2)))
-                goto end;
-
-            uint16_t extensions_len = input[0] << 8 | input[1];
-            input += 2;
-
-            uint16_t processed_len = 0;
-            while (processed_len < extensions_len)
-            {
-                if (!(HAS_SPACE(2)))
-                    goto end;
-
-                uint16_t ext_type = input[0] << 8 | input[1];
-                input += 2;
-
-                if (!(HAS_SPACE(2)))
-                    goto end;
-
-                uint16_t ext_len = input[0] << 8 | input[1];
-                input += 2;
-
-                switch (ext_type) {
-                    case SSL_EXTENSION_SNI:
-                    {
-                        /* there must not be more than one extension of the same
-                           type (RFC5246 section 7.4.1.4) */
-                        if (ssl_state->curr_connp->sni) {
-                            SCLogDebug("Multiple SNI extensions");
-                            SSLSetEvent(ssl_state,
-                                    TLS_DECODER_EVENT_MULTIPLE_SNI_EXTENSIONS);
-                            return -1;
-                        }
-
-                        /* skip sni_list_length */
-                        input += 2;
-
-                        if (!(HAS_SPACE(1)))
-                            goto end;
-
-                        uint8_t sni_type = *(input++);
-
-                        /* currently the only type allowed is host_name
-                           (RFC6066 section 3) */
-                        if (sni_type != SSL_SNI_TYPE_HOST_NAME) {
-                            SCLogDebug("Unknown SNI type");
-                            SSLSetEvent(ssl_state,
-                                    TLS_DECODER_EVENT_INVALID_SNI_TYPE);
-                            return -1;
-                        }
-
-                        if (!(HAS_SPACE(2)))
-                            goto end;
-
-                        uint16_t sni_len = input[0] << 8 | input[1];
-                        input += 2;
-
-                        if (!(HAS_SPACE(sni_len)))
-                            goto end;
-
-                        /* host_name contains the fully qualified domain name,
-                           and should therefore be limited by the maximum domain
-                           name length */
-                        if (sni_len > 255) {
-                            SCLogDebug("SNI length >255");
-                            SSLSetEvent(ssl_state,
-                                    TLS_DECODER_EVENT_INVALID_SNI_LENGTH);
-                            return -1;
-                        }
-
-                        size_t sni_strlen = sni_len + 1;
-                        ssl_state->curr_connp->sni = SCMalloc(sni_strlen);
-
-                        if (unlikely(ssl_state->curr_connp->sni == NULL))
-                            goto end;
-
-                        memcpy(ssl_state->curr_connp->sni, input,
-                               sni_strlen - 1);
-                        ssl_state->curr_connp->sni[sni_strlen-1] = 0;
-
-                        input += sni_len;
-                        break;
-                    }
-                    default:
-                    {
-                        input += ext_len;
-                        break;
-                    }
-                }
-                processed_len += ext_len + 4;
-            }
-end:
             break;
 
         case SSLV3_HS_SERVER_HELLO:
-            ssl_state->flags |= SSL_AL_FLAG_STATE_SERVER_HELLO;
+            ssl_state->current_flags = SSL_AL_FLAG_STATE_SERVER_HELLO;
             break;
 
         case SSLV3_HS_SERVER_KEY_EXCHANGE:
-            ssl_state->flags |= SSL_AL_FLAG_STATE_SERVER_KEYX;
+            ssl_state->current_flags = SSL_AL_FLAG_STATE_SERVER_KEYX;
             break;
 
         case SSLV3_HS_CLIENT_KEY_EXCHANGE:
-            ssl_state->flags |= SSL_AL_FLAG_STATE_CLIENT_KEYX;
+            ssl_state->current_flags = SSL_AL_FLAG_STATE_CLIENT_KEYX;
             break;
 
         case SSLV3_HS_CERTIFICATE:
@@ -479,6 +510,8 @@ end:
             SSLSetEvent(ssl_state, TLS_DECODER_EVENT_INVALID_SSL_RECORD);
             return -1;
     }
+
+    ssl_state->flags |= ssl_state->current_flags;
 
     uint32_t write_len = 0;
     if ((ssl_state->curr_connp->bytes_processed + input_len) >=
@@ -907,8 +940,8 @@ static int SSLv2Decode(uint8_t direction, SSLState *ssl_state,
             break;
 
         case SSLV2_MT_CLIENT_HELLO:
-            ssl_state->flags |= SSL_AL_FLAG_STATE_CLIENT_HELLO;
-            ssl_state->flags |= SSL_AL_FLAG_SSL_CLIENT_HS;
+            ssl_state->current_flags = SSL_AL_FLAG_STATE_CLIENT_HELLO;
+            ssl_state->current_flags |= SSL_AL_FLAG_SSL_CLIENT_HS;
 
             if (ssl_state->curr_connp->record_lengths_length == 3) {
                 switch (ssl_state->curr_connp->bytes_processed) {
@@ -920,7 +953,7 @@ static int SSLv2Decode(uint8_t direction, SSLState *ssl_state,
                             input_len -= 6;
                             ssl_state->curr_connp->bytes_processed += 6;
                             if (ssl_state->curr_connp->session_id_length == 0) {
-                                ssl_state->flags |= SSL_AL_FLAG_SSL_NO_SESSION_ID;
+                                ssl_state->current_flags |= SSL_AL_FLAG_SSL_NO_SESSION_ID;
                             }
 
                             break;
@@ -979,7 +1012,7 @@ static int SSLv2Decode(uint8_t direction, SSLState *ssl_state,
                             input_len -= 6;
                             ssl_state->curr_connp->bytes_processed += 6;
                             if (ssl_state->curr_connp->session_id_length == 0) {
-                                ssl_state->flags |= SSL_AL_FLAG_SSL_NO_SESSION_ID;
+                                ssl_state->current_flags |= SSL_AL_FLAG_SSL_NO_SESSION_ID;
                             }
 
                             break;
@@ -1029,8 +1062,7 @@ static int SSLv2Decode(uint8_t direction, SSLState *ssl_state,
                 SCLogDebug("Client hello is not seen before master key "
                            "message!");
             }
-
-            ssl_state->flags |= SSL_AL_FLAG_SSL_CLIENT_MASTER_KEY;
+            ssl_state->current_flags = SSL_AL_FLAG_SSL_CLIENT_MASTER_KEY;
 
             break;
 
@@ -1039,7 +1071,7 @@ static int SSLv2Decode(uint8_t direction, SSLState *ssl_state,
                 SCLogDebug("Incorrect SSL Record type sent in the toclient "
                            "direction!");
             } else {
-                ssl_state->flags |= SSL_AL_FLAG_STATE_CLIENT_KEYX;
+                ssl_state->current_flags = SSL_AL_FLAG_STATE_CLIENT_KEYX;
             }
 
             /* fall through */
@@ -1061,14 +1093,14 @@ static int SSLv2Decode(uint8_t direction, SSLState *ssl_state,
 
                 if (direction == 0) {
                     if (ssl_state->flags & SSL_AL_FLAG_SSL_NO_SESSION_ID) {
-                        ssl_state->flags |= SSL_AL_FLAG_SSL_CLIENT_SSN_ENCRYPTED;
+                        ssl_state->current_flags |= SSL_AL_FLAG_SSL_CLIENT_SSN_ENCRYPTED;
                         SCLogDebug("SSLv2 client side has started the encryption");
                     } else if (ssl_state->flags & SSL_AL_FLAG_SSL_CLIENT_MASTER_KEY) {
-                        ssl_state->flags |= SSL_AL_FLAG_SSL_CLIENT_SSN_ENCRYPTED;
+                        ssl_state->current_flags = SSL_AL_FLAG_SSL_CLIENT_SSN_ENCRYPTED;
                         SCLogDebug("SSLv2 client side has started the encryption");
                     }
                 } else {
-                    ssl_state->flags |= SSL_AL_FLAG_SSL_SERVER_SSN_ENCRYPTED;
+                    ssl_state->current_flags = SSL_AL_FLAG_SSL_SERVER_SSN_ENCRYPTED;
                     SCLogDebug("SSLv2 Server side has started the encryption");
                 }
 
@@ -1086,11 +1118,13 @@ static int SSLv2Decode(uint8_t direction, SSLState *ssl_state,
             break;
 
         case SSLV2_MT_SERVER_HELLO:
-            ssl_state->flags |= SSL_AL_FLAG_STATE_SERVER_HELLO;
-            ssl_state->flags |= SSL_AL_FLAG_SSL_SERVER_HS;
+            ssl_state->current_flags = SSL_AL_FLAG_STATE_SERVER_HELLO;
+            ssl_state->current_flags |= SSL_AL_FLAG_SSL_SERVER_HS;
 
             break;
     }
+
+    ssl_state->flags |= ssl_state->current_flags;
 
     if (input_len + ssl_state->curr_connp->bytes_processed >=
             (ssl_state->curr_connp->record_length +
@@ -1181,6 +1215,13 @@ static int SSLv3Decode(uint8_t direction, SSLState *ssl_state,
             /* if we see (encrypted) aplication data, then this means the
                handshake must be done */
             ssl_state->flags |= SSL_AL_FLAG_HANDSHAKE_DONE;
+
+            /* Encrypted data, reassembly not asked, bypass asked, let's sacrifice
+             * heartbeat lke inspection to be able to be able to bypass the flow */
+            if (ssl_config.no_reassemble == 1) {
+                AppLayerParserStateSetFlag(pstate, APP_LAYER_PARSER_NO_REASSEMBLY);
+                AppLayerParserStateSetFlag(pstate, APP_LAYER_PARSER_NO_INSPECTION);
+            }
 
             break;
 
@@ -1315,6 +1356,11 @@ static int SSLDecode(Flow *f, uint8_t direction, void *alstate, AppLayerParserSt
         ssl_state->curr_connp = &ssl_state->client_connp;
     else
         ssl_state->curr_connp = &ssl_state->server_connp;
+
+    /* If entering on a new record, reset the current flags. */
+    if (ssl_state->curr_connp->bytes_processed == 0) {
+        ssl_state->current_flags = 0;
+    }
 
     /* if we have more than one record */
     while (input_len > 0) {
@@ -1764,10 +1810,10 @@ void RegisterSSLParsers(void)
         /* Get the value of no reassembly option from the config file */
         if (ConfGetNode("app-layer.protocols.tls.no-reassemble") == NULL) {
             if (ConfGetBool("tls.no-reassemble", &ssl_config.no_reassemble) != 1)
-                ssl_config.no_reassemble = 1;
+                ssl_config.no_reassemble = SSL_CONFIG_DEFAULT_NOREASSEMBLE;
         } else {
             if (ConfGetBool("app-layer.protocols.tls.no-reassemble", &ssl_config.no_reassemble) != 1)
-                ssl_config.no_reassemble = 1;
+                ssl_config.no_reassemble = SSL_CONFIG_DEFAULT_NOREASSEMBLE;
         }
     } else {
         SCLogInfo("Parsed disabled for %s protocol. Protocol detection"
@@ -1777,11 +1823,6 @@ void RegisterSSLParsers(void)
 #ifdef UNITTESTS
     AppLayerParserRegisterProtocolUnittests(IPPROTO_TCP, ALPROTO_TLS, SSLParserRegisterTests);
 #endif
-
-    /* Get the value of no reassembly option from the config file */
-    if (ConfGetBool("tls.no-reassemble", &ssl_config.no_reassemble) != 1)
-        ssl_config.no_reassemble = 1;
-
     return;
 }
 
@@ -1794,7 +1835,6 @@ void RegisterSSLParsers(void)
  */
 static int SSLParserTest01(void)
 {
-    int result = 1;
     Flow f;
     uint8_t tlsbuf[] = { 0x16, 0x03, 0x01 };
     uint32_t tlslen = sizeof(tlsbuf);
@@ -1803,52 +1843,36 @@ static int SSLParserTest01(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER | STREAM_EOF, tlsbuf, tlslen);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER | STREAM_EOF, tlsbuf, tlslen);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-    if (ssl_state->client_connp.content_type != 0x16) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ", 0x16,
-                ssl_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.content_type != 0x16);
 
-    if (ssl_state->client_connp.version != TLS_VERSION_10) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                TLS_VERSION_10, ssl_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    FAIL_IF(ssl_state->client_connp.version != TLS_VERSION_10);
+
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /** \test Send a get request in two chunks. */
 static int SSLParserTest02(void)
 {
-    int result = 1;
     Flow f;
     uint8_t tlsbuf1[] = { 0x16 };
     uint32_t tlslen1 = sizeof(tlsbuf1);
@@ -1859,62 +1883,41 @@ static int SSLParserTest02(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, tlsbuf1, tlslen1);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, tlsbuf1, tlslen1);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, tlsbuf2, tlslen2);
-    if (r != 0) {
-        printf("toserver chunk 2 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            tlsbuf2, tlslen2);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-    if (ssl_state->client_connp.content_type != 0x16) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ", 0x16,
-                ssl_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.content_type != 0x16);
 
-    if (ssl_state->client_connp.version != TLS_VERSION_10) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                TLS_VERSION_10, ssl_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    FAIL_IF(ssl_state->client_connp.version != TLS_VERSION_10);
+
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /** \test Send a get request in three chunks. */
 static int SSLParserTest03(void)
 {
-    int result = 1;
     Flow f;
     uint8_t tlsbuf1[] = { 0x16 };
     uint32_t tlslen1 = sizeof(tlsbuf1);
@@ -1927,72 +1930,47 @@ static int SSLParserTest03(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, tlsbuf1, tlslen1);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, tlsbuf1, tlslen1);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, tlsbuf2, tlslen2);
-    if (r != 0) {
-        printf("toserver chunk 2 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            tlsbuf2, tlslen2);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, tlsbuf3, tlslen3);
-    if (r != 0) {
-        printf("toserver chunk 3 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            tlsbuf3, tlslen3);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-    if (ssl_state->client_connp.content_type != 0x16) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ", 0x16,
-                ssl_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.content_type != 0x16);
 
-    if (ssl_state->client_connp.version != TLS_VERSION_10) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                TLS_VERSION_10, ssl_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    FAIL_IF(ssl_state->client_connp.version != TLS_VERSION_10);
+
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /** \test Send a get request in three chunks + more data. */
 static int SSLParserTest04(void)
 {
-    int result = 1;
     Flow f;
     uint8_t tlsbuf1[] = { 0x16 };
     uint32_t tlslen1 = sizeof(tlsbuf1);
@@ -2007,76 +1985,48 @@ static int SSLParserTest04(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, tlsbuf1, tlslen1);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, tlsbuf1, tlslen1);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, tlsbuf2, tlslen2);
-    if (r != 0) {
-        printf("toserver chunk 2 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            tlsbuf2, tlslen2);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, tlsbuf3, tlslen3);
-    if (r != 0) {
-        printf("toserver chunk 3 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            tlsbuf3, tlslen3);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, tlsbuf4, tlslen4);
-    if (r != 0) {
-        printf("toserver chunk 4 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            tlsbuf4, tlslen4);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-    if (ssl_state->client_connp.content_type != 0x16) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ", 0x16,
-                ssl_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.content_type != 0x16);
 
-    if (ssl_state->client_connp.version != TLS_VERSION_10) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                TLS_VERSION_10, ssl_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    FAIL_IF(ssl_state->client_connp.version != TLS_VERSION_10);
+
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 #if 0
@@ -2093,6 +2043,7 @@ static int SSLParserTest05(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
@@ -2183,6 +2134,7 @@ end:
     if (alp_tctx != NULL)
         AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
+    FLOW_DESTROY(&f);
     return result;
 }
 #endif
@@ -2202,6 +2154,7 @@ static int SSLParserTest06(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
@@ -2308,6 +2261,7 @@ end:
     if (alp_tctx != NULL)
         AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
+    FLOW_DESTROY(&f);
     return result;
 }
 #endif
@@ -2315,7 +2269,6 @@ end:
 /** \test multimsg test */
 static int SSLParserMultimsgTest01(void)
 {
-    int result = 1;
     Flow f;
     /* 3 msgs */
     uint8_t tlsbuf1[] = {
@@ -2351,52 +2304,35 @@ static int SSLParserMultimsgTest01(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, tlsbuf1, tlslen1);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, tlsbuf1, tlslen1);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-    if (ssl_state->client_connp.content_type != 0x16) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ", 0x16,
-                ssl_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.content_type != 0x16);
 
-    if (ssl_state->client_connp.version != TLS_VERSION_10) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-               TLS_VERSION_10, ssl_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    FAIL_IF(ssl_state->client_connp.version != TLS_VERSION_10);
+
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /** \test multimsg test server */
 static int SSLParserMultimsgTest02(void)
 {
-    int result = 1;
     Flow f;
     /* 3 msgs */
     uint8_t tlsbuf1[] = {
@@ -2432,46 +2368,30 @@ static int SSLParserMultimsgTest02(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOCLIENT, tlsbuf1, tlslen1);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOCLIENT, tlsbuf1, tlslen1);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-    if (ssl_state->server_connp.content_type != 0x16) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ", 0x16,
-                ssl_state->server_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->server_connp.content_type != 0x16);
 
-    if (ssl_state->server_connp.version != 0x0301) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ", 0x0301,
-                ssl_state->server_connp.version);
-        result = 0;
-        goto end;
-    }
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    FAIL_IF(ssl_state->server_connp.version != 0x0301);
+
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /**
@@ -2479,70 +2399,48 @@ end:
  */
 static int SSLParserTest07(void)
 {
-    int result = 1;
     Flow f;
-    uint8_t tlsbuf[] = { 0x16, 0x03, 0x00, 0x00, 0x6f, 0x01,
-            0x00, 0x00, 0x6b, 0x03, 0x00, 0x4b, 0x2f, 0xdc,
-            0x4e, 0xe6, 0x95, 0xf1, 0xa0, 0xc7, 0xcf, 0x8e,
-            0xf6, 0xeb, 0x22, 0x6d, 0xce, 0x9c, 0x44, 0xfb,
-            0xc8, 0xa0, 0x44, 0x31, 0x15, 0x4c, 0xe9, 0x97,
-            0xa7, 0xa1, 0xfe, 0xea, 0xcc, 0x20, 0x4b, 0x5d,
-            0xfb, 0xa5, 0x63, 0x7a, 0x73, 0x95, 0xf7, 0xff,
-            0x42, 0xac, 0x8f, 0x46, 0xed, 0xe4, 0xb1, 0x35,
-            0x35, 0x78, 0x1a, 0x9d, 0xaf, 0x10, 0xc5, 0x52,
-            0xf3, 0x7b, 0xfb, 0xb5, 0xe9, 0xa8, 0x00, 0x24,
-            0x00, 0x88, 0x00, 0x87, 0x00, 0x39, 0x00, 0x38,
-            0x00, 0x84, 0x00, 0x35, 0x00, 0x45, 0x00, 0x44,
-            0x00, 0x33, 0x00, 0x32, 0x00, 0x96, 0x00, 0x41,
-            0x00, 0x2f, 0x00, 0x16, 0x00, 0x13, 0xfe, 0xff,
-            0x00, 0x0a, 0x00, 0x02, 0x01, 0x00 };
+    uint8_t tlsbuf[] = { 0x16, 0x03, 0x00, 0x00, 0x4c, 0x01,
+            0x00, 0x00, 0x48, 0x03, 0x00, 0x57, 0x04, 0x9f,
+            0x8c, 0x66, 0x61, 0xf6, 0x3d, 0x4f, 0xbf, 0xbb,
+            0xa7, 0x47, 0x21, 0x76, 0x6c, 0x21, 0x08, 0x9f,
+            0xef, 0x3d, 0x0e, 0x5f, 0x65, 0x1a, 0xe1, 0x93,
+            0xb8, 0xaf, 0xd2, 0x82, 0xbd, 0x00, 0x00, 0x06,
+            0x00, 0x0a, 0x00, 0x16, 0x00, 0xff, 0x01, 0x00,
+            0x00, 0x19, 0x00, 0x00, 0x00, 0x15, 0x00, 0x13,
+            0x00, 0x00, 0x10, 0x61, 0x62, 0x63, 0x64, 0x65,
+            0x66, 0x67, 0x68, 0x2e, 0x65, 0x66, 0x67, 0x68,
+            0x2e, 0x6e, 0x6f };
     uint32_t tlslen = sizeof(tlsbuf);
     TcpSession ssn;
     AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, tlsbuf, tlslen);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, tlsbuf, tlslen);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-    if (ssl_state->client_connp.content_type != 0x16) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ", 0x17,
-                ssl_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.content_type != 0x16);
 
-    if (ssl_state->client_connp.version != SSL_VERSION_3) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                SSL_VERSION_3, ssl_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.version != SSL_VERSION_3);
 
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 #if 0
@@ -2559,6 +2457,7 @@ static int SSLParserTest08(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
@@ -2648,6 +2547,7 @@ end:
     if (alp_tctx != NULL)
         AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
+    FLOW_DESTROY(&f);
     return result;
 }
 
@@ -2658,29 +2558,24 @@ end:
  */
 static int SSLParserTest09(void)
 {
-    int result = 1;
     Flow f;
     uint8_t buf1[] = {
-        0x16,
+            0x16,
     };
     uint32_t buf1_len = sizeof(buf1);
 
     uint8_t buf2[] = {
-        0x03, 0x00, 0x00, 0x6f, 0x01,
-        0x00, 0x00, 0x6b, 0x03, 0x00, 0x4b, 0x2f, 0xdc,
-        0x4e, 0xe6, 0x95, 0xf1, 0xa0, 0xc7, 0xcf, 0x8e,
-        0xf6, 0xeb, 0x22, 0x6d, 0xce, 0x9c, 0x44, 0xfb,
-        0xc8, 0xa0, 0x44, 0x31, 0x15, 0x4c, 0xe9, 0x97,
-        0xa7, 0xa1, 0xfe, 0xea, 0xcc, 0x20, 0x4b, 0x5d,
-        0xfb, 0xa5, 0x63, 0x7a, 0x73, 0x95, 0xf7, 0xff,
-        0x42, 0xac, 0x8f, 0x46, 0xed, 0xe4, 0xb1, 0x35,
-        0x35, 0x78, 0x1a, 0x9d, 0xaf, 0x10, 0xc5, 0x52,
-        0xf3, 0x7b, 0xfb, 0xb5, 0xe9, 0xa8, 0x00, 0x24,
-        0x00, 0x88, 0x00, 0x87, 0x00, 0x39, 0x00, 0x38,
-        0x00, 0x84, 0x00, 0x35, 0x00, 0x45, 0x00, 0x44,
-        0x00, 0x33, 0x00, 0x32, 0x00, 0x96, 0x00, 0x41,
-        0x00, 0x2f, 0x00, 0x16, 0x00, 0x13, 0xfe, 0xff,
-        0x00, 0x0a, 0x00, 0x02, 0x01, 0x00
+            0x03, 0x00, 0x00, 0x4c, 0x01,
+            0x00, 0x00, 0x48, 0x03, 0x00, 0x57, 0x04, 0x9f,
+            0x8c, 0x66, 0x61, 0xf6, 0x3d, 0x4f, 0xbf, 0xbb,
+            0xa7, 0x47, 0x21, 0x76, 0x6c, 0x21, 0x08, 0x9f,
+            0xef, 0x3d, 0x0e, 0x5f, 0x65, 0x1a, 0xe1, 0x93,
+            0xb8, 0xaf, 0xd2, 0x82, 0xbd, 0x00, 0x00, 0x06,
+            0x00, 0x0a, 0x00, 0x16, 0x00, 0xff, 0x01, 0x00,
+            0x00, 0x19, 0x00, 0x00, 0x00, 0x15, 0x00, 0x13,
+            0x00, 0x00, 0x10, 0x61, 0x62, 0x63, 0x64, 0x65,
+            0x66, 0x67, 0x68, 0x2e, 0x65, 0x66, 0x67, 0x68,
+            0x2e, 0x6e, 0x6f
     };
     uint32_t buf2_len = sizeof(buf2);
     TcpSession ssn;
@@ -2688,57 +2583,36 @@ static int SSLParserTest09(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf1, buf1_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, buf1, buf1_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf2, buf2_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            buf2, buf2_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-    if (ssl_state->client_connp.content_type != 0x16) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ", 0x17,
-                ssl_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.content_type != 0x16);
 
-    if (ssl_state->client_connp.version != SSL_VERSION_3) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                SSL_VERSION_3, ssl_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.version != SSL_VERSION_3);
 
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /**
@@ -2746,7 +2620,6 @@ end:
  */
 static int SSLParserTest10(void)
 {
-    int result = 1;
     Flow f;
     uint8_t buf1[] = {
         0x16, 0x03,
@@ -2754,21 +2627,17 @@ static int SSLParserTest10(void)
     uint32_t buf1_len = sizeof(buf1);
 
     uint8_t buf2[] = {
-        0x00, 0x00, 0x6f, 0x01,
-        0x00, 0x00, 0x6b, 0x03, 0x00, 0x4b, 0x2f, 0xdc,
-        0x4e, 0xe6, 0x95, 0xf1, 0xa0, 0xc7, 0xcf, 0x8e,
-        0xf6, 0xeb, 0x22, 0x6d, 0xce, 0x9c, 0x44, 0xfb,
-        0xc8, 0xa0, 0x44, 0x31, 0x15, 0x4c, 0xe9, 0x97,
-        0xa7, 0xa1, 0xfe, 0xea, 0xcc, 0x20, 0x4b, 0x5d,
-        0xfb, 0xa5, 0x63, 0x7a, 0x73, 0x95, 0xf7, 0xff,
-        0x42, 0xac, 0x8f, 0x46, 0xed, 0xe4, 0xb1, 0x35,
-        0x35, 0x78, 0x1a, 0x9d, 0xaf, 0x10, 0xc5, 0x52,
-        0xf3, 0x7b, 0xfb, 0xb5, 0xe9, 0xa8, 0x00, 0x24,
-        0x00, 0x88, 0x00, 0x87, 0x00, 0x39, 0x00, 0x38,
-        0x00, 0x84, 0x00, 0x35, 0x00, 0x45, 0x00, 0x44,
-        0x00, 0x33, 0x00, 0x32, 0x00, 0x96, 0x00, 0x41,
-        0x00, 0x2f, 0x00, 0x16, 0x00, 0x13, 0xfe, 0xff,
-        0x00, 0x0a, 0x00, 0x02, 0x01, 0x00
+            0x00, 0x00, 0x4c, 0x01,
+            0x00, 0x00, 0x48, 0x03, 0x00, 0x57, 0x04, 0x9f,
+            0x8c, 0x66, 0x61, 0xf6, 0x3d, 0x4f, 0xbf, 0xbb,
+            0xa7, 0x47, 0x21, 0x76, 0x6c, 0x21, 0x08, 0x9f,
+            0xef, 0x3d, 0x0e, 0x5f, 0x65, 0x1a, 0xe1, 0x93,
+            0xb8, 0xaf, 0xd2, 0x82, 0xbd, 0x00, 0x00, 0x06,
+            0x00, 0x0a, 0x00, 0x16, 0x00, 0xff, 0x01, 0x00,
+            0x00, 0x19, 0x00, 0x00, 0x00, 0x15, 0x00, 0x13,
+            0x00, 0x00, 0x10, 0x61, 0x62, 0x63, 0x64, 0x65,
+            0x66, 0x67, 0x68, 0x2e, 0x65, 0x66, 0x67, 0x68,
+            0x2e, 0x6e, 0x6f
     };
     uint32_t buf2_len = sizeof(buf2);
     TcpSession ssn;
@@ -2776,57 +2645,36 @@ static int SSLParserTest10(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf1, buf1_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, buf1, buf1_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf2, buf2_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            buf2, buf2_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-    if (ssl_state->client_connp.content_type != 0x16) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ", 0x17,
-                ssl_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.content_type != 0x16);
 
-    if (ssl_state->client_connp.version != SSL_VERSION_3) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                SSL_VERSION_3, ssl_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.version != SSL_VERSION_3);
 
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /**
@@ -2834,28 +2682,23 @@ end:
  */
 static int SSLParserTest11(void)
 {
-    int result = 1;
     Flow f;
     uint8_t buf1[] = {
-        0x16, 0x03, 0x00, 0x00, 0x6f, 0x01,
+            0x16, 0x03, 0x00, 0x00, 0x4c, 0x01,
     };
     uint32_t buf1_len = sizeof(buf1);
 
     uint8_t buf2[] = {
-        0x00, 0x00, 0x6b, 0x03, 0x00, 0x4b, 0x2f, 0xdc,
-        0x4e, 0xe6, 0x95, 0xf1, 0xa0, 0xc7, 0xcf, 0x8e,
-        0xf6, 0xeb, 0x22, 0x6d, 0xce, 0x9c, 0x44, 0xfb,
-        0xc8, 0xa0, 0x44, 0x31, 0x15, 0x4c, 0xe9, 0x97,
-        0xa7, 0xa1, 0xfe, 0xea, 0xcc, 0x20, 0x4b, 0x5d,
-        0xfb, 0xa5, 0x63, 0x7a, 0x73, 0x95, 0xf7, 0xff,
-        0x42, 0xac, 0x8f, 0x46, 0xed, 0xe4, 0xb1, 0x35,
-        0x35, 0x78, 0x1a, 0x9d, 0xaf, 0x10, 0xc5, 0x52,
-        0xf3, 0x7b, 0xfb, 0xb5, 0xe9, 0xa8, 0x00, 0x24,
-        0x00, 0x88, 0x00, 0x87, 0x00, 0x39, 0x00, 0x38,
-        0x00, 0x84, 0x00, 0x35, 0x00, 0x45, 0x00, 0x44,
-        0x00, 0x33, 0x00, 0x32, 0x00, 0x96, 0x00, 0x41,
-        0x00, 0x2f, 0x00, 0x16, 0x00, 0x13, 0xfe, 0xff,
-        0x00, 0x0a, 0x00, 0x02, 0x01, 0x00
+            0x00, 0x00, 0x48, 0x03, 0x00, 0x57, 0x04, 0x9f,
+            0x8c, 0x66, 0x61, 0xf6, 0x3d, 0x4f, 0xbf, 0xbb,
+            0xa7, 0x47, 0x21, 0x76, 0x6c, 0x21, 0x08, 0x9f,
+            0xef, 0x3d, 0x0e, 0x5f, 0x65, 0x1a, 0xe1, 0x93,
+            0xb8, 0xaf, 0xd2, 0x82, 0xbd, 0x00, 0x00, 0x06,
+            0x00, 0x0a, 0x00, 0x16, 0x00, 0xff, 0x01, 0x00,
+            0x00, 0x19, 0x00, 0x00, 0x00, 0x15, 0x00, 0x13,
+            0x00, 0x00, 0x10, 0x61, 0x62, 0x63, 0x64, 0x65,
+            0x66, 0x67, 0x68, 0x2e, 0x65, 0x66, 0x67, 0x68,
+            0x2e, 0x6e, 0x6f
     };
     uint32_t buf2_len = sizeof(buf2);
     TcpSession ssn;
@@ -2863,57 +2706,36 @@ static int SSLParserTest11(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf1, buf1_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, buf1, buf1_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf2, buf2_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            buf2, buf2_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-    if (ssl_state->client_connp.content_type != 0x16) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ", 0x17,
-                ssl_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.content_type != 0x16);
 
-    if (ssl_state->client_connp.version != SSL_VERSION_3) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                SSL_VERSION_3, ssl_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.version != SSL_VERSION_3);
 
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /**
@@ -2921,33 +2743,28 @@ end:
  */
 static int SSLParserTest12(void)
 {
-    int result = 1;
     Flow f;
     uint8_t buf1[] = {
-        0x16, 0x03, 0x00, 0x00, 0x6f, 0x01,
+            0x16, 0x03, 0x00, 0x00, 0x4c, 0x01,
     };
     uint32_t buf1_len = sizeof(buf1);
 
     uint8_t buf2[] = {
-        0x00, 0x00, 0x6b,
+            0x00, 0x00, 0x48,
     };
     uint32_t buf2_len = sizeof(buf2);
 
     uint8_t buf3[] = {
-        0x03, 0x00, 0x4b, 0x2f, 0xdc,
-        0x4e, 0xe6, 0x95, 0xf1, 0xa0, 0xc7, 0xcf, 0x8e,
-        0xf6, 0xeb, 0x22, 0x6d, 0xce, 0x9c, 0x44, 0xfb,
-        0xc8, 0xa0, 0x44, 0x31, 0x15, 0x4c, 0xe9, 0x97,
-        0xa7, 0xa1, 0xfe, 0xea, 0xcc, 0x20, 0x4b, 0x5d,
-        0xfb, 0xa5, 0x63, 0x7a, 0x73, 0x95, 0xf7, 0xff,
-        0x42, 0xac, 0x8f, 0x46, 0xed, 0xe4, 0xb1, 0x35,
-        0x35, 0x78, 0x1a, 0x9d, 0xaf, 0x10, 0xc5, 0x52,
-        0xf3, 0x7b, 0xfb, 0xb5, 0xe9, 0xa8, 0x00, 0x24,
-        0x00, 0x88, 0x00, 0x87, 0x00, 0x39, 0x00, 0x38,
-        0x00, 0x84, 0x00, 0x35, 0x00, 0x45, 0x00, 0x44,
-        0x00, 0x33, 0x00, 0x32, 0x00, 0x96, 0x00, 0x41,
-        0x00, 0x2f, 0x00, 0x16, 0x00, 0x13, 0xfe, 0xff,
-        0x00, 0x0a, 0x00, 0x02, 0x01, 0x00
+            0x03, 0x00, 0x57, 0x04, 0x9f,
+            0x8c, 0x66, 0x61, 0xf6, 0x3d, 0x4f, 0xbf, 0xbb,
+            0xa7, 0x47, 0x21, 0x76, 0x6c, 0x21, 0x08, 0x9f,
+            0xef, 0x3d, 0x0e, 0x5f, 0x65, 0x1a, 0xe1, 0x93,
+            0xb8, 0xaf, 0xd2, 0x82, 0xbd, 0x00, 0x00, 0x06,
+            0x00, 0x0a, 0x00, 0x16, 0x00, 0xff, 0x01, 0x00,
+            0x00, 0x19, 0x00, 0x00, 0x00, 0x15, 0x00, 0x13,
+            0x00, 0x00, 0x10, 0x61, 0x62, 0x63, 0x64, 0x65,
+            0x66, 0x67, 0x68, 0x2e, 0x65, 0x66, 0x67, 0x68,
+            0x2e, 0x6e, 0x6f
     };
     uint32_t buf3_len = sizeof(buf2);
     TcpSession ssn;
@@ -2955,67 +2772,42 @@ static int SSLParserTest12(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf1, buf1_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, buf1, buf1_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf2, buf2_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            buf2, buf2_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf3, buf3_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            buf3, buf3_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-    if (ssl_state->client_connp.content_type != 0x16) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ", 0x17,
-                ssl_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.content_type != 0x16);
 
-    if (ssl_state->client_connp.version != SSL_VERSION_3) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                SSL_VERSION_3, ssl_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.version != SSL_VERSION_3);
 
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /**
@@ -3023,38 +2815,33 @@ end:
  */
 static int SSLParserTest13(void)
 {
-    int result = 1;
     Flow f;
     uint8_t buf1[] = {
-        0x16, 0x03, 0x00, 0x00, 0x6f, 0x01,
+            0x16, 0x03, 0x00, 0x00, 0x4c, 0x01,
     };
     uint32_t buf1_len = sizeof(buf1);
 
     uint8_t buf2[] = {
-        0x00, 0x00, 0x6b,
+            0x00, 0x00, 0x48,
     };
     uint32_t buf2_len = sizeof(buf2);
 
     uint8_t buf3[] = {
-        0x03, 0x00, 0x4b, 0x2f, 0xdc,
-        0x4e, 0xe6, 0x95, 0xf1, 0xa0, 0xc7,
+            0x03, 0x00, 0x57, 0x04, 0x9f,
+            0x8c, 0x66, 0x61, 0xf6, 0x3d, 0x4f,
     };
     uint32_t buf3_len = sizeof(buf3);
 
     uint8_t buf4[] = {
-        0xcf, 0x8e,
-        0xf6, 0xeb, 0x22, 0x6d, 0xce, 0x9c, 0x44, 0xfb,
-        0xc8, 0xa0, 0x44, 0x31, 0x15, 0x4c, 0xe9, 0x97,
-        0xa7, 0xa1, 0xfe, 0xea, 0xcc, 0x20, 0x4b, 0x5d,
-        0xfb, 0xa5, 0x63, 0x7a, 0x73, 0x95, 0xf7, 0xff,
-        0x42, 0xac, 0x8f, 0x46, 0xed, 0xe4, 0xb1, 0x35,
-        0x35, 0x78, 0x1a, 0x9d, 0xaf, 0x10, 0xc5, 0x52,
-        0xf3, 0x7b, 0xfb, 0xb5, 0xe9, 0xa8, 0x00, 0x24,
-        0x00, 0x88, 0x00, 0x87, 0x00, 0x39, 0x00, 0x38,
-        0x00, 0x84, 0x00, 0x35, 0x00, 0x45, 0x00, 0x44,
-        0x00, 0x33, 0x00, 0x32, 0x00, 0x96, 0x00, 0x41,
-        0x00, 0x2f, 0x00, 0x16, 0x00, 0x13, 0xfe, 0xff,
-        0x00, 0x0a, 0x00, 0x02, 0x01, 0x00
+            0xbf, 0xbb,
+            0xa7, 0x47, 0x21, 0x76, 0x6c, 0x21, 0x08, 0x9f,
+            0xef, 0x3d, 0x0e, 0x5f, 0x65, 0x1a, 0xe1, 0x93,
+            0xb8, 0xaf, 0xd2, 0x82, 0xbd, 0x00, 0x00, 0x06,
+            0x00, 0x0a, 0x00, 0x16, 0x00, 0xff, 0x01, 0x00,
+            0x00, 0x19, 0x00, 0x00, 0x00, 0x15, 0x00, 0x13,
+            0x00, 0x00, 0x10, 0x61, 0x62, 0x63, 0x64, 0x65,
+            0x66, 0x67, 0x68, 0x2e, 0x65, 0x66, 0x67, 0x68,
+            0x2e, 0x6e, 0x6f
     };
     uint32_t buf4_len = sizeof(buf4);
     TcpSession ssn;
@@ -3062,77 +2849,48 @@ static int SSLParserTest13(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf1, buf1_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, buf1, buf1_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf2, buf2_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            buf2, buf2_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf3, buf3_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            buf3, buf3_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf4, buf4_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            buf4, buf4_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-    if (ssl_state->client_connp.content_type != 0x16) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ", 0x17,
-                ssl_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.content_type != 0x16);
 
-    if (ssl_state->client_connp.version != SSL_VERSION_3) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                SSL_VERSION_3, ssl_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.version != SSL_VERSION_3);
 
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /**
@@ -3140,7 +2898,6 @@ end:
  */
 static int SSLParserTest14(void)
 {
-    int result = 1;
     Flow f;
 
     uint8_t buf1[] = {
@@ -3158,43 +2915,32 @@ static int SSLParserTest14(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf1, buf1_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, buf1, buf1_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf2, buf2_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            buf2, buf2_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /**
@@ -3202,7 +2948,6 @@ end:
  */
 static int SSLParserTest15(void)
 {
-    int result = 1;
     Flow f;
 
     uint8_t buf1[] = {
@@ -3215,26 +2960,23 @@ static int SSLParserTest15(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf1, buf1_len);
-    if (r == 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, buf1, buf1_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r == 0);
 
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /**
@@ -3242,7 +2984,6 @@ end:
  */
 static int SSLParserTest16(void)
 {
-    int result = 1;
     Flow f;
 
     uint8_t buf1[] = {
@@ -3255,26 +2996,23 @@ static int SSLParserTest16(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf1, buf1_len);
-    if (r == 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, buf1, buf1_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r == 0);
 
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /**
@@ -3282,7 +3020,6 @@ end:
  */
 static int SSLParserTest17(void)
 {
-    int result = 1;
     Flow f;
 
     uint8_t buf1[] = {
@@ -3295,26 +3032,23 @@ static int SSLParserTest17(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf1, buf1_len);
-    if (r == 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, buf1, buf1_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r == 0);
 
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /**
@@ -3322,7 +3056,6 @@ end:
  */
 static int SSLParserTest18(void)
 {
-    int result = 1;
     Flow f;
 
     uint8_t buf1[] = {
@@ -3341,43 +3074,32 @@ static int SSLParserTest18(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf1, buf1_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, buf1, buf1_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf2, buf2_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            buf2, buf2_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /**
@@ -3385,7 +3107,6 @@ end:
  */
 static int SSLParserTest19(void)
 {
-    int result = 1;
     Flow f;
 
     uint8_t buf1[] = {
@@ -3399,33 +3120,26 @@ static int SSLParserTest19(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf1, buf1_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, buf1, buf1_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /**
@@ -3433,7 +3147,6 @@ end:
  */
 static int SSLParserTest20(void)
 {
-    int result = 1;
     Flow f;
 
     uint8_t buf1[] = {
@@ -3447,26 +3160,23 @@ static int SSLParserTest20(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf1, buf1_len);
-    if (r == 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, buf1, buf1_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r == 0);
 
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /**
@@ -3474,7 +3184,6 @@ end:
  */
 static int SSLParserTest21(void)
 {
-    int result = 0;
     Flow f;
     uint8_t buf[] = {
         0x80, 0x31, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00,
@@ -3494,41 +3203,24 @@ static int SSLParserTest21(void)
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER | STREAM_EOF, buf,
-                                buf_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER | STREAM_EOF, buf, buf_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *app_state = f.alstate;
-    if (app_state == NULL) {
-        printf("no ssl state: ");
-        goto end;
-    }
+    FAIL_IF_NULL(app_state);
 
-    if (app_state->client_connp.content_type != SSLV2_MT_CLIENT_HELLO) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ",
-               SSLV2_MT_SERVER_HELLO, app_state->client_connp.content_type);
-        goto end;
-    }
+    FAIL_IF(app_state->client_connp.content_type != SSLV2_MT_CLIENT_HELLO);
 
-    if (app_state->client_connp.version != SSL_VERSION_2) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-               SSL_VERSION_2, app_state->client_connp.version);
-        goto end;
-    }
+    FAIL_IF(app_state->client_connp.version != SSL_VERSION_2);
 
-    result = 1;
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
     FLOW_DESTROY(&f);
-    return result;
+
+    PASS;
 }
 
 /**
@@ -3536,7 +3228,6 @@ end:
  */
 static int SSLParserTest22(void)
 {
-    int result = 1;
     Flow f;
     uint8_t buf[] = {
         0x80, 0x31, 0x04, 0x00, 0x01, 0x00,
@@ -3561,43 +3252,24 @@ static int SSLParserTest22(void)
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOCLIENT | STREAM_EOF, buf,
-                                buf_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOCLIENT | STREAM_EOF, buf, buf_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *app_state = f.alstate;
-    if (app_state == NULL) {
-        printf("no ssl state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(app_state);
 
-    if (app_state->server_connp.content_type != SSLV2_MT_SERVER_HELLO) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ",
-               SSLV2_MT_SERVER_HELLO, app_state->server_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(app_state->server_connp.content_type != SSLV2_MT_SERVER_HELLO);
 
-    if (app_state->server_connp.version != SSL_VERSION_2) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                SSL_VERSION_2, app_state->server_connp.version);
-        result = 0;
-        goto end;
-    }
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    FAIL_IF(app_state->server_connp.version != SSL_VERSION_2);
+
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
     FLOW_DESTROY(&f);
-    return result;
+
+    PASS;
 }
 
 /**
@@ -3605,7 +3277,6 @@ end:
  */
 static int SSLParserTest23(void)
 {
-    int result = 1;
     Flow f;
     uint8_t chello_buf[] = {
         0x80, 0x67, 0x01, 0x03, 0x00, 0x00, 0x4e, 0x00,
@@ -3866,212 +3537,109 @@ static int SSLParserTest23(void)
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER | STREAM_START, chello_buf,
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER | STREAM_START, chello_buf,
                                 chello_buf_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *app_state = f.alstate;
-    if (app_state == NULL) {
-        printf("no ssl state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(app_state);
 
-    if (app_state->client_connp.content_type != SSLV2_MT_CLIENT_HELLO) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ",
-               SSLV2_MT_CLIENT_HELLO, app_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(app_state->client_connp.content_type != SSLV2_MT_CLIENT_HELLO);
 
-    if (app_state->client_connp.version != SSL_VERSION_2) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                SSL_VERSION_2, app_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(app_state->client_connp.version != SSL_VERSION_2);
 
-    if ((app_state->flags & SSL_AL_FLAG_STATE_CLIENT_HELLO) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_SSL_CLIENT_HS) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_SSL_NO_SESSION_ID) == 0) {
-        printf("flags not set\n");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_STATE_CLIENT_HELLO) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_SSL_CLIENT_HS) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_SSL_NO_SESSION_ID) == 0);
 
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOCLIENT,
+                            shello_buf, shello_buf_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOCLIENT, shello_buf,
-                            shello_buf_len);
-    if (r != 0) {
-        printf("toclient chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FAIL_IF(app_state->server_connp.content_type != SSLV3_HANDSHAKE_PROTOCOL);
 
-    if (app_state->server_connp.content_type != SSLV3_HANDSHAKE_PROTOCOL) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ",
-               SSLV3_HANDSHAKE_PROTOCOL, app_state->server_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(app_state->server_connp.version != SSL_VERSION_3);
 
-    if (app_state->server_connp.version != SSL_VERSION_3) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                SSL_VERSION_3, app_state->server_connp.version);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_STATE_CLIENT_HELLO) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_SSL_CLIENT_HS) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_SSL_NO_SESSION_ID) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_STATE_SERVER_HELLO) == 0);
 
-    if ((app_state->flags & SSL_AL_FLAG_STATE_CLIENT_HELLO) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_SSL_CLIENT_HS) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_SSL_NO_SESSION_ID) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_STATE_SERVER_HELLO) == 0) {
-        printf("flags not set\n");
-        result = 0;
-        goto end;
-    }
-
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, client_change_cipher_spec_buf,
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            client_change_cipher_spec_buf,
                             client_change_cipher_spec_buf_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     /* with multiple records the client content type hold the type from the last
      * record */
-    if (app_state->client_connp.content_type != SSLV3_HANDSHAKE_PROTOCOL) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ",
-               SSLV3_HANDSHAKE_PROTOCOL, app_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(app_state->client_connp.content_type != SSLV3_HANDSHAKE_PROTOCOL);
 
-    if (app_state->client_connp.version != SSL_VERSION_3) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                SSL_VERSION_3, app_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(app_state->client_connp.version != SSL_VERSION_3);
 
-    if ((app_state->flags & SSL_AL_FLAG_STATE_CLIENT_HELLO) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_SSL_CLIENT_HS) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_SSL_NO_SESSION_ID) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_STATE_SERVER_HELLO) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_STATE_CLIENT_KEYX) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_CLIENT_CHANGE_CIPHER_SPEC) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_CHANGE_CIPHER_SPEC) == 0) {
-        printf("flags not set\n");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_STATE_CLIENT_HELLO) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_SSL_CLIENT_HS) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_SSL_NO_SESSION_ID) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_STATE_SERVER_HELLO) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_STATE_CLIENT_KEYX) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_CLIENT_CHANGE_CIPHER_SPEC) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_CHANGE_CIPHER_SPEC) == 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOCLIENT, server_change_cipher_spec_buf,
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOCLIENT,
+                            server_change_cipher_spec_buf,
                             server_change_cipher_spec_buf_len);
-    if (r != 0) {
-        printf("toclient chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     /* with multiple records the serve content type hold the type from the last
      * record */
-    if (app_state->server_connp.content_type != SSLV3_HANDSHAKE_PROTOCOL) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ",
-               SSLV3_HANDSHAKE_PROTOCOL, app_state->server_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(app_state->server_connp.content_type != SSLV3_HANDSHAKE_PROTOCOL);
 
-    if (app_state->server_connp.version != SSL_VERSION_3) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                SSL_VERSION_3, app_state->server_connp.version);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(app_state->server_connp.version != SSL_VERSION_3);
 
-    if ((app_state->flags & SSL_AL_FLAG_STATE_CLIENT_HELLO) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_SSL_CLIENT_HS) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_SSL_NO_SESSION_ID) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_STATE_SERVER_HELLO) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_STATE_CLIENT_KEYX) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_CLIENT_CHANGE_CIPHER_SPEC) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_CHANGE_CIPHER_SPEC) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_SERVER_CHANGE_CIPHER_SPEC) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_CHANGE_CIPHER_SPEC) == 0) {
-        printf("flags not set\n");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_STATE_CLIENT_HELLO) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_SSL_CLIENT_HS) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_SSL_NO_SESSION_ID) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_STATE_SERVER_HELLO) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_STATE_CLIENT_KEYX) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_CLIENT_CHANGE_CIPHER_SPEC) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_SERVER_CHANGE_CIPHER_SPEC) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_CHANGE_CIPHER_SPEC) == 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, toserver_app_data_buf,
-                            toserver_app_data_buf_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            toserver_app_data_buf, toserver_app_data_buf_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    if (app_state->client_connp.content_type != SSLV3_APPLICATION_PROTOCOL) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ",
-               SSLV3_APPLICATION_PROTOCOL, app_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(app_state->client_connp.content_type != SSLV3_APPLICATION_PROTOCOL);
 
-    if (app_state->client_connp.version != SSL_VERSION_3) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                SSL_VERSION_3, app_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(app_state->client_connp.version != SSL_VERSION_3);
 
-    if ((app_state->flags & SSL_AL_FLAG_STATE_CLIENT_HELLO) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_SSL_CLIENT_HS) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_SSL_NO_SESSION_ID) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_STATE_SERVER_HELLO) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_STATE_CLIENT_KEYX) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_CLIENT_CHANGE_CIPHER_SPEC) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_CHANGE_CIPHER_SPEC) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_SERVER_CHANGE_CIPHER_SPEC) == 0 ||
-        (app_state->flags & SSL_AL_FLAG_CHANGE_CIPHER_SPEC) == 0) {
-        printf("flags not set\n");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_STATE_CLIENT_HELLO) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_SSL_CLIENT_HS) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_SSL_NO_SESSION_ID) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_STATE_SERVER_HELLO) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_STATE_CLIENT_KEYX) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_CLIENT_CHANGE_CIPHER_SPEC) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_SERVER_CHANGE_CIPHER_SPEC) == 0);
+    FAIL_IF((app_state->flags & SSL_AL_FLAG_CHANGE_CIPHER_SPEC) == 0);
 
-    if (!(f.flags & FLOW_NOPAYLOAD_INSPECTION)) {
-        printf("The flags should be set\n");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NOT(f.flags & FLOW_NOPAYLOAD_INSPECTION);
 
-end:
     if (alp_tctx != NULL)
         AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
     FLOW_DESTROY(&f);
-    return result;
+
+    PASS;
 }
 
 /**
@@ -4079,7 +3647,6 @@ end:
  */
 static int SSLParserTest24(void)
 {
-    int result = 1;
     Flow f;
     uint8_t buf1[] = {
         0x16, 0x03, 0x00, 0x00, 0x6f, 0x01, 0x00, 0x00,
@@ -4109,57 +3676,36 @@ static int SSLParserTest24(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf1, buf1_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, buf1, buf1_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, buf2, buf2_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        result = 0;
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+                            buf2, buf2_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        result = 0;
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-    if (ssl_state->client_connp.content_type != 0x16) {
-        printf("expected content_type %" PRIu8 ", got %" PRIu8 ": ", 0x16,
-                ssl_state->client_connp.content_type);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.content_type != 0x16);
 
-    if (ssl_state->client_connp.version != SSL_VERSION_3) {
-        printf("expected version %04" PRIu16 ", got %04" PRIu16 ": ",
-                SSL_VERSION_3, ssl_state->client_connp.version);
-        result = 0;
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.version != SSL_VERSION_3);
 
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 /**
@@ -4168,7 +3714,6 @@ end:
  */
 static int SSLParserTest25(void)
 {
-    int result = 0;
     Flow f;
     uint8_t client_hello[] = {
         0x16, 0x03, 0x01, 0x00, 0xd3, 0x01, 0x00, 0x00,
@@ -4488,61 +4033,41 @@ static int SSLParserTest25(void)
 
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
+    FLOW_INITIALIZE(&f);
     f.protoctx = (void *)&ssn;
     f.proto = IPPROTO_TCP;
 
     StreamTcpInitConfig(TRUE);
 
-    SCMutexLock(&f.m);
-    int r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER, client_hello, client_hello_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_WRLOCK(&f);
+    int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS,
+                                STREAM_TOSERVER, client_hello,
+                                client_hello_len);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     SSLState *ssl_state = f.alstate;
-    if (ssl_state == NULL) {
-        printf("no tls state: ");
-        goto end;
-    }
+    FAIL_IF_NULL(ssl_state);
 
-    if (ssl_state->client_connp.bytes_processed != 0 ||
-        ssl_state->client_connp.hs_bytes_processed != 0)
-    {
-        printf("client_hello error\n");
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.bytes_processed != 0);
+    FAIL_IF(ssl_state->client_connp.hs_bytes_processed != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOCLIENT,
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOCLIENT,
                             server_hello_certificate_done,
                             server_hello_certificate_done_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
-    if (ssl_state->client_connp.bytes_processed != 0 ||
-        ssl_state->client_connp.hs_bytes_processed != 0)
-    {
-        printf("server_hello_certificate_done error\n");
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.bytes_processed != 0);
+    FAIL_IF(ssl_state->client_connp.hs_bytes_processed != 0);
 
-    SCMutexLock(&f.m);
-    r = AppLayerParserParse(alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
+    FLOWLOCK_WRLOCK(&f);
+    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_TLS, STREAM_TOSERVER,
                             client_key_exchange_cipher_enc_hs,
                             client_key_exchange_cipher_enc_hs_len);
-    if (r != 0) {
-        printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        SCMutexUnlock(&f.m);
-        goto end;
-    }
-    SCMutexUnlock(&f.m);
+    FLOWLOCK_UNLOCK(&f);
+    FAIL_IF(r != 0);
 
     /* The reason hs_bytes_processed is 2 is because, the record
      * immediately after the client key exchange is 2 bytes long,
@@ -4551,19 +4076,14 @@ static int SSLParserTest25(void)
      * handshake, we immediately break and don't parse the pdu from
      * where we left off, and leave the hs_bytes_processed var
      * isn't reset. */
-    if (ssl_state->client_connp.bytes_processed != 0 ||
-        ssl_state->client_connp.hs_bytes_processed != 2)
-    {
-        printf("client_key_exchange_cipher_enc_hs error\n");
-        goto end;
-    }
+    FAIL_IF(ssl_state->client_connp.bytes_processed != 0);
+    FAIL_IF(ssl_state->client_connp.hs_bytes_processed != 2);
 
-    result = 1;
-end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
+    AppLayerParserThreadCtxFree(alp_tctx);
     StreamTcpFreeConfig(TRUE);
-    return result;
+    FLOW_DESTROY(&f);
+
+    PASS;
 }
 
 #endif /* UNITTESTS */

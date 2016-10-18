@@ -367,6 +367,8 @@ static Flow *FlowGetNew(ThreadVars *tv, DecodeThreadVars *dtv, const Packet *p)
             if (!(SC_ATOMIC_GET(flow_flags) & FLOW_EMERGENCY)) {
                 SC_ATOMIC_OR(flow_flags, FLOW_EMERGENCY);
 
+                FlowTimeoutsEmergency();
+
                 /* under high load, waking up the flow mgr each time leads
                  * to high cpu usage. Flows are not timed out much faster if
                  * we check a 1000 times a second. */
@@ -485,9 +487,8 @@ Flow *FlowGetFlowFromHash(ThreadVars *tv, DecodeThreadVars *dtv, const Packet *p
         FlowInit(f, p);
         f->flow_hash = hash;
         f->fb = fb;
+        FlowUpdateState(f, FLOW_STATE_NEW);
 
-        /* update the last seen timestamp of this flow */
-        COPY_TIMESTAMP(&p->ts,&f->lastts);
         FlowReference(dest, f);
 
         FBLOCK_UNLOCK(fb);
@@ -521,9 +522,8 @@ Flow *FlowGetFlowFromHash(ThreadVars *tv, DecodeThreadVars *dtv, const Packet *p
                 FlowInit(f, p);
                 f->flow_hash = hash;
                 f->fb = fb;
+                FlowUpdateState(f, FLOW_STATE_NEW);
 
-                /* update the last seen timestamp of this flow */
-                COPY_TIMESTAMP(&p->ts,&f->lastts);
                 FlowReference(dest, f);
 
                 FBLOCK_UNLOCK(fb);
@@ -558,8 +558,6 @@ Flow *FlowGetFlowFromHash(ThreadVars *tv, DecodeThreadVars *dtv, const Packet *p
                     }
                 }
 
-                /* update the last seen timestamp of this flow */
-                COPY_TIMESTAMP(&p->ts,&f->lastts);
                 FlowReference(dest, f);
 
                 FBLOCK_UNLOCK(fb);
@@ -578,8 +576,6 @@ Flow *FlowGetFlowFromHash(ThreadVars *tv, DecodeThreadVars *dtv, const Packet *p
         }
     }
 
-    /* update the last seen timestamp of this flow */
-    COPY_TIMESTAMP(&p->ts,&f->lastts);
     FlowReference(dest, f);
 
     FBLOCK_UNLOCK(fb);
@@ -647,6 +643,7 @@ static Flow *FlowGetUsedFlow(ThreadVars *tv, DecodeThreadVars *dtv)
         f->hnext = NULL;
         f->hprev = NULL;
         f->fb = NULL;
+        SC_ATOMIC_SET(fb->next_ts, 0);
         FBLOCK_UNLOCK(fb);
 
         int state = SC_ATOMIC_GET(f->flow_state);
@@ -656,6 +653,10 @@ static Flow *FlowGetUsedFlow(ThreadVars *tv, DecodeThreadVars *dtv)
             f->flow_end_flags |= FLOW_END_FLAG_STATE_ESTABLISHED;
         else if (state == FLOW_STATE_CLOSED)
             f->flow_end_flags |= FLOW_END_FLAG_STATE_CLOSED;
+        else if (state == FLOW_STATE_CAPTURE_BYPASSED)
+            f->flow_end_flags |= FLOW_END_FLAG_STATE_BYPASSED;
+        else if (state == FLOW_STATE_LOCAL_BYPASSED)
+            f->flow_end_flags |= FLOW_END_FLAG_STATE_BYPASSED;
 
         f->flow_end_flags |= FLOW_END_FLAG_FORCED;
 
@@ -667,6 +668,8 @@ static Flow *FlowGetUsedFlow(ThreadVars *tv, DecodeThreadVars *dtv)
             (void)OutputFlowLog(tv, dtv->output_flow_thread_data, f);
 
         FlowClearMemory(f, f->protomap);
+
+        FlowUpdateState(f, FLOW_STATE_NEW);
 
         FLOWLOCK_UNLOCK(f);
 

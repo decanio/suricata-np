@@ -159,6 +159,21 @@ static int LuaCallbackPacketPayload(lua_State *luastate)
 }
 
 /** \internal
+ *  \brief fill lua stack with packet timestamp
+ *  \param luastate the lua state
+ *  \param p packet
+ *  \retval cnt number of data items placed on the stack
+ *
+ *  Places: seconds (number), microseconds (number)
+ */
+static int LuaCallbackTimestampPushToStack(lua_State *luastate, const struct timeval *ts)
+{
+    lua_pushnumber(luastate, (double)ts->tv_sec);
+    lua_pushnumber(luastate, (double)ts->tv_usec);
+    return 2;
+}
+
+/** \internal
  *  \brief fill lua stack with header info
  *  \param luastate the lua state
  *  \param p packet
@@ -172,6 +187,19 @@ static int LuaCallbackTimeStringPushToStackFromPacket(lua_State *luastate, const
     CreateTimeString(&p->ts, timebuf, sizeof(timebuf));
     lua_pushstring (luastate, timebuf);
     return 1;
+}
+
+/** \internal
+ *  \brief Wrapper for getting packet timestamp (as numbers) into a lua script
+ *  \retval cnt number of items placed on the stack
+ */
+static int LuaCallbackPacketTimestamp(lua_State *luastate)
+{
+    const Packet *p = LuaStateGetPacket(luastate);
+    if (p == NULL)
+        return LuaCallbackError(luastate, "internal error: no packet");
+
+    return LuaCallbackTimestampPushToStack(luastate, &p->ts);
 }
 
 /** \internal
@@ -210,18 +238,12 @@ static int LuaCallbackTimeStringPushToStackFromFlow(lua_State *luastate, const F
 static int LuaCallbackFlowTimeString(lua_State *luastate)
 {
     int r = 0;
-    int locked = 0;
-    Flow *flow = LuaStateGetFlow(luastate, &locked);
+    Flow *flow = LuaStateGetFlow(luastate);
     if (flow == NULL)
         return LuaCallbackError(luastate, "internal error: no flow");
 
-    if (locked == LUA_FLOW_NOT_LOCKED_BY_PARENT) {
-        FLOWLOCK_RDLOCK(flow);
-        r = LuaCallbackTimeStringPushToStackFromFlow(luastate, flow);
-        FLOWLOCK_UNLOCK(flow);
-    } else {
-        r = LuaCallbackTimeStringPushToStackFromFlow(luastate, flow);
-    }
+    r = LuaCallbackTimeStringPushToStackFromFlow(luastate, flow);
+
     return r;
 }
 
@@ -345,18 +367,12 @@ static int LuaCallbackTuplePushToStackFromFlow(lua_State *luastate, const Flow *
 static int LuaCallbackTupleFlow(lua_State *luastate)
 {
     int r = 0;
-    int lock_hint = 0;
-    Flow *f = LuaStateGetFlow(luastate, &lock_hint);
+    Flow *f = LuaStateGetFlow(luastate);
     if (f == NULL)
         return LuaCallbackError(luastate, "internal error: no flow");
 
-    if (lock_hint == LUA_FLOW_NOT_LOCKED_BY_PARENT) {
-        FLOWLOCK_RDLOCK(f);
-        r = LuaCallbackTuplePushToStackFromFlow(luastate, f);
-        FLOWLOCK_UNLOCK(f);
-    } else {
-        r = LuaCallbackTuplePushToStackFromFlow(luastate, f);
-    }
+    r = LuaCallbackTuplePushToStackFromFlow(luastate, f);
+
     return r;
 }
 
@@ -384,18 +400,12 @@ static int LuaCallbackAppLayerProtoPushToStackFromFlow(lua_State *luastate, cons
 static int LuaCallbackAppLayerProtoFlow(lua_State *luastate)
 {
     int r = 0;
-    int lock_hint = 0;
-    Flow *f = LuaStateGetFlow(luastate, &lock_hint);
+    Flow *f = LuaStateGetFlow(luastate);
     if (f == NULL)
         return LuaCallbackError(luastate, "internal error: no flow");
 
-    if (lock_hint == LUA_FLOW_NOT_LOCKED_BY_PARENT) {
-        FLOWLOCK_RDLOCK(f);
-        r = LuaCallbackAppLayerProtoPushToStackFromFlow(luastate, f);
-        FLOWLOCK_UNLOCK(f);
-    } else {
-        r = LuaCallbackAppLayerProtoPushToStackFromFlow(luastate, f);
-    }
+    r = LuaCallbackAppLayerProtoPushToStackFromFlow(luastate, f);
+
     return r;
 }
 
@@ -423,18 +433,12 @@ static int LuaCallbackStatsPushToStackFromFlow(lua_State *luastate, const Flow *
 static int LuaCallbackStatsFlow(lua_State *luastate)
 {
     int r = 0;
-    int lock_hint = 0;
-    Flow *f = LuaStateGetFlow(luastate, &lock_hint);
+    Flow *f = LuaStateGetFlow(luastate);
     if (f == NULL)
         return LuaCallbackError(luastate, "internal error: no flow");
 
-    if (lock_hint == LUA_FLOW_NOT_LOCKED_BY_PARENT) {
-        FLOWLOCK_RDLOCK(f);
-        r = LuaCallbackStatsPushToStackFromFlow(luastate, f);
-        FLOWLOCK_UNLOCK(f);
-    } else {
-        r = LuaCallbackStatsPushToStackFromFlow(luastate, f);
-    }
+    r = LuaCallbackStatsPushToStackFromFlow(luastate, f);
+
     return r;
 }
 
@@ -617,8 +621,30 @@ static int LuaCallbackFileInfoPushToStackFromFile(lua_State *luastate, const Fil
             strlcat(md5, one, sizeof(md5));
         }
     }
+    char sha1[41] = "";
+    char *sha1ptr = sha1;
+    if (file->flags & FILE_SHA1) {
+        size_t x;
+        for (x = 0; x < sizeof(file->sha1); x++) {
+            char one[3] = "";
+            snprintf(one, sizeof(one), "%02x", file->sha1[x]);
+            strlcat(sha1, one, sizeof(sha1));
+        }
+    }
+    char sha256[65] = "";
+    char *sha256ptr = sha256;
+    if (file->flags & FILE_SHA256) {
+        size_t x;
+        for (x = 0; x < sizeof(file->sha256); x++) {
+            char one[3] = "";
+            snprintf(one, sizeof(one), "%02x", file->sha256[x]);
+            strlcat(sha256, one, sizeof(sha256));
+        }
+    }
 #else
     char *md5ptr = NULL;
+    char *sha1ptr = NULL;
+    char *sha256ptr = NULL;
 #endif
 
     lua_pushnumber(luastate, file->file_id);
@@ -627,6 +653,8 @@ static int LuaCallbackFileInfoPushToStackFromFile(lua_State *luastate, const Fil
     lua_pushnumber(luastate, FileSize(file));
     lua_pushstring (luastate, file->magic);
     lua_pushstring(luastate, md5ptr);
+    lua_pushstring(luastate, sha1ptr);
+    lua_pushstring(luastate, sha256ptr);
     return 6;
 }
 
@@ -719,6 +747,8 @@ int LuaRegisterFunctions(lua_State *luastate)
     /* registration of the callbacks */
     lua_pushcfunction(luastate, LuaCallbackPacketPayload);
     lua_setglobal(luastate, "SCPacketPayload");
+    lua_pushcfunction(luastate, LuaCallbackPacketTimestamp);
+    lua_setglobal(luastate, "SCPacketTimestamp");
     lua_pushcfunction(luastate, LuaCallbackPacketTimeString);
     lua_setglobal(luastate, "SCPacketTimeString");
     lua_pushcfunction(luastate, LuaCallbackTuple);
@@ -771,18 +801,11 @@ int LuaRegisterFunctions(lua_State *luastate)
 int LuaStateNeedProto(lua_State *luastate, AppProto alproto)
 {
     AppProto flow_alproto = 0;
-    int locked = 0;
-    Flow *flow = LuaStateGetFlow(luastate, &locked);
+    Flow *flow = LuaStateGetFlow(luastate);
     if (flow == NULL)
         return LuaCallbackError(luastate, "internal error: no flow");
 
-    if (locked == LUA_FLOW_NOT_LOCKED_BY_PARENT) {
-        FLOWLOCK_RDLOCK(flow);
-        flow_alproto = flow->alproto;
-        FLOWLOCK_UNLOCK(flow);
-    } else {
-        flow_alproto = flow->alproto;
-    }
+    flow_alproto = flow->alproto;
 
     return (alproto == flow_alproto);
 

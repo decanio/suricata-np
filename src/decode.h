@@ -341,6 +341,21 @@ typedef struct PktProfilingAppData_ {
     uint64_t ticks_spent;
 } PktProfilingAppData;
 
+typedef struct PktProfilingLoggerData_ {
+    uint64_t ticks_start;
+    uint64_t ticks_end;
+    uint64_t ticks_spent;
+} PktProfilingLoggerData;
+
+typedef struct PktProfilingPrefilterEngine_ {
+    uint64_t ticks_spent;
+} PktProfilingPrefilterEngine;
+
+typedef struct PktProfilingPrefilterData_ {
+    PktProfilingPrefilterEngine *engines;
+    uint32_t size;          /**< array size */
+} PktProfilingPrefilterData;
+
 /** \brief Per pkt stats storage */
 typedef struct PktProfiling_ {
     uint64_t ticks_start;
@@ -350,6 +365,8 @@ typedef struct PktProfiling_ {
     PktProfilingData flowworker[PROFILE_FLOWWORKER_SIZE];
     PktProfilingAppData app[ALPROTO_MAX];
     PktProfilingDetectData detect[PROF_DETECT_SIZE];
+    PktProfilingLoggerData logger[LOGGER_SIZE];
+    PktProfilingPrefilterData prefilter;
     uint64_t proto_detect;
 } PktProfiling;
 
@@ -440,6 +457,9 @@ typedef struct Packet_
 
     /** The release function for packet structure and data */
     void (*ReleasePacket)(struct Packet_ *);
+    /** The function triggering bypass the flow in the capture method.
+     * Return 1 for success and 0 on error */
+    int (*BypassPacketsFlow)(struct Packet_ *);
 
     /* pkt vars */
     PktVar *pktvar;
@@ -767,6 +787,7 @@ void CaptureStatsSetup(ThreadVars *tv, CaptureStats *s);
         (p)->vlanh[1] = NULL;                   \
         (p)->payload = NULL;                    \
         (p)->payload_len = 0;                   \
+        (p)->BypassPacketsFlow = NULL;          \
         (p)->pktlen = 0;                        \
         (p)->alerts.cnt = 0;                    \
         (p)->alerts.drop.action = 0;            \
@@ -895,6 +916,7 @@ int PacketCopyData(Packet *p, uint8_t *pktdata, int pktlen);
 int PacketSetData(Packet *p, uint8_t *pktdata, int pktlen);
 int PacketCopyDataOffset(Packet *p, int offset, uint8_t *data, int datalen);
 const char *PktSrcToString(enum PktSrcEnum pkt_src);
+void PacketBypassCallback(Packet *p);
 
 DecodeThreadVars *DecodeThreadVarsAlloc(ThreadVars *);
 void DecodeThreadVarsFree(ThreadVars *, DecodeThreadVars *);

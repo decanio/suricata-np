@@ -152,8 +152,8 @@ const struct DecodeEvents_ DEvents[] = {
     { "decoder.sctp.pkt_too_small", SCTP_PKT_TOO_SMALL, },
 
     /* Fragmentation reasembly events. */
-    { "decoder.ipv4.frag_too_large", IPV4_FRAG_PKT_TOO_LARGE, },
-    { "decoder.ipv6.frag_too_large", IPV6_FRAG_PKT_TOO_LARGE, },
+    { "decoder.ipv4.frag_pkt_too_large", IPV4_FRAG_PKT_TOO_LARGE, },
+    { "decoder.ipv6.frag_pkt_too_large", IPV6_FRAG_PKT_TOO_LARGE, },
     { "decoder.ipv4.frag_overlap", IPV4_FRAG_OVERLAP, },
     { "decoder.ipv6.frag_overlap", IPV6_FRAG_OVERLAP, },
     /* Fragment ignored due to internal error */
@@ -168,6 +168,7 @@ const struct DecodeEvents_ DEvents[] = {
     { "decoder.ipv6.ipv6_in_ipv6_wrong_version", IPV6_IN_IPV6_WRONG_IP_VER, },
 
     /* MPLS events */
+    { "decoder.mpls.header_too_small", MPLS_HEADER_TOO_SMALL, },
     { "decoder.mpls.bad_label_router_alert", MPLS_BAD_LABEL_ROUTER_ALERT, },
     { "decoder.mpls.bad_label_implicit_null", MPLS_BAD_LABEL_IMPLICIT_NULL, },
     { "decoder.mpls.bad_label_reserved", MPLS_BAD_LABEL_RESERVED, },
