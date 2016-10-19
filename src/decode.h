@@ -274,6 +274,8 @@ typedef struct PacketAlert_ {
 #define PACKET_ALERT_FLAG_STREAM_MATCH  0x04
 /** alert is in a tx, tx_id set */
 #define PACKET_ALERT_FLAG_TX            0x08
+/** action was changed by rate_filter */
+#define PACKET_ALERT_RATE_FILTER_MODIFIED   0x10
 
 #define PACKET_ALERT_MAX 15
 
@@ -1095,6 +1097,13 @@ int DecoderParseDataFromFile(char *filename, DecoderFunc Decoder);
 /** indication by decoder that it feels the packet should be handled by
  *  flow engine: Packet::flow_hash will be set */
 #define PKT_WANTS_FLOW                  (1<<22)
+
+/** protocol detection done */
+#define PKT_PROTO_DETECT_TS_DONE        (1<<23)
+#define PKT_PROTO_DETECT_TC_DONE        (1<<24)
+
+#define PKT_REBUILT_FRAGMENT            (1<<25)     /**< Packet is rebuilt from
+                                                     * fragments. */
 
 /** \brief return 1 if the packet is a pseudo packet */
 #define PKT_IS_PSEUDOPKT(p) ((p)->flags & PKT_PSEUDO_STREAM_END)
