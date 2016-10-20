@@ -404,6 +404,7 @@ util-ioctl.h util-ioctl.c \
 util-ip.h util-ip.c \
 util-logopenfile.h util-logopenfile.c \
 util-logopenfile-tile.h util-logopenfile-tile.c \
+util-logopenfile-kafka.h util-logopenfile-kafka.c \
 util-log-redis.h util-log-redis.c \
 util-lua.c util-lua.h \
 util-luajit.c util-luajit.h \
