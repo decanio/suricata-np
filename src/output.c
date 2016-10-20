@@ -67,6 +67,7 @@
 #include "log-tcp-data.h"
 #include "log-stats.h"
 #include "output-json.h"
+#include "output-json-rtsp.h"
 #include "output-json-template.h"
 #include "output-lua.h"
 
@@ -1087,6 +1088,8 @@ void OutputRegisterLoggers(void)
     /* json stats */
     JsonStatsLogRegister();
 
+    /* rtsp JSON logger. */
+    JsonrtspLogRegister();
     /* Template JSON logger. */
     JsonTemplateLogRegister();
 }

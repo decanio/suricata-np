@@ -689,6 +689,59 @@
         exit 1
     fi
 
+  # libgstreamer
+    # On Ubuntu this requires installing ...
+    enable_gstreamer="no"
+    AC_ARG_WITH(libgstreamer_includes,
+            [  --with-libgstreamer-includes=DIR  libgstreamer include directory],
+            [with_libgstreamer_includes="$withval"],[with_libgstreamer_includes=no])
+    AC_ARG_WITH(libgstreamer_config,
+            [  --with-libgstreamer-config=DIR  libgstreamer config directory],
+            [with_libgstreamer_config="$withval"],[with_libgstreamer_config=no])
+    AC_ARG_WITH(libgstreamer_libraries,
+            [  --with-libgstreamer-libraries=DIR    libgstreamer library directory],
+            [with_libgstreamer_libraries="$withval"],[with_libgstreamer_libraries="no"])
+
+    if test "$with_libgstreamer_includes" != "no"; then
+        CPPFLAGS="${CPPFLAGS} -I${with_libgstreamer_includes}"
+    fi
+    if test "$with_libgstreamer_config" != "no"; then
+        CPPFLAGS="${CPPFLAGS} -I${with_libgstreamer_config}"
+    fi
+
+    # depends on libglib
+    AC_ARG_WITH(libglib_includes,
+            [  --with-libglib-includes=DIR  libglib include directory],
+            [with_libglib_includes="$withval"],[with_libglib_includes=no])
+    AC_ARG_WITH(libglib_config,
+            [  --with-libglib-config=DIR  libglib config directory],
+            [with_libglib_config="$withval"],[with_libglib_config=no])
+    AC_ARG_WITH(libglib_libraries,
+            [  --with-libglib-libraries=DIR    libglib library directory],
+            [with_libglib_libraries="$withval"],[with_libglib_libraries="no"])
+
+    if test "$with_libglib_includes" != "no"; then
+        CPPFLAGS="${CPPFLAGS} -I${with_libglib_includes}"
+    fi
+    if test "$with_libglib_config" != "no"; then
+        CPPFLAGS="${CPPFLAGS} -I${with_libglib_config}"
+    fi
+
+    AC_CHECK_HEADER(gst/rtsp/gstrtspconnection.h,LIBGSTREAMER="yes",LIBGSTREAMER="no")
+    if test "$LIBGSTREAMER" = "yes"; then
+        if test "$with_libgstreamer_libraries" != "no"; then
+            LDFLAGS="${LDFLAGS} -L${with_libgstreamer_libraries}"
+        fi
+        # TBD: finish the library check
+        #AC_CHECK_LIB(pj,pj_init,,LIBGSTREAMER="no",-lpthread -lm -luuid)
+    fi
+
+    if test "$LIBGSTREAMER" != "no"; then
+        AC_DEFINE([HAVE_GSTREAMER],[1],[libgstreamer available])
+        LIBS="${LIBS} -lgstrtsp-1.0 -lglib-2.0"
+        enable_gstreamer="yes"
+    fi
+
   # libjansson
     enable_jansson="no"
     AC_ARG_WITH(libjansson_includes,
@@ -1989,6 +2042,7 @@ SURICATA_BUILD_CONF="Suricata Configuration:
   libnss support:                          ${enable_nss}
   libnspr support:                         ${enable_nspr}
   libjansson support:                      ${enable_jansson}
+  libgstreamer support:                    ${enable_gstreamer}
   hiredis support:                         ${enable_hiredis}
   Prelude support:                         ${enable_prelude}
   PCRE jit:                                ${pcre_jit_available}
