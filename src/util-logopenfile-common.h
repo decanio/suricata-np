@@ -22,23 +22,16 @@
  * \author Paulo Pacheco <fooinha@gmail.com>
  */
 
-#ifndef __UTIL_LOGOPENFILE_H__
-#define __UTIL_LOGOPENFILE_H__
+#ifndef __UTIL_LOGOPENFILE_COMMON_H__
+#define __UTIL_LOGOPENFILE_COMMON_H__
 
-#include "conf.h"            /* ConfNode   */
-#include "tm-modules.h"      /* LogFileCtx */
-#include "util-buffer.h"
-#include "util-logopenfile-common.h"
-
-#if 0
 #ifdef HAVE_LIBHIREDIS
-#include "util-log-redis.h"
-#endif /* HAVE_LIBHIREDIS */
-
+#include "hiredis/hiredis.h"
+#endif
 
 #ifdef HAVE_LIBRDKAFKA
-#include "util-logopenfile-kafka.h"
-#endif /* HAVE_LIBRDKAFKA */
+#include "librdkafka/rdkafka.h"
+#endif
 
 typedef struct {
     uint16_t fileno;
@@ -55,6 +48,32 @@ typedef struct SyslogSetup_ {
     int alert_syslog_level;
 } SyslogSetup;
 
+#ifdef HAVE_LIBHIREDIS
+enum RedisMode { REDIS_LIST, REDIS_CHANNEL };
+
+typedef struct RedisSetup_ {
+    enum RedisMode mode;
+    const char *command;
+    char *key;
+    int  batch_size;
+    int  batch_count;
+    char *server;
+    int  port;
+    time_t tried;
+} RedisSetup;
+#endif
+
+#ifdef HAVE_LIBRDKAFKA
+typedef struct KafkaSetup_ {
+    rd_kafka_topic_t *topic;
+    rd_kafka_conf_t *conf;
+    const char *topic_name;
+    char *brokers;
+    int partition;
+    intmax_t loglevel;
+    time_t tried;
+} KafkaSetup;
+#endif
 
 /** Global structure for Output Context */
 typedef struct LogFileCtx_ {
@@ -62,7 +81,7 @@ typedef struct LogFileCtx_ {
         FILE *fp;
         PcieFile *pcie_fp;
 #ifdef HAVE_LIBHIREDIS
-        void *redis;
+        redisContext *redis;
 #endif
 #ifdef HAVE_LIBRDKAFKA
         rd_kafka_t *kafka;
@@ -151,13 +170,6 @@ typedef struct LogFileCtx_ {
 #define LOGFILE_HEADER_WRITTEN  0x01
 #define LOGFILE_ALERTS_PRINTED  0x02
 #define LOGFILE_ROTATE_INTERVAL 0x04
-#endif
 
-LogFileCtx *LogFileNewCtx(void);
-int LogFileFreeCtx(LogFileCtx *);
-int LogFileWrite(LogFileCtx *file_ctx, MemBuffer *buffer);
+#endif //__UTIL_LOGOPENFILE_COMMON_H__
 
-int SCConfLogOpenGeneric(ConfNode *conf, LogFileCtx *, const char *, int);
-int SCConfLogReopen(LogFileCtx *);
-
-#endif /* __UTIL_LOGOPENFILE_H__ */

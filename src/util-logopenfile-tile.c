@@ -216,9 +216,9 @@ static void PcieWriteOpen(PcieFile *fp, const char *path, const char append)
     TilePcieDMABuf(p, p->len);
 }
 
-static int TilePcieWrite(const char *buffer, int buffer_len, LogFileCtx *log_ctx)
+static int TilePcieWrite(const char *buffer, int buffer_len, LogFileCtx **log_ctx)
 {
-    PcieFile *fp = log_ctx->pcie_fp;
+    PcieFile *fp = *log_ctx->pcie_fp;
     /* Allocate space in the PCIe output buffer */
     PcieMsg *p = TilePcieAllocateBuffer(buffer_len);
 

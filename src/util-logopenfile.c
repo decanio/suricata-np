@@ -46,7 +46,7 @@
 
 #ifdef BUILD_WITH_UNIXSOCKET
 
-#ifdef HAVE_RDKAFKA
+#ifdef HAVE_LIBRDKAFKA
 #include "util-logopenfile-kafka.h"
 #endif
 
@@ -342,11 +342,11 @@ SCLogOpenFileFp(const char *path, const char *append_setting, uint32_t mode)
  *  \retval FILE* on success
  *  \retval NULL on error
  */
-static PcieFile *SCLogOpenPcieFp(LogFileCtx *log_ctx, const char *path, 
+static PcieFile *SCLogOpenPcieFp(LogFileCtx *log_ctx, const char *path,
                                  const char *append_setting)
 {
 #ifndef __tile__
-    SCLogError(SC_ERR_INVALID_YAML_CONF_ENTRY, 
+    SCLogError(SC_ERR_INVALID_YAML_CONF_ENTRY,
                "PCIe logging only supported on Tile-Gx Architecture.");
     return NULL;
 #else
@@ -479,6 +479,7 @@ SCConfLogOpenGeneric(ConfNode *conf,
     if (strcasecmp(filetype, "unix_stream") == 0) {
 #ifdef BUILD_WITH_UNIXSOCKET
         /* Don't bail. May be able to connect later. */
+        log_ctx->type = LOGFILE_TYPE_UNIX_STREAM;
         log_ctx->is_sock = 1;
         log_ctx->sock_type = SOCK_STREAM;
         log_ctx->fp = SCLogOpenUnixSocketFp(log_path, SOCK_STREAM, 1);
@@ -488,6 +489,7 @@ SCConfLogOpenGeneric(ConfNode *conf,
     } else if (strcasecmp(filetype, "unix_dgram") == 0) {
 #ifdef BUILD_WITH_UNIXSOCKET
         /* Don't bail. May be able to connect later. */
+        log_ctx->type = LOGFILE_TYPE_UNIX_DGRAM;
         log_ctx->is_sock = 1;
         log_ctx->sock_type = SOCK_DGRAM;
         log_ctx->fp = SCLogOpenUnixSocketFp(log_path, SOCK_DGRAM, 1);
@@ -516,6 +518,24 @@ SCConfLogOpenGeneric(ConfNode *conf,
         }
         log_ctx->type = LOGFILE_TYPE_REDIS;
 #endif
+    } else if (strcasecmp(filetype, "kafka") == 0) {
+#ifdef HAVE_LIBRDKAFKA
+        SCMutexLock(&log_ctx->fp_mutex);
+
+        log_ctx->fp = NULL;
+        log_ctx->is_sock = 0;
+        ConfNode *kafka_node = ConfNodeLookupChild(conf, "kafka");
+        SCConfLogOpenKafka(kafka_node, &log_ctx->kafka_setup, log_ctx->sensor_name);
+        log_ctx->type = LOGFILE_TYPE_KAFKA;
+        log_ctx->kafka = SCLogOpenKafka(&log_ctx->kafka_setup);
+        log_ctx->Close = SCLogFileCloseKafka;
+
+        SCMutexUnlock(&log_ctx->fp_mutex);
+#else
+        SCLogError(SC_ERR_INVALID_ARGUMENT,
+                "kafka output option is not compiled");
+#endif// HAVE_LIBRDKAFKA
+
     } else {
         SCLogError(SC_ERR_INVALID_YAML_CONF_ENTRY, "Invalid entry for "
                    "%s.filetype.  Expected \"regular\" (default), \"unix_stream\", "
@@ -644,7 +664,6 @@ int LogFileFreeCtx(LogFileCtx *lf_ctx)
 
 int LogFileWrite(LogFileCtx *file_ctx, MemBuffer *buffer)
 {
-
     if (file_ctx->type == LOGFILE_TYPE_SYSLOG) {
         syslog(file_ctx->syslog_setup.alert_syslog_level, "%s",
                 (const char *)MEMBUFFER_BUFFER(buffer));
