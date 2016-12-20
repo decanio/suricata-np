@@ -214,6 +214,7 @@ outputs:
         #    alerts: yes      # log alerts that caused drops
         #    flows: all       # start or all: 'start' logs only a single drop
         #                     # per flow direction. All logs each dropped pkt.
+        - rdp
         - smtp:
             #extended: yes # enable this for extended logging information
             # this includes: bcc, message-id, subject, x_mailer, user-agent
@@ -669,6 +670,10 @@ app-layer:
       enabled: yes
     ftp:
       enabled: yes
+    rdp:
+      enabled: yes
+      detection-ports:
+        dp: 3389
     ssh:
       enabled: yes
     smtp:

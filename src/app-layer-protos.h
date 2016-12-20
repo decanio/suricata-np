@@ -39,6 +39,7 @@ enum AppProtoEnum {
     ALPROTO_SMB2,
     ALPROTO_DCERPC,
     ALPROTO_IRC,
+    ALPROTO_RDP,
 
     ALPROTO_DNS,
     ALPROTO_MODBUS,

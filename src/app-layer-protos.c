@@ -57,6 +57,9 @@ const char *AppProtoToString(AppProto alproto)
         case ALPROTO_JABBER:
             proto_name = "jabber";
             break;
+        case ALPROTO_RDP:
+            proto_name = "rdp";
+            break;
         case ALPROTO_SMB:
             proto_name = "smb";
             break;
