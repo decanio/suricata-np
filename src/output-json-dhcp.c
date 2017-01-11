@@ -54,6 +54,11 @@ typedef struct LogDHCPLogThread_ {
     MemBuffer       *buffer;
 } LogDHCPLogThread;
 
+static inline int JsonDHCPOptEnd(DHCPOpt *dhcp_opt)
+{
+    return (dhcp_opt->code == 255) ? 1 : 0;
+}
+
 static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
     const Packet *p, Flow *f, void *state, void *tx, uint64_t tx_id)
 {
@@ -94,7 +99,9 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
     uint32_t offset;
     /* TBD: harden this loop against bad len values */
     DHCPOpt *dhcp_opt = (DHCPOpt *)dhcptx->request_buffer;
-    for (offset = 0; offset < dhcptx->request_buffer_len; offset += (2 + dhcp_opt->len)) {
+    for (offset = 0;
+         JsonDHCPOptEnd(dhcp_opt) == 0 && offset <= dhcptx->request_buffer_len;
+         offset += (2 + ((JsonDHCPOptEnd(dhcp_opt) == 0) ? dhcp_opt->len: 0))) {
         dhcp_opt = (DHCPOpt *)&dhcptx->request_buffer[offset];
         switch (dhcp_opt->code) {
             case 53: {
@@ -195,11 +202,15 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
                 }
                 }
                 break;
+            case 255:
+                break;
         }
     }
     /* TBD: harden this loop against bad len values */
     dhcp_opt = (DHCPOpt *)dhcptx->response_buffer;
-    for (offset = 0; offset < dhcptx->response_buffer_len; offset += (2 + dhcp_opt->len)) {
+    for (offset = 0;
+         JsonDHCPOptEnd(dhcp_opt) == 0 && offset <= dhcptx->response_buffer_len;
+         offset += (2 + ((JsonDHCPOptEnd(dhcp_opt) == 0) ? dhcp_opt->len: 0))) {
         dhcp_opt = (DHCPOpt *)&dhcptx->response_buffer[offset];
         switch (dhcp_opt->code) {
             case 53: {
@@ -291,6 +302,8 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
                 json_object_set_new(rspjs, "subnet_mask", json_string(mask));
                 }
                 break;
+            case 255:
+                break;
         }
     }
 
@@ -307,12 +320,6 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
 
     MemBufferReset(buffer);
     OutputJSONBuffer(js, thread->dhcplog_ctx->file_ctx, &thread->buffer);
-
-#ifdef PRINT
-    char *js_s = json_dumps(js, JSON_PRESERVE_ORDER|JSON_COMPACT|JSON_ENSURE_ASCII|JSON_ESCAPE_SLASH);
-    printf("%s\n", js_s);
-    free(js_s);
-#endif
 
     json_object_clear(js);
     json_decref(js);
