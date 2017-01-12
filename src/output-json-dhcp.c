@@ -308,14 +308,14 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
     }
 
     dhcptx->logged = 1;
-    json_object_set_new(dhcpjs, "xid", json_integer(ntohl(dhcptx->xid)));
+    json_object_set_new(dhcpjs, "id", json_integer(ntohl(dhcptx->xid)));
     /* match wireshark
     * char buf[16];
     * sprintf(buf, "0x%x", ntohl(dhcptx->xid));
     * json_object_set_new(dhcpjs, "xid", json_string(buf));
     */
-    json_object_set_new(dhcpjs, "client", reqjs);
-    json_object_set_new(dhcpjs, "server", rspjs);
+    json_object_set_new(dhcpjs, "request", reqjs);
+    json_object_set_new(dhcpjs, "response", rspjs);
     json_object_set_new(js, "dhcp", dhcpjs);
 
     MemBufferReset(buffer);
