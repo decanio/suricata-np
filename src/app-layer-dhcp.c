@@ -126,6 +126,8 @@ static DHCPTransaction *DHCPTxAlloc(DHCPState *dhcp)
     return tx;
 }
 
+static SC_ATOMIC_DECLARE(uint64_t, DHCPStateAllocCount);
+
 static void *DHCPStateAlloc(void)
 {
     /* TBD: possibly make this per vlan */
@@ -134,7 +136,9 @@ static void *DHCPStateAlloc(void)
     if (SC_ATOMIC_CAS(&state->initialized, 0, 1) == 1) {
         SCMutexInit(&state->lock, NULL);
         TAILQ_INIT(&state->tx_list);
+        SC_ATOMIC_INIT(DHCPStateAllocCount);
     }
+    SC_ATOMIC_ADD(DHCPStateAllocCount, 1);
     return state;
 }
 
@@ -142,12 +146,16 @@ static void DHCPStateFree(void *state)
 {
     DHCPState *dhcp_state = state;
     DHCPTransaction *tx;
-    SCMutexLock(&dhcp_state->lock);
-    while ((tx = TAILQ_FIRST(&dhcp_state->tx_list)) != NULL) {
-        TAILQ_REMOVE(&dhcp_state->tx_list, tx, next);
-        DHCPTxFree(dhcp_state, tx, 1);
+    uint64_t count = SC_ATOMIC_SUB(DHCPStateAllocCount, 1);
+    /* free in-flight transactions with last DHCPStateFree */
+    if (count == 0) {
+        SCMutexLock(&dhcp_state->lock);
+        while ((tx = TAILQ_FIRST(&dhcp_state->tx_list)) != NULL) {
+            TAILQ_REMOVE(&dhcp_state->tx_list, tx, next);
+            DHCPTxFree(dhcp_state, tx, 1);
+        }
+        SCMutexUnlock(&dhcp_state->lock);
     }
-    SCMutexUnlock(&dhcp_state->lock);
 }
 
 /**
