@@ -87,6 +87,11 @@ typedef struct DHCPTransaction_ {
     uint8_t *response_buffer;
     uint32_t response_buffer_len;
 
+    union {
+        uint32_t response_client_ip;
+        uint8_t response_client_ip_bytes[sizeof(uint32_t)];
+    };
+
     uint8_t response_done; /*<< Flag to be set when the response is
                             * seen. */
 

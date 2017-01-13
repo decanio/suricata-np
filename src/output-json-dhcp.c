@@ -206,6 +206,7 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
                 break;
         }
     }
+
     /* TBD: harden this loop against bad len values */
     dhcp_opt = (DHCPOpt *)dhcptx->response_buffer;
     for (offset = 0;
@@ -224,6 +225,17 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
                         break;
                 }
                 json_object_set_new(rspjs, "type", json_string(s));
+                /* purposely placed here to place in metadata after "type" */
+                if (dhcp_opt->args[0] == 5) {
+                    char ipaddr[4*4+1];
+                    snprintf(ipaddr, sizeof(ipaddr),
+                                     "%d.%d.%d.%d",
+                                     dhcptx->response_client_ip_bytes[0],
+                                     dhcptx->response_client_ip_bytes[1],
+                                     dhcptx->response_client_ip_bytes[2],
+                                     dhcptx->response_client_ip_bytes[3]);
+                    json_object_set_new(rspjs, "client_ip", json_string(ipaddr));
+                }
                 }
                 break;
             case 3: {

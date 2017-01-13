@@ -434,6 +434,7 @@ static int DHCPParse(Flow *f, void *state,
             PrintRawDataFp(stdout, input, input_len);
 #endif
 
+            BOOTPHdr *bootp = (BOOTPHdr *)input;
             DHCPOpt *dhcp = (DHCPOpt *)(input + sizeof(BOOTPHdr));
 
             if ((dhcp->code == DHCP_DHCP_MSG_TYPE) &&
@@ -450,6 +451,7 @@ static int DHCPParse(Flow *f, void *state,
                         if (unlikely(tx == NULL)) {
                             goto end;
                         }
+                        tx->response_client_ip = bootp->yiaddr;
                         if (tx->response_buffer == NULL) {
                             tx->response_buffer_len = input_len - sizeof(BOOTPHdr);
                             tx->response_buffer = SCMalloc(tx->response_buffer_len);
