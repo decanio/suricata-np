@@ -97,39 +97,38 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
     }
 
     uint32_t offset;
-    /* TBD: harden this loop against bad len values */
     DHCPOpt *dhcp_opt = (DHCPOpt *)dhcptx->request_buffer;
     for (offset = 0;
          JsonDHCPOptEnd(dhcp_opt) == 0 && offset <= dhcptx->request_buffer_len;
          offset += (2 + ((JsonDHCPOptEnd(dhcp_opt) == 0) ? dhcp_opt->len: 0))) {
         dhcp_opt = (DHCPOpt *)&dhcptx->request_buffer[offset];
         switch (dhcp_opt->code) {
-            case 53: {
+            case DHCP_OPT_TYPE: {
                 char *s = "";
                 switch (dhcp_opt->args[0]) {
-                    case 3:
+                    case DHCP_REQUEST:
                         s = "request";
                         break;
-                    case 8:
+                    case DHCP_INFORM:
                         s = "inform";
                         break;
                 }
                 json_object_set_new(reqjs, "type", json_string(s));
                 }
                 break;
-            case 12: {
+            case DHCP_OPT_HOSTNAME: {
                 char *s = BytesToString(dhcp_opt->args, dhcp_opt->len);
                 json_object_set_new(reqjs, "host_name", json_string(s));
                 SCFree(s);
                 }
                 break;
-            case 60: {
+            case DHCP_OPT_VENDOR_CLASS: {
                 char *s = BytesToString(dhcp_opt->args, dhcp_opt->len);
                 json_object_set_new(reqjs, "vendor_class", json_string(s));
                 SCFree(s);
                 }
                 break;
-            case 61: {
+            case DHCP_OPT_CLIENT_ID: {
                 if (dhcp_opt->args[0] == 1) {
                 char macaddr[6*3+1];
                 snprintf(macaddr, sizeof(macaddr),
@@ -144,7 +143,7 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
                 }
                 }
                 break;
-            case 50: {
+            case DHCP_OPT_REQUESTED_IP: {
                 char ipaddr[4*4+1];
                 snprintf(ipaddr, sizeof(ipaddr),
                          "%d.%d.%d.%d",
@@ -155,7 +154,7 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
                 json_object_set_new(reqjs, "client_ip", json_string(ipaddr));
                 }
                 break;
-            case 54: {
+            case DHCP_OPT_SERVER_ID: {
                 char ipaddr[4*4+1];
                 snprintf(ipaddr, sizeof(ipaddr),
                          "%d.%d.%d.%d",
@@ -166,34 +165,34 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
                 json_object_set_new(reqjs, "server_ip", json_string(ipaddr));
                 }
                 break;
-            case 55: {
+            case DHCP_OPT_PARAM_REQ_LIST: {
                 json_t *parmsjs = json_array();
                 if (likely(parmsjs != NULL)) {
                     uint8_t i;
                     for (i = 0; i < dhcp_opt->len; i++) {
                         switch (dhcp_opt->args[i]) {
-                            case 1:
+                            case DHCP_PARAM_SUBNET_MASK:
                                  json_array_append(parmsjs, json_string("subnet_mask"));
                                  break;
-                            case 3:
+                            case DHCP_PARAM_ROUTER:
                                  json_array_append(parmsjs, json_string("router"));
                                  break;
-                            case 6:
+                            case DHCP_PARAM_DNS_SERVER:
                                  json_array_append(parmsjs, json_string("dns_server"));
                                  break;
-                            case 15:
+                            case DHCP_PARAM_DOMAIN:
                                  json_array_append(parmsjs, json_string("domain"));
                                  break;
-                            case 35:
+                            case DHCP_PARAM_ARP_TIMEOUT:
                                  json_array_append(parmsjs, json_string("arp_timeout"));
                                  break;
-                            case 42:
+                            case DHCP_PARAM_NTP_SERVER:
                                  json_array_append(parmsjs, json_string("ntp_server"));
                                  break;
-                            case 66:
+                            case DHCP_PARAM_TFTP_SERVER_NAME:
                                  json_array_append(parmsjs, json_string("tftp_server_name"));
                                  break;
-                            case 150:
+                            case DHCP_PARAM_TFTP_SERVER_IP:
                                  json_array_append(parmsjs, json_string("tftp_server_ip"));
                                  break;
                         }
@@ -202,31 +201,30 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
                 }
                 }
                 break;
-            case 255:
+            case DHCP_OPT_END:
                 break;
         }
     }
 
-    /* TBD: harden this loop against bad len values */
     dhcp_opt = (DHCPOpt *)dhcptx->response_buffer;
     for (offset = 0;
          JsonDHCPOptEnd(dhcp_opt) == 0 && offset <= dhcptx->response_buffer_len;
          offset += (2 + ((JsonDHCPOptEnd(dhcp_opt) == 0) ? dhcp_opt->len: 0))) {
         dhcp_opt = (DHCPOpt *)&dhcptx->response_buffer[offset];
         switch (dhcp_opt->code) {
-            case 53: {
+            case DHCP_OPT_TYPE: {
                 char *s = "";
                 switch (dhcp_opt->args[0]) {
-                    case 5:
+                    case DHCP_ACK:
                         s = "ack";
                         break;
-                    case 6:
+                    case DHCP_NACK:
                         s = "nak";
                         break;
                 }
                 json_object_set_new(rspjs, "type", json_string(s));
                 /* purposely placed here to place in metadata after "type" */
-                if (dhcp_opt->args[0] == 5) {
+                if (dhcp_opt->args[0] == DHCP_ACK) {
                     char ipaddr[4*4+1];
                     snprintf(ipaddr, sizeof(ipaddr),
                                      "%d.%d.%d.%d",
@@ -238,7 +236,7 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
                 }
                 }
                 break;
-            case 3: {
+            case DHCP_OPT_ROUTER_IP: {
                 char ipaddr[4*4+1];
                 snprintf(ipaddr, sizeof(ipaddr),
                          "%d.%d.%d.%d",
@@ -249,7 +247,7 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
                 json_object_set_new(rspjs, "router_ip", json_string(ipaddr));
                 }
                 break;
-            case 6: {
+            case DHCP_OPT_DNS_IP: {
                 char ipaddr[4*4+1];
                 snprintf(ipaddr, sizeof(ipaddr),
                          "%d.%d.%d.%d",
@@ -260,7 +258,7 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
                 json_object_set_new(rspjs, "dns_ip", json_string(ipaddr));
                 }
                 break;
-            case 66: {
+            case DHCP_OPT_TFTP_IP: {
                 char ipaddr[4*4+1];
                 snprintf(ipaddr, sizeof(ipaddr),
                          "%d.%d.%d.%d",
@@ -271,28 +269,28 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
                 json_object_set_new(rspjs, "tftp_ip", json_string(ipaddr));
                 }
                 break;
-            case 58:
+            case DHCP_OPT_IP_RENEWAL_TIME:
                 json_object_set_new(rspjs, "renewal_time",
                                     json_integer((int)dhcp_opt->args[0]<<24|
                                                  (int)dhcp_opt->args[1]<<16|
                                                  (int)dhcp_opt->args[2]<<8|
                                                  (int)dhcp_opt->args[3]));
                 break;
-            case 59:
+            case DHCP_OPT_IP_REBINDING_TIME:
                 json_object_set_new(rspjs, "rebinding_time",
                                     json_integer((int)dhcp_opt->args[0]<<24|
                                                  (int)dhcp_opt->args[1]<<16|
                                                  (int)dhcp_opt->args[2]<<8|
                                                  (int)dhcp_opt->args[3]));
                 break;
-            case 51:
+            case DHCP_OPT_IP_LEASE_TIME:
                 json_object_set_new(rspjs, "lease_time",
                                     json_integer((int)dhcp_opt->args[0]<<24|
                                                  (int)dhcp_opt->args[1]<<16|
                                                  (int)dhcp_opt->args[2]<<8|
                                                  (int)dhcp_opt->args[3]));
                 break;
-            case 54: {
+            case DHCP_OPT_SERVER_ID: {
                 char ipaddr[4*4+1];
                 snprintf(ipaddr, sizeof(ipaddr),
                          "%d.%d.%d.%d",
@@ -303,7 +301,7 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
                 json_object_set_new(rspjs, "server_ip", json_string(ipaddr));
                 }
                 break;
-            case 1: {
+            case DHCP_OPT_SUBNET_MASK: {
                 char mask[4*4+1];
                 snprintf(mask, sizeof(mask),
                          "%d.%d.%d.%d",
@@ -314,7 +312,7 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
                 json_object_set_new(rspjs, "subnet_mask", json_string(mask));
                 }
                 break;
-            case 255:
+            case DHCP_OPT_END:
                 break;
         }
     }
