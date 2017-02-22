@@ -44,6 +44,7 @@
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
 #include "detect-engine-state.h"
+#include "detect-file-hash-common.h"
 
 #include "flow.h"
 #include "flow-var.h"
@@ -66,6 +67,8 @@
 
 #define PARSE_REGEX  "^\\s*(\\!*)\\s*([A-z0-9\\s\\-\\.=,\\*@]+|\"[A-z0-9\\s\\-\\.=,\\*@]+\")\\s*$"
 #define PARSE_REGEX_FINGERPRINT  "^\\s*(\\!*)\\s*([A-z0-9\\:\\*]+|\"[A-z0-9\\:\\* ]+\")\\s*$"
+
+#define DETECT_CONTENT_FINGERPRINT_LIST (1<<16) /* fingerprint as list */
 
 static pcre *subject_parse_regex;
 static pcre_extra *subject_parse_regex_study;
@@ -566,6 +569,76 @@ static void DetectTlsIssuerDNFree(void *ptr)
     SCFree(id_d);
 }
 
+static const char *hexcodes = "ABCDEFabcdef0123456789:";
+
+/**
+ * \brief Read the bytes of a hash from an hexadecimal string
+ *
+ * \param hash buffer to store the resulting bytes
+ * \param string hexadecimal string representing the hash
+ * \param filename file name from where the string was read
+ * \param line_no file line number from where the string was read
+ * \param expected_len the expected length of the string that was read
+ *
+ * \retval -1 the hexadecimal string is invalid
+ * \retval 1 the hexadecimal string was read successfully
+ */
+int ReadTlsHashString(uint8_t *hash, char *string, char *filename, int line_no,
+        uint16_t expected_len)
+{
+    if (strlen(string) != expected_len) {
+        SCLogError(SC_ERR_INVALID_HASH, "%s:%d hash string not %d characters",
+                filename, line_no, expected_len);
+        return -1;
+    }
+
+    int i, x;
+    for (x = 0, i = 0; i < expected_len; i+=3, x++) {
+        char buf[3] = { 0, 0, 0 };
+        buf[0] = string[i];
+        buf[1] = string[i+1];
+
+        long value = strtol(buf, NULL, 16);
+        if (value >= 0 && value <= 255) {
+            hash[x] = (uint8_t)value;
+        } else {
+            SCLogError(SC_ERR_INVALID_HASH, "%s:%d hash byte out of range %ld",
+                    filename, line_no, value);
+            return -1;
+        }
+    }
+
+    return 1;
+}
+
+/**
+ * \brief Store a hash into the hash table
+ *
+ * \param hash_table hash table that will hold the hash
+ * \param string hexadecimal string representing the hash
+ * \param filename file name from where the string was read
+ * \param line_no file line number from where the string was read
+ *
+ * \retval -1 failed to load the hash into the hash table
+ * \retval 1 successfully loaded the has into the hash table
+ */
+static int LoadTlsHashTable(ROHashTable *hash_table, char *string, char *filename,
+        int line_no)
+{
+    uint8_t hash[20];
+    uint16_t size = 20;
+
+    /* every byte represented with hexadecimal digits is two characters */
+    uint16_t expected_len = (size * 3) - 1;
+
+    if (ReadTlsHashString(hash, string, filename, line_no, expected_len) == 1) {
+        if (ROHashInitQueueValue(hash_table, &hash, size) != 1)
+            return -1;
+    }
+
+    return 1;
+}
+
 /**
  * \brief This function is used to parse fingerprint passed via keyword: "fingerprint"
  *
@@ -574,7 +647,7 @@ static void DetectTlsIssuerDNFree(void *ptr)
  * \retval pointer to DetectTlsData on success
  * \retval NULL on failure
  */
-static DetectTlsData *DetectTlsFingerprintParse (char *str)
+static DetectTlsData *DetectTlsFingerprintParse (DetectEngineCtx *de_ctx, char *str)
 {
     DetectTlsData *tls = NULL;
 #define MAX_SUBSTRINGS 30
@@ -584,11 +657,16 @@ static DetectTlsData *DetectTlsFingerprintParse (char *str)
     char *orig;
     char *tmp_str;
     uint32_t flag = 0;
+    FILE *fp = NULL;
+    char *filename = NULL;
 
     ret = pcre_exec(fingerprint_parse_regex, fingerprint_parse_regex_study, str, strlen(str), 0, 0,
                     ov, MAX_SUBSTRINGS);
 
     if (ret != 3) {
+        if (ret == -1) {
+            goto filecheck;
+        }
         SCLogError(SC_ERR_PCRE_MATCH, "invalid tls.fingerprint option");
         goto error;
     }
@@ -641,12 +719,102 @@ static DetectTlsData *DetectTlsFingerprintParse (char *str)
 
     return tls;
 
+filecheck:
+    orig = SCStrdup((char*)str);
+    if (unlikely(orig == NULL)) {
+        goto error;
+    }
+    tmp_str=orig;
+    if (tmp_str[0] == '!') {
+        flag = DETECT_CONTENT_NEGATED;
+        ++tmp_str;
+    }
+    if (tmp_str[0] == '"') {
+        tmp_str[strlen(tmp_str) - 1] = '\0';
+        ++tmp_str;
+    }
+
+    /* get full filename */
+    filename = DetectLoadCompleteSigPath(de_ctx, tmp_str);
+    fp = fopen(filename, "r");
+    if (fp == NULL) {
+        SCLogError(SC_ERR_OPENING_RULE_FILE, "opening tls fingerprint file %s: %s", filename, strerror(errno));
+        SCFree(orig);
+        goto error;
+    }
+    SCFree(orig);
+
+    ROHashTable *hash = ROHashInit(18, 20);
+    if (hash == NULL) {
+        fclose(fp);
+        goto error;
+    }
+
+    char line[8192];
+    int line_no = 0;
+
+    while(fgets(line, (int)sizeof(line), fp) != NULL) {
+        size_t valid = 0, len = strlen(line);
+        line_no++;
+
+        while (strchr(hexcodes, line[valid]) != NULL && valid++ < len);
+
+        /* lines that do not contain sequentially any valid character are ignored */
+        if (valid == 0)
+            continue;
+
+        /* ignore anything after the sequence of valid characters */
+        line[valid] = '\0';
+
+        if (LoadTlsHashTable(hash, line, filename, line_no) != 1) {
+            goto error;
+        }
+    }
+    fclose(fp);
+
+    if (ROHashInitFinalize(hash) != 1) {
+        goto error;
+    }
+    SCLogInfo("TLS fingerprint hash table size %u bytes", ROHashMemorySize(hash));
+
+    flag |= DETECT_CONTENT_FINGERPRINT_LIST;
+
+    /* We have a correct id option */
+    tls = SCMalloc(sizeof(DetectTlsData));
+    if (unlikely(tls == NULL))
+        goto error;
+    tls->hash = hash;
+    tls->flags = flag;
+
+    return tls;
+
 error:
     if (tls != NULL)
         DetectTlsFingerprintFree(tls);
     return NULL;
 
 }
+
+/**
+ * \brief Match a hash stored in a hash table
+ *
+ * \param hash_table hash table that will hold the hash
+ * \param hash buffer containing the bytes of the has
+ * \param hash_len length of the hash buffer
+ *
+ * \retval 0 didn't find the specified hash
+ * \retval 1 the hash matched a stored value
+ */
+static int HashMatchHashTable(ROHashTable *hash_table, uint8_t *hash,
+        size_t hash_len)
+{
+    void *ptr = ROHashLookup(hash_table, hash, (uint16_t)hash_len);
+    if (ptr == NULL)
+        return 0;
+    else
+        return 1;
+}
+
 /**
  * \brief match the specified fingerprint on a tls session
  *
@@ -679,29 +847,54 @@ static int DetectTlsFingerprintMatch (ThreadVars *t, DetectEngineThreadCtx *det_
         connp = &ssl_state->server_connp;
     }
 
-    if (connp->cert0_fingerprint != NULL) {
-        SCLogDebug("TLS: Fingerprint is [%s], looking for [%s]\n",
-                   connp->cert0_fingerprint,
-                   tls_data->fingerprint);
+    if (tls_data->flags & DETECT_CONTENT_FINGERPRINT_LIST) {
+        if (connp->cert0_fingerprint != NULL) {
+            int match = -1;
+            uint8_t fingerprint[20];
 
-        if (tls_data->fingerprint &&
-            (strstr(connp->cert0_fingerprint,
-                    tls_data->fingerprint) != NULL)) {
-            if (tls_data->flags & DETECT_CONTENT_NEGATED) {
-                ret = 0;
-            } else {
-                ret = 1;
+            if (ReadTlsHashString(fingerprint, connp->cert0_fingerprint, "", 0, 59) == 1) {
+                match = HashMatchHashTable(tls_data->hash, fingerprint,
+                                           sizeof(fingerprint));
 
-            }
-        } else {
-            if (tls_data->flags & DETECT_CONTENT_NEGATED) {
-                ret = 1;
-            } else {
-                ret = 0;
+                if (match == 1) {
+                    if (tls_data->flags & DETECT_CONTENT_NEGATED)
+                        ret = 0;
+                    else
+                        ret = 1;
+                }
+                else if (match == 0) {
+                    if (tls_data->flags & DETECT_CONTENT_NEGATED)
+                        ret = 1;
+                    else
+                        ret = 0;
+                }
             }
         }
     } else {
-        ret = 0;
+        if (connp->cert0_fingerprint != NULL) {
+            SCLogDebug("TLS: Fingerprint is [%s], looking for [%s]\n",
+                       connp->cert0_fingerprint,
+                       tls_data->fingerprint);
+
+            if (tls_data->fingerprint &&
+                (strstr(connp->cert0_fingerprint,
+                        tls_data->fingerprint) != NULL)) {
+                if (tls_data->flags & DETECT_CONTENT_NEGATED) {
+                    ret = 0;
+                } else {
+                    ret = 1;
+
+                }
+            } else {
+                if (tls_data->flags & DETECT_CONTENT_NEGATED) {
+                    ret = 1;
+                } else {
+                    ret = 0;
+                }
+            }
+        } else {
+            ret = 0;
+        }
     }
 
     SCReturnInt(ret);
@@ -726,7 +919,7 @@ static int DetectTlsFingerprintSetup (DetectEngineCtx *de_ctx, Signature *s, cha
     if (DetectSignatureSetAppProto(s, ALPROTO_TLS) != 0)
         return -1;
 
-    tls = DetectTlsFingerprintParse(str);
+    tls = DetectTlsFingerprintParse(de_ctx, str);
     if (tls == NULL)
         goto error;
 
