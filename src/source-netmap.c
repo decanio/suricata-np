@@ -210,6 +210,9 @@ typedef struct NetmapThreadVars_
     /* copy from config */
     int copy_mode;
     ChecksumValidationMode checksum_mode;
+#ifdef HAVE_NETMAP_BYPASS
+    int bypass_enabled;
+#endif
 
     /* counters */
     uint64_t pkts;
@@ -511,6 +514,9 @@ static TmEcode ReceiveNetmapThreadInit(ThreadVars *tv, const void *initdata, voi
     ntv->tv = tv;
     ntv->checksum_mode = aconf->in.checksum_mode;
     ntv->copy_mode = aconf->in.copy_mode;
+#ifdef HAVE_NETMAP_BYPASS
+    ntv->bypass_enabled = aconf->in.bypass_enabled;
+#endif
 
     ntv->livedev = LiveGetDevice(aconf->iface_name);
     if (ntv->livedev == NULL) {
@@ -732,6 +738,35 @@ static void NetmapReleasePacket(Packet *p)
     PacketFreeOrRelease(p);
 }
 
+#ifdef HAVE_NETMAP_BYPASS
+/**
+ * \brief bypass callback function for Netmap
+ *
+ * \param p a Packet to use information from to trigger bypass
+ * \return 1 if bypass is successful, 0 if not
+ */
+static int NetmapBypassCallback(Packet *p)
+{
+    if (IS_TUNNEL_PKT(p)) {
+        /* real tunnels may have multiple flows inside them, so bypass can't
+         * work for those. Rebuilt packets from IP fragments are fine. */
+        if (p->flags & PKT_REBUILT_FRAGMENT) {
+            Packet *tp = p->root ? p->root : p;
+            SCMutexLock(&tp->tunnel_mutex);
+            ENGINE_SET_EVENT(p,NETMAP_BYPASS);
+            SCMutexUnlock(&tp->tunnel_mutex);
+            return 1;
+        }
+        return 0;
+    } else {
+        /* coverity[missing_lock] */
+        ENGINE_SET_EVENT(p,NETMAP_BYPASS);
+    }
+
+    return 1;
+}
+#endif
+
 /**
  * \brief Read packets from ring and pass them further.
  * \param ntv Thread local variables.
@@ -774,7 +809,11 @@ static int NetmapRingRead(NetmapThreadVars *ntv, int ring_id)
         p->ts = rx->ts;
         ntv->pkts++;
         ntv->bytes += slot->len;
-
+#ifdef HAVE_NETMAP_BYPASS
+        if (ntv->bypass_enabled) {
+            p->BypassPacketsFlow = NetmapBypassCallback;
+        }
+#endif
         /* checksum validation */
         if (ntv->checksum_mode == CHECKSUM_VALIDATION_DISABLE) {
             p->flags |= PKT_IGNORE_CHECKSUM;

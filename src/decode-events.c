@@ -241,5 +241,9 @@ const struct DecodeEvents_ DEvents[] = {
     { "stream.reassembly_overlap_different_data", STREAM_REASSEMBLY_OVERLAP_DIFFERENT_DATA, },
     { "stream.pkt_bad_window_update", STREAM_PKT_BAD_WINDOW_UPDATE, },
 
+#ifdef HAVE_NETMAP_BYPASS
+    { "bypass.bypass_flow", NETMAP_BYPASS, },
+#endif
+
     { NULL, 0 },
 };

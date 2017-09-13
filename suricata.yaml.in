@@ -1600,6 +1600,7 @@ netmap:
    #copy-iface: eth2
    # Put default values here
  - interface: default
+   bypass-enabled: yes
 
 # PF_RING configuration. for use with native PF_RING support
 # for more info see http://www.ntop.org/products/pf_ring/

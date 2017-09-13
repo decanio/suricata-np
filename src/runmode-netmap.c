@@ -190,6 +190,15 @@ static int ParseNetmapSettings(NetmapIfaceSettings *ns, const char *iface,
         }
     }
 
+#ifdef HAVE_NETMAP_BYPASS
+    ns->bypass_enabled = 0;
+    boolval = 0;
+    (void)ConfGetChildValueBool(if_root, "bypass-enabled", (int *)&boolval);
+    if (boolval) {
+        ns->bypass_enabled = 1;
+    }
+#endif
+
 finalize:
 
     if (ns->sw_ring) {

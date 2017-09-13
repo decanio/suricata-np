@@ -253,6 +253,10 @@ enum {
 
     STREAM_REASSEMBLY_OVERLAP_DIFFERENT_DATA,
 
+#ifdef HAVE_NETMAP_BYPASS
+    NETMAP_BYPASS,
+#endif
+
     /* should always be last! */
     DECODE_EVENT_MAX,
 };
