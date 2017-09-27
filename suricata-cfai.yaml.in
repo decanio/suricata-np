@@ -194,6 +194,19 @@ outputs:
       # in eve-log
       #custom: [subject, issuer, session_resumed, serial, fingerprint, sni, version, not_before, not_after, certificate, chain]
 
+  - flow-json-log:
+      enabled: yes
+      filetype: kafka #regular|syslog|unix_dgram|unix_stream|redis|kafka
+      kafka:
+        broker-list: 127.0.0.1:9092 # a comma separated list of brokers addresses
+        topic: suricata-flow        # the topic for kafka messages
+        compression: snappy         # compression codec: none, gzip, snappy
+        partition: -1               # below < 0 means Unassigned Partition
+        max-retries: 1              # number of retries if message delivery fails
+        backoff-ms: 10              # ms to wait for backoff
+        buffer-max-messages: 100000 # max of messages to keep in internal buffer
+        log-level: 6                # sames log levels as SC_LOG_LEVEL . Debug is 7.
+
   # Extensible Event Format (nicknamed EVE) event log in JSON format
   - eve-log:
       enabled: @e_enable_evelog@
